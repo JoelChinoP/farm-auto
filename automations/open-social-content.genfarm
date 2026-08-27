@@ -65,7 +65,7 @@
   "script": {
     "id": "control-panel-open-social-content",
     "name": "Control Panel - Abrir contenido social",
-    "description": "Abre un enlace HTTPS validado en TikTok o Facebook. La interacción final permanece a cargo del operador.",
+    "description": "Abre un enlace HTTPS validado en TikTok o Facebook.",
     "version": "1.1.0",
     "variables": [
       {
