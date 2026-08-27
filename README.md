@@ -32,7 +32,7 @@ La aplicación carga `E:\genfarm\.env`. Hay una plantilla sin secretos en `.env.
 | --- | --- | --- | --- |
 | `API_DEEPSEEK` | Sí para redactar | Ninguno | Clave privada de DeepSeek |
 | `DEEPSEEK_MODEL` | No | `deepseek-v4-flash` | Modelo de generación |
-| `GENFARMER_URL` | No | `http://127.0.0.1:55554` | API local de GenFarmer |
+| `GENFARMER_URL` | No | `http://127.0.0.1:55554` | API local de GenFarmer; en Docker use `http://host.docker.internal:55554` |
 | `GENFARMER_USER_ID` | No | `30331` | Usuario operativo local |
 | `ADB_PATH` | No | ADB incluido con GenFarmer | Ejecutable ADB |
 | `CONTROL_PANEL_DB_PATH` | No | `data/control-panel.sqlite` | Base SQLite del panel |
@@ -65,6 +65,62 @@ npm start
 ```
 
 Ambos comandos enlazan únicamente a `127.0.0.1`.
+
+## Contenedor Docker
+
+La imagen incluye el build de producción, las automatizaciones y el cliente ADB
+para Linux. No incluye `.env`, GenFarmer ni la base SQLite: las variables se
+inyectan al iniciar el contenedor y la base se guarda en un volumen Docker.
+
+En el directorio del proyecto, preparar `.env` con las variables indicadas y
+levantarlo con:
+
+```powershell
+docker compose up --build
+```
+
+Abrir `http://127.0.0.1:3000`. Compose conecta el contenedor a los servicios
+locales del host mediante `host.docker.internal`: GenFarmer en `55554` y el
+servidor ADB en `5037`. Si GenFarmer usa otro puerto, definir
+`GENFARMER_DOCKER_PORT` al ejecutar Compose. El nombre queda restringido en la
+configuración como gateway local de Docker; no permite una URL remota
+arbitraria.
+
+Para usar la imagen desde otro proyecto, primero construirla una vez:
+
+```powershell
+docker build -t genfarmer-control-panel:local .
+```
+
+Después, añadir este servicio al `compose.yaml` del otro proyecto. Ajustar la
+ruta de `env_file` a su archivo local de variables.
+
+```yaml
+services:
+  control-panel:
+    image: genfarmer-control-panel:local
+    env_file:
+      - path: ../farm-auto/.env
+        required: true
+    environment:
+      ADB_PATH: /usr/bin/adb
+      ADB_SERVER_SOCKET: tcp:host.docker.internal:5037
+      CONTROL_PANEL_DB_PATH: /app/data/control-panel.sqlite
+      GENFARMER_URL: http://host.docker.internal:55554
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 127.0.0.1:3000:3000
+    volumes:
+      - control-panel-data:/app/data
+
+volumes:
+  control-panel-data:
+```
+
+En Docker Desktop, verificar que GenFarmer y el servidor ADB estén iniciados
+en el host antes de abrir el panel. El contenedor no sustituye ni inicia esos
+componentes Windows.
 
 ## Primer Uso
 

@@ -11,7 +11,15 @@ loadEnv({
 
 function localUrl(value: string) {
   const url = new URL(value);
-  if (!["127.0.0.1", "localhost", "[::1]", "::1"].includes(url.hostname)) {
+  if (
+    ![
+      "127.0.0.1",
+      "localhost",
+      "[::1]",
+      "::1",
+      "host.docker.internal",
+    ].includes(url.hostname)
+  ) {
     throw new Error("GENFARMER_URL debe apuntar al equipo local.");
   }
   return url.toString().replace(/\/$/, "");

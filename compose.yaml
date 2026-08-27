@@ -1,0 +1,21 @@
+services:
+  control-panel:
+    build: .
+    image: ${CONTROL_PANEL_IMAGE:-genfarmer-control-panel:local}
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      ADB_PATH: /usr/bin/adb
+      ADB_SERVER_SOCKET: tcp:host.docker.internal:5037
+      CONTROL_PANEL_DB_PATH: /app/data/control-panel.sqlite
+      GENFARMER_URL: http://host.docker.internal:${GENFARMER_DOCKER_PORT:-55554}
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    ports:
+      - 127.0.0.1:${CONTROL_PANEL_PORT:-3000}:3000
+    volumes:
+      - control-panel-data:/app/data
+
+volumes:
+  control-panel-data:
