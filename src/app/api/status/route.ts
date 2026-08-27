@@ -1,0 +1,43 @@
+import { getDeviceCapabilities, listAdbDevices } from "@/lib/adb";
+import { appConfig } from "@/lib/config";
+import { listDrafts, listOperations, listRegistry } from "@/lib/db";
+import { getDevices, getGenFarmerHealth } from "@/lib/genfarmer";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  const [health, adbDevices] = await Promise.all([
+    getGenFarmerHealth(),
+    listAdbDevices().catch(() => []),
+  ]);
+  const genFarmerDevices = health.ok ? await getDevices().catch(() => []) : [];
+  const devices = await Promise.all(
+    adbDevices.map(async (device) => ({
+      ...device,
+      genFarmer: genFarmerDevices.find(
+        (item) => item.currentDeviceId === device.id,
+      ),
+      capabilities:
+        device.state === "device"
+          ? await getDeviceCapabilities(device.id).catch(() => null)
+          : null,
+    })),
+  );
+
+  return Response.json({
+    success: true,
+    data: {
+      health,
+      deepSeek: {
+        configured: Boolean(appConfig.deepSeekApiKey),
+        model: appConfig.deepSeekModel,
+      },
+      devices,
+      automations: listRegistry(),
+      drafts: listDrafts(),
+      operations: listOperations(),
+      polledAt: new Date().toISOString(),
+    },
+  });
+}

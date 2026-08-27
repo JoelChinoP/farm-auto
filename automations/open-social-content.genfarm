@@ -1,0 +1,158 @@
+{
+  "id": "control-panel-open-social-content",
+  "userId": 0,
+  "name": "Control Panel - Abrir contenido social",
+  "description": "Abre un enlace HTTPS validado en TikTok o Facebook. La interacción final permanece a cargo del operador.",
+  "logo": null,
+  "version": "1.0.0",
+  "script": {
+    "id": "control-panel-open-social-content",
+    "name": "Control Panel - Abrir contenido social",
+    "description": "Abre un enlace HTTPS validado en TikTok o Facebook. La interacción final permanece a cargo del operador.",
+    "version": "1.0.0",
+    "variables": [
+      {
+        "id": "content_url",
+        "name": "contentUrl",
+        "label": "Enlace de contenido",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "package_name",
+        "name": "packageName",
+        "label": "Paquete Android",
+        "value": "",
+        "secret": false
+      }
+    ],
+    "flow": {
+      "nodes": [
+        {
+          "id": "social_start",
+          "type": "input",
+          "position": { "x": 80, "y": 180 },
+          "data": {
+            "action": "Start",
+            "options": {},
+            "successNode": "social_open",
+            "failNode": null
+          },
+          "label": "Start",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "deletable": false,
+          "class": ""
+        },
+        {
+          "id": "social_open",
+          "type": "custom",
+          "position": { "x": 340, "y": 180 },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "command": "am start -W -a android.intent.action.VIEW -d \"${contentUrl}\" -p ${packageName}",
+              "outputVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "social_log",
+            "failNode": null
+          },
+          "label": "Abrir enlace validado",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_log",
+          "type": "custom",
+          "position": { "x": 620, "y": 180 },
+          "data": {
+            "icon": "log",
+            "action": "Log",
+            "options": {
+              "log": "Contenido abierto para revisión e interacción manual.",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "social_stop",
+            "failNode": null
+          },
+          "label": "Registrar resultado",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_stop",
+          "type": "custom",
+          "position": { "x": 900, "y": 180 },
+          "data": {
+            "icon": "stop",
+            "action": "Stop",
+            "options": {},
+            "successNode": null,
+            "failNode": null
+          },
+          "label": "Stop",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge-social-start-open",
+          "type": "custom",
+          "source": "social_start",
+          "target": "social_open",
+          "sourceHandle": "social_start",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "social_start", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-social_start target-social_open"
+        },
+        {
+          "id": "edge-social-open-log",
+          "type": "custom",
+          "source": "social_open",
+          "target": "social_log",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-social_open target-social_log"
+        },
+        {
+          "id": "edge-social-log-stop",
+          "type": "custom",
+          "source": "social_log",
+          "target": "social_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-social_log target-social_stop"
+        }
+      ]
+    }
+  }
+}
