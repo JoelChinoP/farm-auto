@@ -249,7 +249,7 @@ Prueba manual de integración:
 - No hay envíos masivos ni programación de campañas.
 - No hay likes automáticos, comentarios públicos automáticos ni engagement coordinado.
 - No hay acceso del navegador a ADB, GenFarmer o DeepSeek.
-- La disponibilidad de una app no implica que su sesión esté autenticada; el operador debe verificarla visualmente.
+
 
 GenFarmer escucha actualmente en su puerto propio. Mantener las reglas de firewall sin acceso público y usar este panel solo desde el mismo PC.
 
