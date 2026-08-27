@@ -12,10 +12,15 @@ import {
   setDraftOutcome,
 } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import { sendWhatsAppMessage } from "@/lib/automation-service";
 import {
-  generatedDraftSchema,
+  likeAndCommentFacebookPost,
+  likeAndCommentTikTokPost,
+  sendWhatsAppMessage,
+} from "@/lib/automation-service";
+import {
+  normalizeContentUrl,
   normalizePhone,
+  parseGeneratedDraftContent,
 } from "@/lib/schemas";
 
 type DraftInput = {
@@ -50,7 +55,7 @@ export async function generateDraft(input: DraftInput) {
       messages: [
         {
           role: "system",
-          content: `Eres un asistente de redacción en español peruano actual. Crea un solo borrador natural y breve, no una campaña. Debe mantener exactamente la intención del operador, sonar humano y conversacional, sin inventar experiencias, identidades ni afirmaciones. Evita gramática rígida o tono corporativo. Puedes usar como máximo un modismo suave y pertinente entre "chévere", "bacán", "tranqui", "al toque", "causa" o la partícula "pe"; si no encaja, no uses ninguno. No fuerces faltas ortográficas. No incluyas hashtags repetitivos, presión, engaño, spam ni instrucciones para manipular engagement. Devuelve únicamente JSON con la forma {"text":"..."}. Longitud: ${targetLength} caracteres.`,
+          content: `Eres un asistente de redacción en español peruano actual. Crea un solo borrador natural y breve, no una campaña. Debe mantener exactamente la intención del operador, sonar humano y conversacional, sin inventar experiencias, identidades ni afirmaciones. Si es un comentario social, debe referirse a por lo menos un elemento concreto del contexto proporcionado y evitar elogios genéricos. Evita gramática rígida o tono corporativo. Puedes usar como máximo un modismo suave y pertinente entre "chévere", "bacán", "tranqui", "al toque", "causa" o la partícula "pe"; si no encaja, no uses ninguno. No fuerces faltas ortográficas. No incluyas hashtags repetitivos, presión, engaño, spam ni instrucciones para manipular engagement. Devuelve únicamente JSON con la forma {"text":"..."}. Longitud: ${targetLength} caracteres.`,
         },
         {
           role: "user",
@@ -87,25 +92,15 @@ export async function generateDraft(input: DraftInput) {
     );
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content);
-  } catch {
-    throw new AppError(
-      "DeepSeek devolvió una respuesta no válida.",
-      502,
-      "INVALID_MODEL_RESPONSE",
-    );
-  }
-  const generated = generatedDraftSchema.safeParse(parsed);
-  if (!generated.success) {
+  const generated = parseGeneratedDraftContent(content);
+  if (!generated) {
     throw new AppError(
       "DeepSeek devolvió un borrador fuera del formato esperado.",
       502,
       "INVALID_MODEL_RESPONSE",
     );
   }
-  return createDraft({ ...input, text: generated.data.text });
+  return createDraft({ ...input, text: generated.text });
 }
 
 export function approveMessage(
@@ -154,18 +149,99 @@ export function approveMessage(
   });
 }
 
-export async function sendApprovedMessage(id: string, deviceId: string) {
+export async function sendApprovedMessage(
+  id: string,
+  deviceId: string,
+  contentUrl?: string,
+) {
   const draft = getDraft(id);
   if (!draft) throw new AppError("Borrador no encontrado.", 404, "NOT_FOUND");
+  if (draft.status !== "approved") {
+    throw new AppError(
+      "El texto debe estar aprobado antes de publicarse.",
+      409,
+      "MESSAGE_NOT_SENDABLE",
+    );
+  }
+
+  if (draft.kind === "social_comment") {
+    if (draft.platform !== "tiktok" && draft.platform !== "facebook") {
+      throw new AppError(
+        "La plataforma no admite publicación automática de comentarios.",
+        409,
+        "UNSUPPORTED_SOCIAL_COMMENT",
+      );
+    }
+    if (!contentUrl) {
+      throw new AppError(
+        `Ingresa el enlace de la publicación de ${draft.platform === "tiktok" ? "TikTok" : "Facebook"}.`,
+        400,
+        "CONTENT_URL_REQUIRED",
+      );
+    }
+
+    let normalizedUrl: string;
+    try {
+      normalizedUrl = normalizeContentUrl(draft.platform, contentUrl);
+    } catch (error) {
+      throw new AppError(
+        error instanceof Error ? error.message : "Enlace inválido.",
+        400,
+        "INVALID_CONTENT_URL",
+      );
+    }
+
+    const idempotencyKey = createHash("sha256")
+      .update(`${draft.id}\0${deviceId}\0${normalizedUrl}\0${draft.text}`)
+      .digest("hex")
+      .slice(0, 8)
+      .padEnd(8, "0")
+      .concat("-0000-4000-8000-")
+      .concat(
+        createHash("sha256")
+          .update(`${normalizedUrl}\0${draft.text}`)
+          .digest("hex")
+          .slice(0, 12),
+      );
+
+    try {
+      const interact =
+        draft.platform === "tiktok"
+          ? likeAndCommentTikTokPost
+          : likeAndCommentFacebookPost;
+      const result = await interact({
+        deviceId,
+        idempotencyKey,
+        url: normalizedUrl,
+        commentText: draft.text,
+      });
+      setDraftOutcome(id, "sent");
+      return result;
+    } catch (error) {
+      if (
+        !(
+          error instanceof AppError &&
+          ["TIKTOK_NOT_INSTALLED", "FACEBOOK_NOT_INSTALLED"].includes(error.code)
+        )
+      ) {
+        setDraftOutcome(
+          id,
+          "failed",
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      throw error;
+    }
+  }
+
   if (
-    draft.status !== "approved" ||
     draft.kind !== "direct_message" ||
     draft.platform !== "whatsapp" ||
     !draft.consent_confirmed ||
     !draft.recipient
   ) {
     throw new AppError(
-      "El mensaje debe estar aprobado y tener consentimiento confirmado.",
+      "El mensaje debe tener consentimiento confirmado.",
       409,
       "MESSAGE_NOT_SENDABLE",
     );

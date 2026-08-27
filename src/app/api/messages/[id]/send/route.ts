@@ -11,7 +11,11 @@ export async function POST(
   try {
     const input = sendDraftSchema.parse(await readJson(request));
     const { id } = await params;
-    const result = await sendApprovedMessage(id, input.deviceId);
+    const result = await sendApprovedMessage(
+      id,
+      input.deviceId,
+      input.contentUrl,
+    );
     return Response.json({ success: true, data: result });
   } catch (error) {
     return errorResponse(error);

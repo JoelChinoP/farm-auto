@@ -51,6 +51,24 @@ export const automationSpecs = [
     taskName: "Abrir contenido social",
   },
   {
+    slug: "facebook-post-like-comment",
+    file: "facebook-post-like-comment.genfarm",
+    appName: "Control Panel - Facebook like y comentario",
+    taskName: "Facebook like y comentario",
+  },
+  {
+    slug: "tiktok-live-tap-tap",
+    file: "tiktok-live-tap-tap.genfarm",
+    appName: "Control Panel - TikTok Live tap tap",
+    taskName: "TikTok Live tap tap",
+  },
+  {
+    slug: "tiktok-post-like-comment",
+    file: "tiktok-post-like-comment.genfarm",
+    appName: "Control Panel - TikTok like y comentario",
+    taskName: "TikTok like y comentario",
+  },
+  {
     slug: "whatsapp-consented",
     file: "whatsapp-send-consented.genfarm",
     appName: "Control Panel - WhatsApp consentido",
@@ -434,6 +452,126 @@ export function openSocialContent(input: {
           );
         }
         return { runId: run.id, focusedPackage, platform: input.platform };
+      } catch (error) {
+        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+        throw error;
+      }
+    },
+  );
+}
+
+export function runTikTokLiveTapTap(input: {
+  deviceId: string;
+  idempotencyKey: string;
+  url: string;
+  tapRounds: number;
+  tapX: number;
+  tapY: number;
+}) {
+  return executeOperation(
+    "tiktok-live-tap-tap",
+    input.idempotencyKey,
+    input.deviceId,
+    async (setRunId) => {
+      if (!(await isPackageInstalled(input.deviceId, socialPackages.tiktok))) {
+        throw new AppError(
+          "TikTok no está instalado en el dispositivo seleccionado.",
+          409,
+          "TIKTOK_NOT_INSTALLED",
+        );
+      }
+
+      try {
+        await runAutomation("device-home", input.deviceId);
+        const run = await runAutomation(
+          "tiktok-live-tap-tap",
+          input.deviceId,
+          {
+            liveUrl: input.url,
+            tapRounds: String(input.tapRounds),
+            tapX: String(input.tapX),
+            tapY: String(input.tapY),
+          },
+          setRunId,
+        );
+        return {
+          runId: run.id,
+          tapRounds: input.tapRounds,
+          platform: "tiktok" as const,
+        };
+      } finally {
+        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+      }
+    },
+  );
+}
+
+export async function likeAndCommentTikTokPost(input: {
+  deviceId: string;
+  idempotencyKey: string;
+  url: string;
+  commentText: string;
+}) {
+  const packageName = socialPackages.tiktok;
+  if (!(await isPackageInstalled(input.deviceId, packageName))) {
+    throw new AppError(
+      "TikTok no está instalado en el dispositivo seleccionado.",
+      409,
+      "TIKTOK_NOT_INSTALLED",
+    );
+  }
+
+  return executeOperation(
+    "tiktok-post-like-comment",
+    input.idempotencyKey,
+    input.deviceId,
+    async (setRunId) => {
+      await runAutomation("device-home", input.deviceId);
+      try {
+        const run = await runAutomation(
+          "tiktok-post-like-comment",
+          input.deviceId,
+          { contentUrl: input.url, commentText: input.commentText },
+          setRunId,
+        );
+        return { runId: run.id, platform: "tiktok" as const };
+      } catch (error) {
+        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+        throw error;
+      }
+    },
+  );
+}
+
+export async function likeAndCommentFacebookPost(input: {
+  deviceId: string;
+  idempotencyKey: string;
+  url: string;
+  commentText: string;
+}) {
+  const packageName = socialPackages.facebook;
+  if (!(await isPackageInstalled(input.deviceId, packageName))) {
+    throw new AppError(
+      "Facebook no está instalado en el dispositivo seleccionado.",
+      409,
+      "FACEBOOK_NOT_INSTALLED",
+    );
+  }
+
+  return executeOperation(
+    "facebook-post-like-comment",
+    input.idempotencyKey,
+    input.deviceId,
+    async (setRunId) => {
+      await runAutomation("device-home", input.deviceId);
+      try {
+        const run = await runAutomation(
+          "facebook-post-like-comment",
+          input.deviceId,
+          { contentUrl: input.url, commentText: input.commentText },
+          setRunId,
+        );
+        return { runId: run.id, platform: "facebook" as const };
       } catch (error) {
         await runAutomation("device-home", input.deviceId).catch(() => undefined);
         throw error;

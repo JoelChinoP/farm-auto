@@ -1,0 +1,579 @@
+{
+  "id": "control-panel-facebook-post-like-comment",
+  "userId": 0,
+  "name": "Control Panel - Facebook like y comentario",
+  "description": "Abre una publicación de Facebook, conserva o aplica el like y publica un único comentario previamente aprobado.",
+  "logo": null,
+  "version": "1.0.0",
+  "input": [
+    {
+      "id": "input-content-url",
+      "type": "input",
+      "name": "Enlace de la publicación",
+      "options": {
+        "variable": {
+          "id": "content_url",
+          "name": "contentUrl",
+          "label": "Enlace de la publicación",
+          "value": "",
+          "secret": false
+        },
+        "hideLabel": false,
+        "value": "",
+        "placeholder": "https://www.facebook.com/...",
+        "width": null,
+        "height": null,
+        "labelWidth": 190,
+        "maxLength": 2048,
+        "minLength": 12,
+        "disabled": false,
+        "showCount": false
+      }
+    },
+    {
+      "id": "textarea-comment-text",
+      "type": "textarea",
+      "name": "Comentario aprobado",
+      "options": {
+        "variable": {
+          "id": "comment_text",
+          "name": "commentText",
+          "label": "Comentario aprobado",
+          "value": "",
+          "secret": false
+        },
+        "hideLabel": false,
+        "value": "",
+        "placeholder": "Texto generado con DeepSeek y aprobado por el operador",
+        "width": null,
+        "height": 100,
+        "labelWidth": 190,
+        "maxLength": 500,
+        "minLength": 2,
+        "disabled": false,
+        "showCount": true
+      }
+    }
+  ],
+  "script": {
+    "id": "control-panel-facebook-post-like-comment",
+    "name": "Control Panel - Facebook like y comentario",
+    "description": "Abre una publicación de Facebook, conserva o aplica el like y publica un único comentario previamente aprobado.",
+    "version": "1.0.0",
+    "variables": [
+      {
+        "id": "content_url",
+        "name": "contentUrl",
+        "label": "Enlace de la publicación",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "comment_text",
+        "name": "commentText",
+        "label": "Comentario aprobado",
+        "value": "",
+        "secret": false
+      }
+    ],
+    "flow": {
+      "nodes": [
+        {
+          "id": "facebook_start",
+          "type": "input",
+          "position": { "x": 60, "y": 200 },
+          "data": {
+            "action": "Start",
+            "options": {},
+            "successNode": "facebook_open_app",
+            "failNode": null
+          },
+          "label": "Start",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "deletable": false,
+          "class": ""
+        },
+        {
+          "id": "facebook_open_app",
+          "type": "custom",
+          "position": { "x": 290, "y": 200 },
+          "data": {
+            "icon": "play",
+            "action": "StartApp",
+            "options": {
+              "packageName": "com.facebook.katana",
+              "timeout": "30",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_open_url",
+            "failNode": null
+          },
+          "label": "Abrir Facebook",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_open_url",
+          "type": "custom",
+          "position": { "x": 520, "y": 200 },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "command": "am start -W -a android.intent.action.VIEW -d '${contentUrl}' -p com.facebook.katana",
+              "outputVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_wait",
+            "failNode": null
+          },
+          "label": "Abrir publicación",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_wait",
+          "type": "custom",
+          "position": { "x": 750, "y": 200 },
+          "data": {
+            "icon": "actionPause",
+            "action": "Pause",
+            "options": {
+              "timeoutType": "fixed",
+              "timeout": "5",
+              "timeoutFrom": "1",
+              "timeoutTo": "3",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "10",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_ensure_like",
+            "failNode": null
+          },
+          "label": "Esperar publicación",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_ensure_like",
+          "type": "custom",
+          "position": { "x": 980, "y": 200 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); const likedXpath = \"//*[@class='android.widget.Button' and ((contains(@content-desc,'Unlike') or contains(@content-desc,'Remove Like') or contains(@content-desc,'Ya no me gusta') or contains(@content-desc,'Eliminar Me gusta')) or ((contains(@content-desc,'Like') or contains(@content-desc,'Me gusta') or @text='Like' or @text='Me gusta') and (@checked='true' or @selected='true')))]\"; const liked = await this.clientUiAutomator.xpath(likedXpath, xmlDump); if (liked) return; const likeXpath = \"//*[@class='android.widget.Button' and @clickable='true' and @long-clickable='true' and (contains(@content-desc,'Like') or contains(@content-desc,'Me gusta') or @text='Like' or @text='Me gusta') and not(contains(@content-desc,'Unlike')) and not(contains(@content-desc,'Remove Like')) and not(contains(@content-desc,'Ya no me gusta')) and not(contains(@content-desc,'Eliminar Me gusta')) and not(@checked='true') and not(@selected='true')]\"; const likeButton = await this.clientUiAutomator.xpath(likeXpath, xmlDump); if (!likeButton) throw new Error('No se encontró el botón Me gusta de Facebook.'); await likeButton.click();",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_like_pause",
+            "failNode": null
+          },
+          "label": "Conservar o dar like",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_like_pause",
+          "type": "custom",
+          "position": { "x": 1210, "y": 200 },
+          "data": {
+            "icon": "actionPause",
+            "action": "Pause",
+            "options": {
+              "timeoutType": "fixed",
+              "timeout": "1",
+              "timeoutFrom": "1",
+              "timeoutTo": "3",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "5",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_open_comments",
+            "failNode": null
+          },
+          "label": "Esperar like",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_open_comments",
+          "type": "custom",
+          "position": { "x": 1440, "y": 200 },
+          "data": {
+            "icon": "actionMouseMove",
+            "action": "Touch",
+            "options": {
+              "selectorBy": "selector",
+              "touchType": "normal",
+              "selector": "",
+              "xpath": "//*[contains(@content-desc,'Comment') or contains(@content-desc,'comment') or contains(@content-desc,'Comentar') or contains(@content-desc,'comentar') or @text='Comment' or @text='Comentar']",
+              "x": "",
+              "y": "",
+              "touchCount": "1",
+              "delay": "",
+              "timeout": "15",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_comments_wait",
+            "failNode": null
+          },
+          "label": "Abrir comentarios",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_comments_wait",
+          "type": "custom",
+          "position": { "x": 1670, "y": 200 },
+          "data": {
+            "icon": "actionPause",
+            "action": "Pause",
+            "options": {
+              "timeoutType": "fixed",
+              "timeout": "2",
+              "timeoutFrom": "1",
+              "timeoutTo": "3",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "5",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_type_comment",
+            "failNode": null
+          },
+          "label": "Esperar comentarios",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_type_comment",
+          "type": "custom",
+          "position": { "x": 1900, "y": 200 },
+          "data": {
+            "icon": "actionTypeText",
+            "action": "TypeText",
+            "options": {
+              "xpath": "//*[(@class='android.widget.EditText' or @class='android.widget.AutoCompleteTextView') and @focusable='true' and (contains(@content-desc,'comment') or contains(@content-desc,'Comment') or contains(@content-desc,'comentar') or contains(@content-desc,'Comentar') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario') or contains(@hint,'comment') or contains(@hint,'Comment') or contains(@hint,'comentar') or contains(@hint,'Comentar'))]",
+              "text": "${commentText}",
+              "timeout": "15",
+              "typeAsHuman": false,
+              "typeSpeed": 1,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_send_comment",
+            "failNode": null
+          },
+          "label": "Escribir comentario",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_send_comment",
+          "type": "custom",
+          "position": { "x": 2130, "y": 200 },
+          "data": {
+            "icon": "actionMouseMove",
+            "action": "Touch",
+            "options": {
+              "selectorBy": "selector",
+              "touchType": "normal",
+              "selector": "",
+              "xpath": "//*[contains(@content-desc,'Post comment') or contains(@content-desc,'post comment') or contains(@content-desc,'Send') or contains(@content-desc,'Enviar') or contains(@content-desc,'Publicar') or @text='Post' or @text='Publicar' or @text='Enviar']",
+              "x": "",
+              "y": "",
+              "touchCount": "1",
+              "delay": "",
+              "timeout": "15",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_log",
+            "failNode": null
+          },
+          "label": "Publicar una vez",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_log",
+          "type": "custom",
+          "position": { "x": 2360, "y": 200 },
+          "data": {
+            "icon": "file",
+            "action": "Log",
+            "options": {
+              "log": "Like conservado o aplicado y comentario aprobado publicado en Facebook.",
+              "disabled": false,
+              "nodeSleep": "1",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_home",
+            "failNode": null
+          },
+          "label": "Registrar resultado",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_home",
+          "type": "custom",
+          "position": { "x": 2590, "y": 200 },
+          "data": {
+            "icon": "actionPressHome",
+            "action": "PressHome",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "1",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_stop",
+            "failNode": null
+          },
+          "label": "Volver a inicio",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_stop",
+          "type": "custom",
+          "position": { "x": 2820, "y": 200 },
+          "data": {
+            "icon": "actionStop",
+            "action": "Stop",
+            "options": {},
+            "successNode": null,
+            "failNode": null
+          },
+          "label": "Stop",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge-facebook-start-open-app",
+          "type": "custom",
+          "source": "facebook_start",
+          "target": "facebook_open_app",
+          "sourceHandle": "facebook_start",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "facebook_start", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_start target-facebook_open_app"
+        },
+        {
+          "id": "edge-facebook-open-app-open-url",
+          "type": "custom",
+          "source": "facebook_open_app",
+          "target": "facebook_open_url",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_open_app target-facebook_open_url"
+        },
+        {
+          "id": "edge-facebook-open-url-wait",
+          "type": "custom",
+          "source": "facebook_open_url",
+          "target": "facebook_wait",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_open_url target-facebook_wait"
+        },
+        {
+          "id": "edge-facebook-wait-like",
+          "type": "custom",
+          "source": "facebook_wait",
+          "target": "facebook_ensure_like",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_wait target-facebook_ensure_like"
+        },
+        {
+          "id": "edge-facebook-like-pause",
+          "type": "custom",
+          "source": "facebook_ensure_like",
+          "target": "facebook_like_pause",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_ensure_like target-facebook_like_pause"
+        },
+        {
+          "id": "edge-facebook-like-pause-open-comments",
+          "type": "custom",
+          "source": "facebook_like_pause",
+          "target": "facebook_open_comments",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_like_pause target-facebook_open_comments"
+        },
+        {
+          "id": "edge-facebook-open-comments-wait",
+          "type": "custom",
+          "source": "facebook_open_comments",
+          "target": "facebook_comments_wait",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_open_comments target-facebook_comments_wait"
+        },
+        {
+          "id": "edge-facebook-comments-wait-type",
+          "type": "custom",
+          "source": "facebook_comments_wait",
+          "target": "facebook_type_comment",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_comments_wait target-facebook_type_comment"
+        },
+        {
+          "id": "edge-facebook-type-send",
+          "type": "custom",
+          "source": "facebook_type_comment",
+          "target": "facebook_send_comment",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_type_comment target-facebook_send_comment"
+        },
+        {
+          "id": "edge-facebook-send-log",
+          "type": "custom",
+          "source": "facebook_send_comment",
+          "target": "facebook_log",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_send_comment target-facebook_log"
+        },
+        {
+          "id": "edge-facebook-log-home",
+          "type": "custom",
+          "source": "facebook_log",
+          "target": "facebook_home",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_log target-facebook_home"
+        },
+        {
+          "id": "edge-facebook-home-stop",
+          "type": "custom",
+          "source": "facebook_home",
+          "target": "facebook_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": { "sourceHandle": "success", "targetHandle": "success" },
+          "label": "",
+          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
+          "animated": true,
+          "class": "source-facebook_home target-facebook_stop"
+        }
+      ]
+    }
+  }
+}

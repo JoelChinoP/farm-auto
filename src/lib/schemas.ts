@@ -15,6 +15,13 @@ export const openContentSchema = deviceActionSchema.extend({
   url: z.string().trim().url().max(2048),
 });
 
+export const tiktokLiveTapTapSchema = deviceActionSchema.extend({
+  url: z.string().trim().url().max(2048),
+  tapRounds: z.number().int().min(1).max(50),
+  tapX: z.number().int().min(0).max(5000),
+  tapY: z.number().int().min(0).max(5000),
+}).strict();
+
 export const draftInputSchema = z.object({
   kind: z.enum(["social_comment", "direct_message"]),
   platform: z.enum(["tiktok", "facebook", "whatsapp"]),
@@ -27,6 +34,37 @@ export const generatedDraftSchema = z.object({
   text: z.string().trim().min(2).max(500),
 });
 
+export function parseGeneratedDraftContent(content: string) {
+  const trimmed = content.trim();
+  if (!trimmed) return null;
+
+  const candidates = [trimmed];
+  const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+
+  const objectStart = trimmed.indexOf("{");
+  const objectEnd = trimmed.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    candidates.push(trimmed.slice(objectStart, objectEnd + 1));
+  }
+
+  for (const candidate of new Set(candidates)) {
+    try {
+      const generated = generatedDraftSchema.safeParse(JSON.parse(candidate));
+      if (generated.success) return generated.data;
+    } catch {
+      // Try the remaining supported response formats.
+    }
+  }
+
+  const plainText = fenced?.[1]?.trim() ?? trimmed;
+  if (!/[{}\[\]`]/.test(plainText)) {
+    const generated = generatedDraftSchema.safeParse({ text: plainText });
+    if (generated.success) return generated.data;
+  }
+  return null;
+}
+
 export const approveDraftSchema = z.object({
   text: z.string().trim().min(2).max(500),
   consentConfirmed: z.boolean(),
@@ -35,6 +73,7 @@ export const approveDraftSchema = z.object({
 
 export const sendDraftSchema = z.object({
   deviceId,
+  contentUrl: z.string().trim().url().max(2048).optional(),
 });
 
 export function normalizeContentUrl(
