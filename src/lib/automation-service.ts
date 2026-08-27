@@ -13,6 +13,7 @@ import {
   acquireDeviceLock,
   createOperation,
   getRegistry,
+  listRegistry,
   releaseDeviceLock,
   updateOperation,
   upsertRegistry,
@@ -22,7 +23,9 @@ import {
   addTaskDevice,
   createRun,
   createTask,
+  GenFarmerApp,
   GenFarmerRun,
+  getApp,
   getApps,
   getDevices,
   getRun,
@@ -75,6 +78,15 @@ async function packageData(file: string) {
   };
 }
 
+async function findApp(apps: GenFarmerApp[], appId: string) {
+  const listed = apps.find((item) => item.id === appId);
+  if (listed) return listed;
+
+  const app = await getApp(appId).catch(() => undefined);
+  if (app) apps.push(app);
+  return app;
+}
+
 async function resolveDevice(deviceId: string) {
   const adbDevice = await assertConnected(deviceId);
   const genFarmerDevice = (await getDevices()).find(
@@ -104,15 +116,26 @@ export async function setupAutomations(deviceId: string) {
   for (const spec of automationSpecs) {
     const source = await packageData(spec.file);
     const registered = getRegistry(spec.slug, deviceId);
-    let app =
-      registered?.package_hash === source.hash
-        ? apps.find((item) => item.id === registered.app_id)
-        : undefined;
+    let app: GenFarmerApp | undefined;
     let imported = false;
+
+    if (registered && registered.package_hash === source.hash) {
+      app = await findApp(apps, registered.app_id);
+    }
+
+    if (!app) {
+      const anyRegisteredWithHash = listRegistry().find(
+        (item) => item.slug === spec.slug && item.package_hash === source.hash
+      );
+      if (anyRegisteredWithHash) {
+        app = await findApp(apps, anyRegisteredWithHash.app_id);
+      }
+    }
 
     if (!app && !registered) {
       app = apps.find((item) => item.name === spec.appName);
     }
+
     if (!app) {
       app = await importApp(source.text);
       apps.push(app);
@@ -130,7 +153,11 @@ export async function setupAutomations(deviceId: string) {
       );
     }
     if (!task) {
-      task = await createTask({ appId: app.id, name: taskName });
+      task = await createTask({
+        appId: app.id,
+        name: taskName,
+        taskInput: app.input ?? [],
+      });
       tasks.push(task);
     }
 
@@ -185,6 +212,33 @@ function replaceTaskVariables(
   );
 }
 
+function replaceTaskInput(input: unknown[], values: Record<string, string>) {
+  return input.map((item) => {
+    if (!item || typeof item !== "object") return item;
+
+    const field = item as Record<string, unknown>;
+    if (!field.options || typeof field.options !== "object") return item;
+
+    const options = { ...(field.options as Record<string, unknown>) };
+    const variable = options.variable;
+    if (variable && typeof variable === "object") {
+      const name = (variable as Record<string, unknown>).name;
+      if (typeof name === "string" && name in values) {
+        options.value = values[name];
+      }
+    }
+    if (Array.isArray(options.data)) {
+      options.data = replaceTaskInput(options.data, values);
+    }
+    if (Array.isArray(options.cols)) {
+      options.cols = options.cols.map((column) =>
+        Array.isArray(column) ? replaceTaskInput(column, values) : column,
+      );
+    }
+    return { ...field, options };
+  });
+}
+
 function findFailureLog(value: unknown): string | null {
   if (typeof value === "string") {
     return value.includes("[Failed]") ? value : null;
@@ -209,7 +263,7 @@ function findFailureLog(value: unknown): string | null {
 }
 
 async function waitForRun(runId: string, deviceId: string) {
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 120_000;
   let run: GenFarmerRun | undefined;
   while (Date.now() < deadline) {
     run = await getRun(runId);
@@ -267,9 +321,12 @@ async function runAutomation(
   }
   const task = await getTask(registry.task_id);
   if (variables) {
+    const taskInput = replaceTaskInput(task.input ?? [], variables);
     await updateTask({
       ...task,
+      input: taskInput,
       variables: replaceTaskVariables(task.variables ?? [], variables),
+      enableInput: taskInput.length > 0,
     });
   }
   const run = await createRun(registry.app_id, registry.task_id);
@@ -360,8 +417,14 @@ export function openSocialContent(input: {
           { contentUrl: input.url, packageName },
           setRunId,
         );
-        await sleep(700);
-        const focusedPackage = await getFocusedPackage(input.deviceId);
+        let focusedPackage: string | null = null;
+        for (let i = 0; i < 5; i++) {
+          await sleep(1000);
+          focusedPackage = await getFocusedPackage(input.deviceId);
+          if (focusedPackage === packageName) {
+            break;
+          }
+        }
         if (focusedPackage !== packageName) {
           throw new AppError(
             "Android no dejó la aplicación esperada en primer plano.",

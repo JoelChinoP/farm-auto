@@ -51,9 +51,9 @@ export function normalizeContentUrl(
     platform === "tiktok"
       ? hostname === "tiktok.com" || hostname.endsWith(".tiktok.com")
       : hostname === "facebook.com" ||
-        hostname.endsWith(".facebook.com") ||
-        hostname === "fb.watch" ||
-        hostname.endsWith(".fb.watch");
+      hostname.endsWith(".facebook.com") ||
+      hostname === "fb.watch" ||
+      hostname.endsWith(".fb.watch");
 
   if (!allowed) {
     throw new Error(

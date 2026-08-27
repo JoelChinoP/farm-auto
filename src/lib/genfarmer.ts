@@ -16,6 +16,7 @@ export type GenFarmerApp = {
   id: string;
   name: string;
   version: string;
+  input?: unknown[];
   script?: { variables?: TaskVariable[] };
 };
 
@@ -132,6 +133,10 @@ export function getApps() {
   return request<ListEnvelope<GenFarmerApp>>(`/automation/apps?${query}`);
 }
 
+export function getApp(id: string) {
+  return request<GenFarmerApp>(`/automation/apps/${encodeURIComponent(id)}`);
+}
+
 export function getTasks() {
   const query = new URLSearchParams({
     userId: String(appConfig.genFarmerUserId),
@@ -158,6 +163,7 @@ export function importApp(packageText: string) {
 export function createTask(input: {
   appId: string;
   name: string;
+  taskInput: unknown[];
 }) {
   return request<GenFarmerTask>("/automation/tasks", {
     method: "POST",
@@ -165,7 +171,8 @@ export function createTask(input: {
       userId: appConfig.genFarmerUserId,
       appId: input.appId,
       name: input.name,
-      input: [],
+      input: input.taskInput,
+      enableInput: input.taskInput.length > 0,
       devices: { enable: false, list: [] },
     }),
   });

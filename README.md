@@ -129,8 +129,7 @@ componentes Windows.
 3. Pulsar `Preparar`. El servidor importa los paquetes faltantes, crea una tarea por automatización y la asigna únicamente a ese dispositivo.
 4. La preparación termina ejecutando `Pantalla de inicio`.
 5. Introducir un enlace HTTPS de TikTok o Facebook y pulsar `Abrir`.
-6. Realizar manualmente cualquier like, comentario o interacción pública.
-7. Pulsar `Ir a inicio` al terminar la sesión.
+6. Pulsar `Ir a inicio` al terminar la sesión.
 
 La preparación es idempotente: reutiliza apps/tareas registradas y no duplica la importación en cada uso.
 
@@ -148,7 +147,6 @@ Archivo: `automations/open-social-content.genfarm`
 
 Recibe `contentUrl` y `packageName` como variables de tarea. El backend acepta únicamente HTTPS y comprueba que el host corresponda a TikTok o Facebook. El paquete Android se elige en el servidor, nunca desde un valor libre del navegador.
 
-Esta automatización no pulsa Like ni publica comentarios. Deja la aplicación abierta para revisión e interacción manual.
 
 ### WhatsApp Consentido
 
@@ -251,7 +249,6 @@ Prueba manual de integración:
 - No hay envíos masivos ni programación de campañas.
 - No hay likes automáticos, comentarios públicos automáticos ni engagement coordinado.
 - No hay acceso del navegador a ADB, GenFarmer o DeepSeek.
-- No hay reintento automático de un envío de resultado incierto.
 - La disponibilidad de una app no implica que su sesión esté autenticada; el operador debe verificarla visualmente.
 
 GenFarmer escucha actualmente en su puerto propio. Mantener las reglas de firewall sin acceso público y usar este panel solo desde el mismo PC.

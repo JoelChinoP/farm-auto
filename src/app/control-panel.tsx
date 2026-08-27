@@ -441,13 +441,7 @@ export function ControlPanel() {
                 required
               />
             </label>
-            <div className="guardrail">
-              <strong>Interacción manual</strong>
-              <p>
-                El flujo abre la app después de pasar por Inicio. Likes,
-                comentarios y cualquier publicación los confirma el operador.
-              </p>
-            </div>
+
             <button
               className="button primary full"
               disabled={Boolean(busy) || !isReady}
