@@ -10,8 +10,17 @@ const files = [
   "open-social-content.genfarm",
   "tiktok-live-tap-tap.genfarm",
   "tiktok-post-like-comment.genfarm",
-  "whatsapp-send-consented.genfarm",
 ];
+
+test("GenFarmer runs include the configured user ID", async () => {
+  const source = await readFile(resolve(process.cwd(), "src", "lib", "genfarmer.ts"), "utf8");
+  const createRun = source.slice(
+    source.indexOf("export function createRun"),
+    source.indexOf("export function getRun"),
+  );
+
+  assert.match(createRun, /userId:\s*appConfig\.genFarmerUserId/);
+});
 
 type NodeData = {
   id: string;

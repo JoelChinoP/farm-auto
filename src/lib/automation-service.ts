@@ -14,10 +14,12 @@ import {
   acquireDeviceLock,
   createOperation,
   getDeviceLock,
+  getDevicePreparation,
   getOperation,
   getRegistry,
   listRegistry,
   releaseDeviceLock,
+  setDevicePreparation,
   updateOperation,
   upsertRegistry,
 } from "@/lib/db";
@@ -28,10 +30,12 @@ import {
 } from "@/lib/facebook-context";
 import {
   addTaskDevice,
+  assertGenFarmerAuthenticated,
   createRun,
   createTask,
   GenFarmerApp,
   GenFarmerRun,
+  GenFarmerTask,
   getApp,
   getApps,
   getDevices,
@@ -45,6 +49,7 @@ import {
   TaskVariable,
   updateTask,
 } from "@/lib/genfarmer";
+import { appConfig } from "@/lib/config";
 
 export const automationSpecs = [
   {
@@ -82,12 +87,6 @@ export const automationSpecs = [
     file: "tiktok-post-like-comment.genfarm",
     appName: "Control Panel - TikTok like y comentario",
     taskName: "TikTok like y comentario",
-  },
-  {
-    slug: "whatsapp-consented",
-    file: "whatsapp-send-consented.genfarm",
-    appName: "Control Panel - WhatsApp consentido",
-    taskName: "WhatsApp consentido",
   },
 ] as const;
 
@@ -170,7 +169,22 @@ async function reconcileDeviceLock(deviceId: string) {
   );
 }
 
+export function assertDevicePrepared(deviceId: string) {
+  const preparation = getDevicePreparation(deviceId);
+  const missing = automationSpecs.filter((spec) => !getRegistry(spec.slug, deviceId));
+  if (preparation?.status !== "ready" || missing.length) {
+    throw new AppError(
+      preparation?.problem ||
+        `Prepara los ${automationSpecs.length} paquetes de este dispositivo.`,
+      409,
+      "SETUP_REQUIRED",
+      { missingSlugs: missing.map((spec) => spec.slug) },
+    );
+  }
+}
+
 export function ensureAutomationDeviceReady(deviceId: string) {
+  assertDevicePrepared(deviceId);
   return reconcileDeviceLock(deviceId);
 }
 
@@ -181,6 +195,15 @@ async function findApp(apps: GenFarmerApp[], appId: string) {
   const app = await getApp(appId).catch(() => undefined);
   if (app) apps.push(app);
   return app;
+}
+
+async function findTask(tasks: GenFarmerTask[], taskId: string) {
+  const listed = tasks.find((item) => item.id === taskId);
+  if (listed) return listed;
+
+  const task = await getTask(taskId).catch(() => undefined);
+  if (task) tasks.push(task);
+  return task;
 }
 
 async function resolveDevice(deviceId: string) {
@@ -199,13 +222,29 @@ async function resolveDevice(deviceId: string) {
 }
 
 export async function setupAutomations(deviceId: string) {
-  const execution = await executeOperation(
-    "setup",
-    randomUUID(),
-    deviceId,
-    (setRunId) => setupAutomationsUnlocked(deviceId, setRunId),
-  );
-  return execution.result;
+  let started = false;
+  try {
+    const execution = await executeOperation(
+      "setup",
+      randomUUID(),
+      deviceId,
+      (setRunId) => {
+        started = true;
+        setDevicePreparation(deviceId, "running", null);
+        return setupAutomationsUnlocked(deviceId, setRunId);
+      },
+    );
+    setDevicePreparation(deviceId, "ready", null);
+    return execution.result;
+  } catch (error) {
+    if (started) {
+      const message = error instanceof Error ? error.message : String(error);
+      const problem =
+        error instanceof AppError && error.code ? `${message} [${error.code}]` : message;
+      setDevicePreparation(deviceId, "not_ready", problem);
+    }
+    throw error;
+  }
 }
 
 async function setupAutomationsUnlocked(
@@ -213,6 +252,7 @@ async function setupAutomationsUnlocked(
   setRunId: (runId: string) => void,
 ) {
   const { adbDevice, genFarmerDevice } = await resolveDevice(deviceId);
+  await assertGenFarmerAuthenticated();
   const apps = (await getApps()).items;
   const tasks = (await getTasks()).items;
   const results: Array<{
@@ -252,13 +292,20 @@ async function setupAutomationsUnlocked(
     }
 
     const taskName = `${spec.taskName} - ${genFarmerDevice.serialNo}`;
-    let task =
+    const registeredTask =
       registered && registered.app_id === app.id
-        ? tasks.find((item) => item.id === registered.task_id)
+        ? await findTask(tasks, registered.task_id)
+        : undefined;
+    let task =
+      registeredTask?.userId === appConfig.genFarmerUserId
+        ? registeredTask
         : undefined;
     if (!task) {
       task = tasks.find(
-        (item) => item.appId === app.id && item.name === taskName,
+        (item) =>
+          item.userId === appConfig.genFarmerUserId &&
+          item.appId === app.id &&
+          item.name === taskName,
       );
     }
     if (!task) {
@@ -599,6 +646,7 @@ async function executeOperation<T>(
 }
 
 export function goHome(deviceId: string, idempotencyKey: string) {
+  assertDevicePrepared(deviceId);
   return executeOperation("device-home", idempotencyKey, deviceId, async (setRunId) => {
     const run = await runAutomation("device-home", deviceId, undefined, setRunId);
     return { runId: run.id };
@@ -611,6 +659,7 @@ export function openSocialContent(input: {
   platform: keyof typeof socialPackages;
   url: string;
 }) {
+  assertDevicePrepared(input.deviceId);
   return executeOperation(
     "open-social-content",
     input.idempotencyKey,
@@ -663,6 +712,7 @@ export function extractFacebookPostContext(input: {
   idempotencyKey: string;
   url: string;
 }) {
+  assertDevicePrepared(input.deviceId);
   return executeOperation(
     "facebook-context-extract",
     input.idempotencyKey,
@@ -756,6 +806,7 @@ export function runTikTokLiveTapTap(input: {
   tapX: number;
   tapY: number;
 }) {
+  assertDevicePrepared(input.deviceId);
   return executeOperation(
     "tiktok-live-tap-tap",
     input.idempotencyKey,
@@ -803,6 +854,7 @@ export async function likeAndCommentTikTokPost(input: {
   url: string;
   commentText: string;
 }) {
+  assertDevicePrepared(input.deviceId);
   const packageName = socialPackages.tiktok;
   if (!(await isPackageInstalled(input.deviceId, packageName))) {
     throw new AppError(
@@ -840,6 +892,7 @@ export async function likeAndCommentFacebookPost(input: {
   url: string;
   commentText: string;
 }) {
+  assertDevicePrepared(input.deviceId);
   const packageName = socialPackages.facebook;
   if (!(await isPackageInstalled(input.deviceId, packageName))) {
     throw new AppError(
@@ -863,44 +916,6 @@ export async function likeAndCommentFacebookPost(input: {
           setRunId,
         );
         return { runId: run.id, platform: "facebook" as const };
-      } catch (error) {
-        await runCleanupHome(input.deviceId, setRunId, error);
-        throw error;
-      }
-    },
-  );
-}
-
-export async function sendWhatsAppMessage(input: {
-  deviceId: string;
-  idempotencyKey: string;
-  phoneNumber: string;
-  messageText: string;
-}) {
-  if (!(await isPackageInstalled(input.deviceId, "com.whatsapp"))) {
-    throw new AppError(
-      "WhatsApp no está instalado en el dispositivo seleccionado.",
-      409,
-      "WHATSAPP_NOT_INSTALLED",
-    );
-  }
-  return executeOperation(
-    "whatsapp-consented",
-    input.idempotencyKey,
-    input.deviceId,
-    async (setRunId) => {
-      await runAutomation("device-home", input.deviceId, undefined, setRunId);
-      try {
-        const run = await runAutomation(
-          "whatsapp-consented",
-          input.deviceId,
-          {
-            phoneNumber: input.phoneNumber,
-            messageText: input.messageText,
-          },
-          setRunId,
-        );
-        return { runId: run.id };
       } catch (error) {
         await runCleanupHome(input.deviceId, setRunId, error);
         throw error;

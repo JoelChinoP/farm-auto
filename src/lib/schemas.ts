@@ -22,13 +22,15 @@ export const tiktokLiveTapTapSchema = deviceActionSchema.extend({
   tapY: z.number().int().min(0).max(5000),
 }).strict();
 
-export const draftInputSchema = z.object({
-  kind: z.enum(["social_comment", "direct_message"]),
-  platform: z.enum(["tiktok", "facebook", "whatsapp"]),
-  context: z.string().trim().min(5).max(1200),
-  intent: z.string().trim().min(3).max(300),
-  tone: z.enum(["amable", "curioso", "entusiasta", "casual"]),
-});
+export const draftInputSchema = z
+  .object({
+    kind: z.literal("social_comment"),
+    platform: z.enum(["tiktok", "facebook"]),
+    context: z.string().trim().min(5).max(1200),
+    intent: z.string().trim().min(3).max(300),
+    tone: z.enum(["amable", "curioso", "entusiasta", "casual"]),
+  })
+  .strict();
 
 export const generatedDraftSchema = z.object({
   text: z.string().trim().min(2).max(500),
@@ -65,11 +67,11 @@ export function parseGeneratedDraftContent(content: string) {
   return null;
 }
 
-export const approveDraftSchema = z.object({
-  text: z.string().trim().min(2).max(500),
-  consentConfirmed: z.boolean(),
-  recipient: z.string().trim().max(24).optional().default(""),
-});
+export const approveDraftSchema = z
+  .object({
+    text: z.string().trim().min(2).max(500),
+  })
+  .strict();
 
 export const sendDraftSchema = z.object({
   deviceId,
@@ -225,12 +227,4 @@ export function expandFacebookAllocations(
     throw new Error("La distribución no cubre todos los dispositivos elegidos.");
   }
   return expanded;
-}
-
-export function normalizePhone(value: string) {
-  const phone = value.replace(/[^0-9]/g, "");
-  if (!/^[1-9][0-9]{7,14}$/.test(phone)) {
-    throw new Error("Usa el número internacional, solo dígitos y sin +.");
-  }
-  return phone;
 }

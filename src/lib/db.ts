@@ -19,8 +19,8 @@ type RegistryRow = {
 
 export type DraftRow = {
   id: string;
-  kind: "social_comment" | "direct_message";
-  platform: "tiktok" | "facebook" | "whatsapp";
+  kind: "social_comment";
+  platform: "tiktok" | "facebook";
   context: string;
   intent: string;
   tone: string;
@@ -32,8 +32,6 @@ export type DraftRow = {
     | "sent"
     | "failed"
     | "outcome_unknown";
-  consent_confirmed: number;
-  recipient: string | null;
   created_at: string;
   updated_at: string;
   approved_at: string | null;
@@ -51,6 +49,13 @@ export type OperationRow = {
   result_json: string | null;
   error: string | null;
   created_at: string;
+  updated_at: string;
+};
+
+export type DevicePreparationRow = {
+  device_id: string;
+  status: "running" | "ready" | "not_ready";
+  problem: string | null;
   updated_at: string;
 };
 
@@ -131,15 +136,13 @@ function createDatabase() {
     CREATE TABLE IF NOT EXISTS message_drafts (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
-      platform TEXT NOT NULL,
-      context TEXT NOT NULL,
-      intent TEXT NOT NULL,
-      tone TEXT NOT NULL,
-      text TEXT NOT NULL,
-      status TEXT NOT NULL,
-      consent_confirmed INTEGER NOT NULL DEFAULT 0,
-      recipient TEXT,
-      approved_at TEXT,
+       platform TEXT NOT NULL,
+       context TEXT NOT NULL,
+       intent TEXT NOT NULL,
+       tone TEXT NOT NULL,
+       text TEXT NOT NULL,
+       status TEXT NOT NULL,
+       approved_at TEXT,
       sent_at TEXT,
       error TEXT,
       created_at TEXT NOT NULL,
@@ -163,6 +166,13 @@ function createDatabase() {
       device_id TEXT PRIMARY KEY,
       operation_id TEXT NOT NULL,
       acquired_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS device_preparation (
+      device_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      problem TEXT,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS facebook_batches (
@@ -206,11 +216,84 @@ function createDatabase() {
     CREATE INDEX IF NOT EXISTS facebook_assignments_post
       ON facebook_assignments(post_id);
   `);
+  const migrate = database.transaction(() => {
+    let version = database.pragma("user_version", { simple: true }) as number;
+    if (version > 2) {
+      throw new Error(`La base de datos usa una versión futura (${version}).`);
+    }
+    if (version < 1) {
+      const draftColumns = database.pragma("table_info(message_drafts)") as Array<{
+        name: string;
+      }>;
+      database.exec(`
+        UPDATE facebook_assignments
+        SET draft_id = NULL
+        WHERE draft_id IN (
+          SELECT id FROM message_drafts
+          WHERE kind = 'direct_message' OR platform = 'whatsapp'
+        );
+        DELETE FROM message_drafts
+        WHERE kind = 'direct_message' OR platform = 'whatsapp';
+        DELETE FROM device_locks
+        WHERE operation_id IN (
+          SELECT id FROM operations WHERE kind = 'whatsapp-consented'
+        );
+        DELETE FROM operations WHERE kind = 'whatsapp-consented';
+        DELETE FROM automation_registry WHERE slug = 'whatsapp-consented';
+      `);
+      for (const column of ["consent_confirmed", "recipient"]) {
+        if (draftColumns.some((item) => item.name === column)) {
+          database.exec(`ALTER TABLE message_drafts DROP COLUMN ${column}`);
+        }
+      }
+      database.pragma("user_version = 1");
+      version = 1;
+    }
+    if (version < 2) {
+      database.exec(`
+        INSERT OR IGNORE INTO device_preparation (device_id, status, problem, updated_at)
+        SELECT operation.device_id,
+          CASE
+            WHEN operation.status = 'succeeded' THEN 'ready'
+            WHEN operation.status IN ('starting', 'running') THEN 'running'
+            ELSE 'not_ready'
+          END,
+          CASE
+            WHEN operation.status = 'succeeded' THEN NULL
+            WHEN operation.status IN ('starting', 'running') THEN 'Preparación en curso.'
+            ELSE COALESCE(operation.error, 'La preparación terminó con error.')
+          END,
+          operation.updated_at
+        FROM operations AS operation
+        WHERE operation.kind = 'setup'
+          AND NOT EXISTS (
+            SELECT 1 FROM operations AS newer
+            WHERE newer.kind = 'setup'
+              AND newer.device_id = operation.device_id
+              AND (
+                newer.created_at > operation.created_at OR
+                (newer.created_at = operation.created_at AND newer.id > operation.id)
+              )
+          );
+      `);
+      database.pragma("user_version = 2");
+    }
+  });
+  migrate.immediate();
   database
     .prepare(
       `UPDATE operations
        SET status = 'failed', error = 'La ejecución fue interrumpida al reiniciar el panel.', updated_at = ?
        WHERE status IN ('starting', 'running')`,
+    )
+    .run(new Date().toISOString());
+  database
+    .prepare(
+      `UPDATE device_preparation
+       SET status = 'not_ready',
+           problem = 'La preparación fue interrumpida al reiniciar el panel.',
+           updated_at = ?
+       WHERE status = 'running'`,
     )
     .run(new Date().toISOString());
   const recoveryTimestamp = new Date().toISOString();
@@ -332,6 +415,40 @@ export function listRegistry() {
     .all() as RegistryRow[];
 }
 
+export function listDevicePreparation() {
+  return db
+    .prepare("SELECT * FROM device_preparation ORDER BY device_id")
+    .all() as DevicePreparationRow[];
+}
+
+export function getDevicePreparation(deviceId: string) {
+  return db
+    .prepare("SELECT * FROM device_preparation WHERE device_id = ?")
+    .get(deviceId) as DevicePreparationRow | undefined;
+}
+
+export function setDevicePreparation(
+  deviceId: string,
+  status: DevicePreparationRow["status"],
+  problem: string | null,
+) {
+  const row: DevicePreparationRow = {
+    device_id: deviceId,
+    status,
+    problem,
+    updated_at: now(),
+  };
+  db.prepare(
+    `INSERT INTO device_preparation (device_id, status, problem, updated_at)
+     VALUES (@device_id, @status, @problem, @updated_at)
+     ON CONFLICT(device_id) DO UPDATE SET
+       status = excluded.status,
+       problem = excluded.problem,
+       updated_at = excluded.updated_at`,
+  ).run(row);
+  return row;
+}
+
 export function upsertRegistry(input: Omit<RegistryRow, "updated_at">) {
   db.prepare(
     `INSERT INTO automation_registry
@@ -358,8 +475,6 @@ export function createDraft(input: {
     id: randomUUID(),
     ...input,
     status: "draft",
-    consent_confirmed: 0,
-    recipient: null,
     approved_at: null,
     sent_at: null,
     error: null,
@@ -369,10 +484,10 @@ export function createDraft(input: {
   db.prepare(
     `INSERT INTO message_drafts
       (id, kind, platform, context, intent, tone, text, status,
-       consent_confirmed, recipient, approved_at, sent_at, error, created_at, updated_at)
+       approved_at, sent_at, error, created_at, updated_at)
      VALUES
       (@id, @kind, @platform, @context, @intent, @tone, @text, @status,
-       @consent_confirmed, @recipient, @approved_at, @sent_at, @error, @created_at, @updated_at)`,
+       @approved_at, @sent_at, @error, @created_at, @updated_at)`,
   ).run(draft);
   return draft;
 }
@@ -406,26 +521,15 @@ export function listDrafts(limit = 20) {
     .all(limit) as DraftRow[];
 }
 
-export function approveDraft(
-  id: string,
-  input: { text: string; consentConfirmed: boolean; recipient: string | null },
-) {
+export function approveDraft(id: string, text: string) {
   const timestamp = now();
   const result = db
     .prepare(
       `UPDATE message_drafts SET
-         text = ?, status = 'approved', consent_confirmed = ?, recipient = ?,
-         approved_at = ?, updated_at = ?, error = NULL
+         text = ?, status = 'approved', approved_at = ?, updated_at = ?, error = NULL
        WHERE id = ? AND status IN ('draft', 'approved')`,
     )
-    .run(
-      input.text,
-      input.consentConfirmed ? 1 : 0,
-      input.recipient,
-      timestamp,
-      timestamp,
-      id,
-    );
+    .run(text, timestamp, timestamp, id);
   if (result.changes !== 1) {
     throw new AppError(
       "El borrador no existe o ya fue enviado.",

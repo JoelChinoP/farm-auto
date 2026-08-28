@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  approveDraftSchema,
+  draftInputSchema,
   expandFacebookAllocations,
   facebookBatchSchema,
   facebookDraftsSchema,
   facebookReconcileSchema,
   normalizeContentUrl,
   normalizeFacebookUrls,
-  normalizePhone,
   parseGeneratedDraftContent,
   sendDraftSchema,
   tiktokLiveTapTapSchema,
@@ -81,10 +82,37 @@ test("validates strict TikTok Live tap-tap bounds", () => {
   }
 });
 
-test("normalizes an international phone without persisting formatting", () => {
-  assert.equal(normalizePhone("+51 987 654 321"), "51987654321");
-  assert.throws(() => normalizePhone("0123"));
-  assert.throws(() => normalizePhone("not-a-number"));
+test("accepts only social drafts for TikTok and Facebook", () => {
+  const valid = {
+    kind: "social_comment",
+    platform: "tiktok",
+    context: "Contexto real de la publicación",
+    intent: "Comentar el detalle principal",
+    tone: "amable",
+  };
+
+  assert.equal(draftInputSchema.safeParse(valid).success, true);
+  assert.equal(
+    draftInputSchema.safeParse({ ...valid, kind: "message" }).success,
+    false,
+  );
+  assert.equal(
+    draftInputSchema.safeParse({ ...valid, platform: "unsupported" }).success,
+    false,
+  );
+});
+
+test("draft approval accepts only edited text", () => {
+  assert.deepEqual(approveDraftSchema.parse({ text: "Comentario aprobado" }), {
+    text: "Comentario aprobado",
+  });
+  assert.equal(
+    approveDraftSchema.safeParse({
+      text: "Comentario aprobado",
+      unexpected: true,
+    }).success,
+    false,
+  );
 });
 
 test("accepts an optional content URL when sending an approved draft", () => {

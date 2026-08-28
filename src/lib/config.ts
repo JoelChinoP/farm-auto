@@ -25,7 +25,7 @@ function localUrl(value: string) {
   return url.toString().replace(/\/$/, "");
 }
 
-const userId = Number.parseInt(process.env.GENFARMER_USER_ID ?? "30331", 10);
+const userId = Number.parseInt(process.env.GENFARMER_USER_ID ?? "30299", 10);
 if (!Number.isInteger(userId) || userId <= 0) {
   throw new Error("GENFARMER_USER_ID no es válido.");
 }

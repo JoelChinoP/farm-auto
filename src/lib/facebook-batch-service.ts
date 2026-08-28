@@ -2,6 +2,7 @@ import "server-only";
 
 import { isPackageInstalledUnchecked, listAdbDevices } from "@/lib/adb";
 import {
+  assertDevicePrepared,
   ensureAutomationDeviceReady,
   extractFacebookPostContext,
 } from "@/lib/automation-service";
@@ -10,7 +11,6 @@ import {
   getDraft,
   getFacebookBatch,
   getFacebookPost,
-  getRegistry,
   getVisibleFacebookBatch,
   listFacebookAssignments,
   listFacebookPosts,
@@ -182,18 +182,7 @@ export async function generatePostDrafts(input: {
     );
   }
 
-  for (const deviceId of input.deviceIds) {
-    if (
-      !getRegistry("device-home", deviceId) ||
-      !getRegistry("facebook-post-like-comment", deviceId)
-    ) {
-      throw new AppError(
-        `Prepara las automatizaciones del dispositivo ${deviceId}.`,
-        409,
-        "SETUP_REQUIRED",
-      );
-    }
-  }
+  for (const deviceId of input.deviceIds) assertDevicePrepared(deviceId);
   const genFarmerDevices = await getDevices();
   const connected = new Set(
     (await listAdbDevices())
@@ -318,8 +307,6 @@ export function approvePostDrafts(
         assignment.draft_id!,
         {
           text: byAssignment.get(assignment.id)!,
-          consentConfirmed: false,
-          recipient: "",
         },
         assignment.id,
       );

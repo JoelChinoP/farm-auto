@@ -1,8 +1,14 @@
 import { getDeviceCapabilities, listAdbDevices } from "@/lib/adb";
 import { appConfig } from "@/lib/config";
-import { listDrafts, listOperations, listRegistry } from "@/lib/db";
+import {
+  listDevicePreparation,
+  listDrafts,
+  listOperations,
+  listRegistry,
+} from "@/lib/db";
 import { getDevices, getGenFarmerHealth } from "@/lib/genfarmer";
 import { getFacebookBatchSnapshot } from "@/lib/facebook-batch-service";
+import { automationSpecs } from "@/lib/automation-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -33,6 +39,10 @@ export async function GET() {
       deepSeek: {
         configured: Boolean(appConfig.deepSeekApiKey),
         model: appConfig.deepSeekModel,
+      },
+      setup: {
+        requiredSlugs: automationSpecs.map((spec) => spec.slug),
+        devices: listDevicePreparation(),
       },
       devices,
       automations: listRegistry(),

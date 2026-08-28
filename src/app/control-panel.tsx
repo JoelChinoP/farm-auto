@@ -13,23 +13,20 @@ type Device = {
   id: string;
   state: string;
   model: string;
-  genFarmer?: { serialNo: string; name?: string };
+  genFarmer?: { serialNo: string; name?: string; index?: number };
   capabilities: null | {
     tiktok: boolean;
     facebook: boolean;
-    whatsapp: boolean;
     focusedPackage: string | null;
   };
 };
 
 type Draft = {
   id: string;
-  kind: "social_comment" | "direct_message";
-  platform: "tiktok" | "facebook" | "whatsapp";
+  kind: "social_comment";
+  platform: "tiktok" | "facebook";
   text: string;
   status: "draft" | "approved" | "running" | "sent" | "failed" | "outcome_unknown";
-  consent_confirmed: number;
-  recipient: string | null;
   error: string | null;
   created_at: string;
   sent_at: string | null;
@@ -48,6 +45,15 @@ type Operation = {
 type Snapshot = {
   health: { ok: boolean; version: string | null };
   deepSeek: { configured: boolean; model: string };
+  setup: {
+    requiredSlugs: string[];
+    devices: Array<{
+      device_id: string;
+      status: "running" | "ready" | "not_ready";
+      problem: string | null;
+      updated_at: string;
+    }>;
+  };
   devices: Device[];
   automations: Array<{ slug: string; device_id: string }>;
   drafts: Draft[];
@@ -114,7 +120,13 @@ type FacebookAllocation = {
 type ApiPayload<T> = {
   success: boolean;
   data: T;
+  code?: string;
   message?: string;
+};
+
+type SetupResult = {
+  status: "pending" | "running" | "ready" | "not_ready";
+  problem: string | null;
 };
 
 type AutomationSlug =
@@ -122,8 +134,7 @@ type AutomationSlug =
   | "open-social-content"
   | "facebook-post-like-comment"
   | "tiktok-live-tap-tap"
-  | "tiktok-post-like-comment"
-  | "whatsapp-consented";
+  | "tiktok-post-like-comment";
 
 type AutomationDefinition = {
   slug: AutomationSlug;
@@ -132,7 +143,7 @@ type AutomationDefinition = {
   title: string;
   description: string;
   file: string;
-  accent: "system" | "neutral" | "facebook" | "live" | "tiktok" | "whatsapp";
+  accent: "system" | "neutral" | "facebook" | "live" | "tiktok";
 };
 
 type RunAction = (
@@ -151,8 +162,6 @@ type WorkspaceProps = {
   busy: string | null;
   runAction: RunAction;
 };
-
-const requiredAutomations = 6;
 
 const automationDefinitions: AutomationDefinition[] = [
   {
@@ -200,15 +209,6 @@ const automationDefinitions: AutomationDefinition[] = [
     file: "tiktok-post-like-comment.genfarm",
     accent: "tiktok",
   },
-  {
-    slug: "whatsapp-consented",
-    code: "WA",
-    group: "WhatsApp",
-    title: "Mensaje consentido",
-    description: "Número, consentimiento y texto aislados de las redes sociales.",
-    file: "whatsapp-send-consented.genfarm",
-    accent: "whatsapp",
-  },
 ];
 
 const tones = [
@@ -229,7 +229,8 @@ async function api<T>(path: string, init?: RequestInit) {
   });
   const payload = (await response.json()) as ApiPayload<T>;
   if (!response.ok || !payload.success) {
-    throw new Error(payload.message || "No se pudo completar la acción.");
+    const message = payload.message || "No se pudo completar la acción.";
+    throw new Error(payload.code ? `${message} [${payload.code}]` : message);
   }
   return payload.data;
 }
@@ -243,7 +244,6 @@ function friendlyAction(kind: string) {
       "open-social-content": "Abrir contenido",
       "tiktok-live-tap-tap": "Tap tap en TikTok Live",
       "tiktok-post-like-comment": "Like y comentario en TikTok",
-      "whatsapp-consented": "Mensaje WhatsApp",
     }[kind] || kind
   );
 }
@@ -279,7 +279,6 @@ function appAvailable(definition: AutomationDefinition, device?: Device) {
   if (["live", "tiktok"].includes(definition.accent)) {
     return device.capabilities.tiktok;
   }
-  if (definition.accent === "whatsapp") return device.capabilities.whatsapp;
   if (definition.slug === "open-social-content") {
     return device.capabilities.tiktok || device.capabilities.facebook;
   }
@@ -595,8 +594,6 @@ function SocialCommentWorkspace(
             method: "PUT",
             body: JSON.stringify({
               text: draftText,
-              consentConfirmed: false,
-              recipient: "",
             }),
           },
         );
@@ -929,6 +926,11 @@ function FacebookCurrentPost({
     "completed",
     "outcome_unknown",
   ].includes(post.status) && !hasLockedAssignments;
+  const eligibleDeviceIds = new Set(eligibleDevices.map((item) => item.id));
+  const invalidDeviceIds = deviceIds.filter((id) => !eligibleDeviceIds.has(id));
+  const invalidAssignmentIds = post.assignments
+    .map((assignment) => assignment.device_id)
+    .filter((id) => !eligibleDeviceIds.has(id));
 
   function toggleDevice(deviceId: string) {
     setDeviceIds((current) => {
@@ -943,6 +945,18 @@ function FacebookCurrentPost({
                 count: Math.max(1, next.length),
               },
             ]
+          : currentAllocations,
+      );
+      return next;
+    });
+  }
+
+  function removeInvalidDevices() {
+    setDeviceIds((current) => {
+      const next = current.filter((id) => eligibleDeviceIds.has(id));
+      setAllocations((currentAllocations) =>
+        currentAllocations.length === 1
+          ? [{ ...currentAllocations[0], count: Math.max(1, next.length) }]
           : currentAllocations,
       );
       return next;
@@ -1139,6 +1153,19 @@ function FacebookCurrentPost({
             <span>Seleccionados</span>
             <strong>{deviceIds.length}</strong>
           </div>
+          {invalidDeviceIds.length > 0 && (
+            <div className="inline-error invalid-device-warning">
+              <span>
+                {invalidDeviceIds.length} dispositivo(s) dejaron de estar listos. Retíralos o
+                vuelve a prepararlos antes de continuar.
+              </span>
+              {editable && (
+                <button type="button" className="text-button" onClick={removeInvalidDevices}>
+                  Retirar no listos
+                </button>
+              )}
+            </div>
+          )}
         </section>
 
         <section className="facebook-allocation-panel">
@@ -1244,6 +1271,7 @@ function FacebookCurrentPost({
                 !deepSeekConfigured ||
                 context.trim().length < 5 ||
                 !deviceIds.length ||
+                invalidDeviceIds.length > 0 ||
                 allocatedCount !== deviceIds.length
               }
             >
@@ -1352,6 +1380,7 @@ function FacebookCurrentPost({
                 disabled={
                   Boolean(busy) ||
                   !draftsComplete ||
+                  invalidAssignmentIds.length > 0 ||
                   post.assignments.some(
                     (assignment) => (comments[assignment.id] || "").trim().length < 2,
                   )
@@ -1372,10 +1401,21 @@ function FacebookCurrentPost({
                 type="button"
                 className="button danger"
                 onClick={executeAll}
-                disabled={Boolean(busy)}
+                disabled={Boolean(busy) || invalidAssignmentIds.length > 0}
               >
                 {busy === "facebook-execute-batch" ? "Ejecutando dispositivos..." : "Ejecutar todos automáticamente"}
               </button>
+              {invalidAssignmentIds.length > 0 && (
+                <div className="inline-error invalid-device-warning">
+                  <span>
+                    Hay {invalidAssignmentIds.length} dispositivo(s) no listos. Prepáralos antes
+                    de ejecutar o continúa con la siguiente publicación.
+                  </span>
+                  <button type="button" className="text-button" onClick={skipPost}>
+                    Omitir publicación
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1429,14 +1469,20 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
       (automation) => `${automation.device_id}\0${automation.slug}`,
     ) ?? [],
   );
+  const prepared = new Set(
+    props.snapshot?.setup.devices
+      .filter((status) => status.status === "ready")
+      .map((status) => status.device_id) ?? [],
+  );
+  const requiredSlugs = props.snapshot?.setup.requiredSlugs ?? [];
   const eligibleDevices =
     props.snapshot?.devices.filter(
       (device) =>
         device.state === "device" &&
         Boolean(device.genFarmer) &&
         Boolean(device.capabilities?.facebook) &&
-        registered.has(`${device.id}\0device-home`) &&
-        registered.has(`${device.id}\0facebook-post-like-comment`),
+        prepared.has(device.id) &&
+        requiredSlugs.every((slug) => registered.has(`${device.id}\0${slug}`)),
     ) ?? [];
   const completed = batch?.posts.filter(
     (post) => post.status === "completed" || post.status === "skipped",
@@ -1698,287 +1744,12 @@ function TikTokLiveWorkspace(props: WorkspaceProps) {
   );
 }
 
-function WhatsAppWorkspace(props: WorkspaceProps) {
-  const [context, setContext] = useState("");
-  const [intent, setIntent] = useState("");
-  const [tone, setTone] = useState<(typeof tones)[number][0]>("amable");
-  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
-  const [draftText, setDraftText] = useState("");
-  const [recipient, setRecipient] = useState("");
-  const [consent, setConsent] = useState(false);
-  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  const drafts =
-    props.snapshot?.drafts.filter(
-      (draft) => draft.kind === "direct_message" && draft.platform === "whatsapp",
-    ) ?? [];
-  const activeDraft = drafts.find((draft) => draft.id === activeDraftId) ?? null;
-  const installed = Boolean(props.device?.capabilities?.whatsapp);
-  const currentStep: 1 | 2 | 3 | 4 = !activeDraft
-    ? 1
-    : activeDraft.status === "draft"
-      ? 2
-      : activeDraft.status === "approved"
-        ? 3
-        : 4;
-
-  function selectDraft(draft: Draft) {
-    setActiveDraftId(draft.id);
-    setDraftText(draft.text);
-    setRecipient(draft.recipient || "");
-    setConsent(Boolean(draft.consent_confirmed));
-  }
-
-  async function generate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await props.runAction(
-      "whatsapp-generate",
-      async () => {
-        const result = await api<{ draft: Draft }>("/api/messages/draft", {
-          method: "POST",
-          body: JSON.stringify({
-            kind: "direct_message",
-            platform: "whatsapp",
-            context,
-            intent,
-            tone,
-          }),
-        });
-        selectDraft(result.draft);
-      },
-      "Borrador de WhatsApp generado. Revisa destinatario, texto y consentimiento.",
-    );
-  }
-
-  async function approve() {
-    if (!activeDraft) return;
-    await props.runAction(
-      "whatsapp-approve",
-      () =>
-        api(`/api/messages/${activeDraft.id}/approve`, {
-          method: "PUT",
-          body: JSON.stringify({
-            text: draftText,
-            consentConfirmed: consent,
-            recipient,
-          }),
-        }),
-      "Mensaje y consentimiento aprobados.",
-    );
-  }
-
-  async function send() {
-    if (!activeDraft) return;
-    await props.runAction(
-      "whatsapp-send",
-      () =>
-        api(`/api/messages/${activeDraft.id}/send`, {
-          method: "POST",
-          body: JSON.stringify({ deviceId: props.selectedDevice }),
-        }),
-      "Mensaje de WhatsApp enviado una sola vez.",
-    );
-  }
-
-  return (
-    <WorkspaceShell {...props} latest={latest}>
-      <WorkflowSteps current={currentStep} />
-      <div className="whatsapp-workspace-grid">
-        <div className="workspace-explainer whatsapp-explainer">
-          <p className="eyebrow">Canal directo</p>
-          <h3>Consentimiento antes que envío.</h3>
-          <p>
-            Esta interfaz nunca usa enlaces sociales. El número internacional y la
-            confirmación de consentimiento pertenecen solo a este mensaje.
-          </p>
-          <div className="consent-boundary">
-            <span>WA</span>
-            <div>
-              <strong>Bloqueo obligatorio</strong>
-              <small>Sin consentimiento no se puede aprobar.</small>
-            </div>
-          </div>
-          <div className="requirement-stack">
-            <Requirement ok={props.ready}>Automatización preparada</Requirement>
-            <Requirement ok={installed}>WhatsApp instalado</Requirement>
-          </div>
-        </div>
-        <div className="draft-column">
-          {!activeDraft ? (
-            <>
-              <form onSubmit={generate} className="workspace-form draft-generator">
-                <div className="subheading">
-                  <span>01</span>
-                  <div>
-                    <strong>Brief del mensaje</strong>
-                    <small>DeepSeek no recibe ni necesita el número.</small>
-                  </div>
-                </div>
-                <label className="field">
-                  <span>Contexto real</span>
-                  <textarea
-                    value={context}
-                    onChange={(event) => setContext(event.target.value)}
-                    placeholder="Explica la conversación previa y la relación con el destinatario."
-                    minLength={5}
-                    maxLength={1200}
-                    rows={4}
-                    required
-                  />
-                </label>
-                <div className="form-row">
-                  <label className="field">
-                    <span>Intención</span>
-                    <input
-                      value={intent}
-                      onChange={(event) => setIntent(event.target.value)}
-                      placeholder="Ej. confirmar la hora acordada"
-                      minLength={3}
-                      maxLength={300}
-                      required
-                    />
-                  </label>
-                  <label className="field tone-field">
-                    <span>Tono</span>
-                    <select
-                      value={tone}
-                      onChange={(event) =>
-                        setTone(event.target.value as (typeof tones)[number][0])
-                      }
-                    >
-                      {tones.map(([value, label]) => (
-                        <option value={value} key={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <button
-                  className="button ink full"
-                  disabled={Boolean(props.busy) || !props.snapshot?.deepSeek.configured}
-                >
-                  {props.busy === "whatsapp-generate"
-                    ? "Redactando..."
-                    : "Generar mensaje con DeepSeek"}
-                </button>
-              </form>
-              <DraftHistory drafts={drafts} onSelect={selectDraft} />
-            </>
-          ) : (
-            <div className="draft-review independent-review">
-              <div className="draft-meta">
-                <div>
-                  <span className={`pill ${activeDraft.status}`}>
-                    {friendlyStatus(activeDraft.status)}
-                  </span>
-                  <small>WhatsApp · {new Date(activeDraft.created_at).toLocaleString("es-PE")}</small>
-                </div>
-                <button
-                  type="button"
-                  className="text-button"
-                  onClick={() => {
-                    setActiveDraftId(null);
-                    setDraftText("");
-                    setRecipient("");
-                    setConsent(false);
-                  }}
-                >
-                  Nuevo borrador
-                </button>
-              </div>
-              <label className="field">
-                <span>Número internacional, sin +</span>
-                <input
-                  inputMode="numeric"
-                  value={recipient}
-                  onChange={(event) => setRecipient(event.target.value)}
-                  placeholder="51987654321"
-                  maxLength={24}
-                  disabled={activeDraft.status !== "draft"}
-                />
-              </label>
-              <label className="field">
-                <span>Mensaje editable</span>
-                <textarea
-                  value={draftText}
-                  onChange={(event) => setDraftText(event.target.value)}
-                  rows={6}
-                  minLength={2}
-                  maxLength={500}
-                  disabled={["running", "sent", "failed", "outcome_unknown"].includes(activeDraft.status)}
-                />
-                <small className="field-counter">{draftText.length}/500</small>
-              </label>
-              {activeDraft.status === "draft" && (
-                <label className="consent-check consent-card">
-                  <input
-                    type="checkbox"
-                    checked={consent}
-                    onChange={(event) => setConsent(event.target.checked)}
-                  />
-                  <span>
-                    <strong>Confirmo el consentimiento</strong>
-                    Esta persona aceptó recibir este mensaje por WhatsApp.
-                  </span>
-                </label>
-              )}
-              {activeDraft.error && <p className="inline-error">{activeDraft.error}</p>}
-              {activeDraft.status === "draft" && (
-                <button
-                  type="button"
-                  className="button primary full"
-                  onClick={approve}
-                  disabled={
-                    Boolean(props.busy) ||
-                    !consent ||
-                    recipient.trim().length < 8 ||
-                    draftText.trim().length < 2
-                  }
-                >
-                  {props.busy === "whatsapp-approve"
-                    ? "Aprobando..."
-                    : "Aprobar número, texto y consentimiento"}
-                </button>
-              )}
-              {activeDraft.status === "approved" && (
-                <div className="execution-box whatsapp-execution">
-                  <div className="execution-warning">
-                    <strong>Envío directo</strong>
-                    <span>Destinatario: +{activeDraft.recipient}</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="button danger"
-                    onClick={send}
-                    disabled={Boolean(props.busy) || !props.ready || !installed}
-                  >
-                    {props.busy === "whatsapp-send" ? "Enviando..." : "Enviar una sola vez"}
-                  </button>
-                </div>
-              )}
-              {activeDraft.status === "sent" && (
-                <div className="completion-box">
-                  <strong>Mensaje enviado</strong>
-                  <span>El registro impide repetir este borrador accidentalmente.</span>
-                </div>
-              )}
-              {activeDraft.status === "failed" && (
-                <div className="failure-box">
-                  <strong>Envío no completado</strong>
-                  <span>Crea un borrador nuevo antes de intentar otra entrega.</span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </WorkspaceShell>
-  );
-}
-
 export function ControlPanel() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selectedDevice, setSelectedDevice] = useState("");
+  const [setupDeviceIds, setSetupDeviceIds] = useState<string[]>([]);
+  const [setupQuery, setSetupQuery] = useState("");
+  const [setupResults, setSetupResults] = useState<Record<string, SetupResult>>({});
   const [activeAutomation, setActiveAutomation] =
     useState<AutomationSlug>("open-social-content");
   const [busy, setBusy] = useState<string | null>(null);
@@ -1996,6 +1767,9 @@ export function ControlPanel() {
           data.devices.some((device) => device.id === current)
             ? current
             : data.devices.find((device) => device.state === "device")?.id || "",
+        );
+        setSetupDeviceIds((current) =>
+          current.filter((id) => data.devices.some((device) => device.id === id)),
         );
       });
     } catch {
@@ -2027,15 +1801,92 @@ export function ControlPanel() {
   }, []);
 
   const device = snapshot?.devices.find((item) => item.id === selectedDevice);
+  const requiredAutomations = snapshot?.setup.requiredSlugs ?? [];
   const registeredSlugs = new Set(
     snapshot?.automations
       .filter((item) => item.device_id === selectedDevice)
       .map((item) => item.slug) ?? [],
   );
-  const setupCount = registeredSlugs.size;
-  const isReady = setupCount >= requiredAutomations;
+  const setupCount = requiredAutomations.filter((slug) => registeredSlugs.has(slug)).length;
+  const isReady =
+    requiredAutomations.length > 0 &&
+    requiredAutomations.every((slug) => registeredSlugs.has(slug));
+  const orderedDevices = [...(snapshot?.devices ?? [])].sort(
+    (left, right) =>
+      (left.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) -
+        (right.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) ||
+      left.model.localeCompare(right.model, "es") ||
+      left.id.localeCompare(right.id),
+  );
+  const normalizedSetupQuery = setupQuery.trim().toLocaleLowerCase("es");
+  const visibleSetupDevices = orderedDevices.filter((item) => {
+    if (!normalizedSetupQuery) return true;
+    return [
+      item.id,
+      item.model,
+      item.genFarmer?.serialNo,
+      item.genFarmer?.name,
+      item.genFarmer?.index === undefined
+        ? undefined
+        : `gf #${item.genFarmer.index} ${item.genFarmer.index}`,
+    ].some((value) => value?.toLocaleLowerCase("es").includes(normalizedSetupQuery));
+  });
+
+  function preparationResult(item: Device): SetupResult {
+    const current = setupResults[item.id];
+    if (current?.status === "pending" || current?.status === "running") return current;
+    if (item.state !== "device") {
+      return { status: "not_ready", problem: `ADB informa estado ${item.state}.` };
+    }
+    if (!item.genFarmer) {
+      return { status: "not_ready", problem: "GenFarmer no reconoce este serial ADB." };
+    }
+    if (!requiredAutomations.length) {
+      return { status: "pending", problem: "Cargando el manifiesto de preparación." };
+    }
+
+    const deviceSlugs = new Set(
+      snapshot?.automations
+        .filter((automation) => automation.device_id === item.id)
+        .map((automation) => automation.slug) ?? [],
+    );
+    const missing = requiredAutomations.filter((slug) => !deviceSlugs.has(slug));
+    if (missing.length) {
+      return {
+        status: "not_ready",
+        problem: `Faltan ${missing.length} de ${requiredAutomations.length} paquetes.`,
+      };
+    }
+    if (current) return current;
+    const persisted = snapshot?.setup.devices.find((status) => status.device_id === item.id);
+    if (persisted) {
+      return {
+        status: persisted.status,
+        problem: persisted.problem?.includes("task_runs.user_id")
+          ? "La preparación anterior quedó obsoleta; vuelve a preparar este dispositivo."
+          : persisted.problem,
+      };
+    }
+    return {
+      status: "not_ready",
+      problem: "Paquetes registrados; falta verificar la ejecución de Home.",
+    };
+  }
+
+  const activePreparationReady = device
+    ? preparationResult(device).status === "ready"
+    : false;
+
+  function toggleSetupDevice(deviceId: string) {
+    setSetupDeviceIds((current) =>
+      current.includes(deviceId)
+        ? current.filter((id) => id !== deviceId)
+        : [...current, deviceId],
+    );
+  }
 
   function automationReady(slug: AutomationSlug) {
+    if (!activePreparationReady) return false;
     if (slug === "device-home") return registeredSlugs.has(slug);
     return registeredSlugs.has(slug) && registeredSlugs.has("device-home");
   }
@@ -2057,16 +1908,66 @@ export function ControlPanel() {
     }
   };
 
-  async function prepareDevice() {
-    await runAction(
-      "setup",
-      () =>
-        api("/api/setup", {
-          method: "POST",
-          body: JSON.stringify({ deviceId: selectedDevice }),
-        }),
-      "Las seis automatizaciones quedaron preparadas para este dispositivo.",
+  async function prepareDevices() {
+    const queue = orderedDevices.filter((item) => setupDeviceIds.includes(item.id));
+    if (!queue.length) return;
+
+    setBusy("setup");
+    setNotice(null);
+    const pendingResults = Object.fromEntries(
+      queue.map((item) => [
+        item.id,
+        { status: "pending", problem: "En espera." } satisfies SetupResult,
+      ]),
     );
+    setSetupResults((current) => ({ ...current, ...pendingResults }));
+    let readyCount = 0;
+
+    for (const item of queue) {
+      setSetupResults((current) => ({
+        ...current,
+        [item.id]: {
+          status: "running",
+          problem: `Preparando ${requiredAutomations.length} paquetes.`,
+        },
+      }));
+      try {
+        await api("/api/setup", {
+          method: "POST",
+          body: JSON.stringify({ deviceId: item.id }),
+        });
+        setSetupResults((current) => ({
+          ...current,
+          [item.id]: { status: "ready", problem: null },
+        }));
+        readyCount += 1;
+      } catch (error) {
+        setSetupResults((current) => ({
+          ...current,
+          [item.id]: {
+            status: "not_ready",
+            problem: error instanceof Error ? error.message : "Error desconocido.",
+          },
+        }));
+      }
+    }
+
+    await loadSnapshot();
+    setSetupResults((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(
+          ([deviceId]) => !queue.some((item) => item.id === deviceId),
+        ),
+      ),
+    );
+    const failedCount = queue.length - readyCount;
+    setNotice({
+      type: failedCount ? "error" : "success",
+      text: failedCount
+        ? `${readyCount} listos y ${failedCount} no listos. Revisa el problema de cada dispositivo.`
+        : `${readyCount} dispositivos quedaron listos.`,
+    });
+    setBusy(null);
   }
 
   async function stopRun(runId: string) {
@@ -2095,7 +1996,9 @@ export function ControlPanel() {
 
       <section className="intro independent-intro">
         <div>
-          <p className="eyebrow">Seis paquetes · seis puestos de mando</p>
+          <p className="eyebrow">
+            {requiredAutomations.length || "—"} paquetes · cinco puestos de mando
+          </p>
           <h1>Cada automatización, su propia interfaz.</h1>
           <p className="intro-copy">
             Los campos, borradores y acciones quedan aislados por `.genfarm`. Ves solo lo
@@ -2125,10 +2028,12 @@ export function ControlPanel() {
             value={selectedDevice}
             onChange={(event) => setSelectedDevice(event.target.value)}
           >
-            {snapshot?.devices.length ? (
-              snapshot.devices.map((item) => (
+            {orderedDevices.length ? (
+              orderedDevices.map((item) => (
                 <option value={item.id} key={item.id}>
-                  {item.model} · {item.id}
+                  {item.genFarmer?.index === undefined
+                    ? "GF s/n"
+                    : `GF #${item.genFarmer.index}`} · {item.model} · {item.id}
                 </option>
               ))
             ) : (
@@ -2139,25 +2044,183 @@ export function ControlPanel() {
         <div className="device-facts compact-facts">
           <div>
             <span>GenFarmer</span>
-            <strong>{device?.genFarmer ? "Reconocido" : "No detectado"}</strong>
+            <strong>
+              {device?.genFarmer
+                ? `GF #${device.genFarmer.index ?? "s/n"}`
+                : "No detectado"}
+            </strong>
           </div>
           <div>
             <span>Paquetes</span>
-            <strong>{isReady ? "6 de 6 listos" : `${setupCount} de 6`}</strong>
+            <strong>
+              {isReady
+                ? `${requiredAutomations.length} de ${requiredAutomations.length} registrados`
+                : `${setupCount} de ${requiredAutomations.length}`}
+            </strong>
           </div>
           <div>
             <span>En pantalla</span>
             <strong>{device?.capabilities?.focusedPackage || "Sin lectura"}</strong>
           </div>
         </div>
-        <button
-          type="button"
-          className="button primary"
-          onClick={prepareDevice}
-          disabled={Boolean(busy) || !selectedDevice}
-        >
-          {busy === "setup" ? "Preparando seis paquetes..." : isReady ? "Verificar paquetes" : "Preparar los seis"}
-        </button>
+      </section>
+
+      <section className="device-preparation" aria-labelledby="device-preparation-title">
+        <header className="preparation-heading">
+          <div>
+            <p className="eyebrow">Preparación por lote</p>
+            <h2 id="device-preparation-title">Selecciona y verifica dispositivos</h2>
+            <p>La búsqueda es local y conserva la numeración original de GenFarmer.</p>
+          </div>
+          <strong>{setupDeviceIds.length} seleccionados</strong>
+        </header>
+        <div className="preparation-grid">
+          <div className="setup-picker">
+            <label className="field">
+              <span>Buscar por número GF, modelo o serial</span>
+              <input
+                type="search"
+                value={setupQuery}
+                onChange={(event) => setSetupQuery(event.target.value)}
+                placeholder="Ej. GF #7 o 988c..."
+              />
+            </label>
+            <div className="setup-picker-actions">
+              <button
+                type="button"
+                className="text-button"
+                onClick={() =>
+                  setSetupDeviceIds((current) => [
+                    ...new Set([...current, ...visibleSetupDevices.map((item) => item.id)]),
+                  ])
+                }
+                disabled={!visibleSetupDevices.length || busy === "setup"}
+              >
+                Seleccionar visibles
+              </button>
+              <button
+                type="button"
+                className="text-button danger-text"
+                onClick={() => setSetupDeviceIds([])}
+                disabled={!setupDeviceIds.length || busy === "setup"}
+              >
+                Limpiar
+              </button>
+            </div>
+            <div className="setup-device-list">
+              {visibleSetupDevices.length ? (
+                visibleSetupDevices.map((item) => {
+                  const result = preparationResult(item);
+                  return (
+                    <label className="setup-device-option" key={item.id}>
+                      <input
+                        type="checkbox"
+                        checked={setupDeviceIds.includes(item.id)}
+                        onChange={() => toggleSetupDevice(item.id)}
+                        disabled={busy === "setup"}
+                      />
+                      <span className="genfarmer-index">
+                        {item.genFarmer?.index === undefined
+                          ? "GF s/n"
+                          : `GF #${item.genFarmer.index}`}
+                      </span>
+                      <span className="setup-device-copy">
+                        <strong>{item.genFarmer?.name || item.model}</strong>
+                        <small>{item.id}</small>
+                      </span>
+                      <span
+                        className={`pill ${
+                          result.status === "ready"
+                            ? "succeeded"
+                            : result.status === "not_ready"
+                              ? "failed"
+                              : result.status
+                        }`}
+                      >
+                        {result.status === "ready"
+                          ? "Listo"
+                          : result.status === "not_ready"
+                            ? "No listo"
+                            : result.status === "running"
+                              ? "Preparando"
+                              : "Pendiente"}
+                      </span>
+                    </label>
+                  );
+                })
+              ) : (
+                <div className="empty-state">No hay coincidencias locales.</div>
+              )}
+            </div>
+          </div>
+          <div className="setup-results" aria-live="polite">
+            <div className="setup-results-heading">
+              <div>
+                <span>Resultados</span>
+                <strong>Listos y problemas detectados</strong>
+              </div>
+              <button
+                type="button"
+                className="button primary"
+                onClick={prepareDevices}
+                disabled={Boolean(busy) || !setupDeviceIds.length}
+              >
+                {busy === "setup"
+                  ? "Preparando selección..."
+                  : `Preparar ${setupDeviceIds.length || ""} dispositivo${
+                      setupDeviceIds.length === 1 ? "" : "s"
+                    }`}
+              </button>
+            </div>
+            <div className="setup-result-list">
+              {setupDeviceIds.length ? (
+                orderedDevices
+                  .filter((item) => setupDeviceIds.includes(item.id))
+                  .map((item) => {
+                    const result = preparationResult(item);
+                    return (
+                      <article className="setup-result-row" key={item.id}>
+                        <span className="genfarmer-index">
+                          {item.genFarmer?.index === undefined
+                            ? "GF s/n"
+                            : `GF #${item.genFarmer.index}`}
+                        </span>
+                        <div>
+                          <strong>{item.genFarmer?.name || item.model}</strong>
+                          <code>{item.id}</code>
+                          <small>
+                            {result.problem ||
+                              `${requiredAutomations.length} paquetes y Home verificados.`}
+                          </small>
+                        </div>
+                        <span
+                          className={`pill ${
+                            result.status === "ready"
+                              ? "succeeded"
+                              : result.status === "not_ready"
+                                ? "failed"
+                                : result.status
+                          }`}
+                        >
+                          {result.status === "ready"
+                            ? "Listo"
+                            : result.status === "not_ready"
+                              ? "No listo"
+                              : result.status === "running"
+                                ? "Preparando"
+                                : "Pendiente"}
+                        </span>
+                      </article>
+                    );
+                  })
+              ) : (
+                <div className="empty-state">
+                  Selecciona uno o más dispositivos para ver su diagnóstico.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
       </section>
 
       {notice && (
@@ -2239,16 +2302,13 @@ export function ControlPanel() {
               if (definition.slug === "tiktok-live-tap-tap") {
                 return <TikTokLiveWorkspace {...commonProps} key={definition.slug} />;
               }
-              if (definition.slug === "tiktok-post-like-comment") {
-                return (
-                  <SocialCommentWorkspace
-                    {...commonProps}
-                    platform="tiktok"
-                    key={definition.slug}
-                  />
-                );
-              }
-              return <WhatsAppWorkspace {...commonProps} key={definition.slug} />;
+              return (
+                <SocialCommentWorkspace
+                  {...commonProps}
+                  platform="tiktok"
+                  key={definition.slug}
+                />
+              );
             })}
           </div>
         </div>

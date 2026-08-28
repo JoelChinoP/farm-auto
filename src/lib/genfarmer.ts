@@ -7,6 +7,7 @@ export type GenFarmerDevice = {
   serialNo: string;
   currentDeviceId: string;
   name?: string;
+  index?: number;
   connectionType?: string;
   width?: number;
   height?: number;
@@ -30,6 +31,7 @@ export type TaskVariable = {
 
 export type GenFarmerTask = {
   id: string;
+  userId: number;
   appId: string;
   name: string;
   input: unknown[];
@@ -117,6 +119,78 @@ export async function getGenFarmerHealth() {
     return { ok: response.ok, version: (await response.text()).trim() };
   } catch {
     return { ok: false, version: null };
+  }
+}
+
+export async function assertGenFarmerAuthenticated() {
+  const payload = await request<{
+    id?: number;
+    is_valid?: boolean;
+    plan?: { id?: number; name?: string; plan_expired_at?: string };
+    data?: {
+      id?: number;
+      is_valid?: boolean;
+      plan?: { id?: number; name?: string; plan_expired_at?: string };
+    };
+  }>("/backend/auth/me").catch((error: unknown) => {
+    if (
+      error instanceof AppError &&
+      (error.status === 401 || /unauthorized|token invalid|re-login/i.test(error.message))
+    ) {
+      throw new AppError(
+        "GenFarmer no tiene una sesión válida. Vuelve a iniciar sesión en GenFarmer.",
+        409,
+        "GENFARMER_AUTH_REQUIRED",
+      );
+    }
+    throw error;
+  });
+
+  const user = payload.data ?? payload;
+  if (user.id !== appConfig.genFarmerUserId) {
+    throw new AppError(
+      `GenFarmer inició sesión con el usuario ${user.id ?? "desconocido"}, pero el panel usa ${appConfig.genFarmerUserId}.`,
+      409,
+      "GENFARMER_USER_MISMATCH",
+    );
+  }
+
+  const planExpiresAt = user.plan?.plan_expired_at;
+  if (planExpiresAt && Date.parse(planExpiresAt) <= Date.now()) {
+    throw new AppError(
+      "El plan de GenFarmer está vencido.",
+      409,
+      "GENFARMER_PLAN_EXPIRED",
+      { planExpiresAt },
+    );
+  }
+  if (user.is_valid === false) {
+    throw new AppError(
+      "El plan de GenFarmer está vigente, pero no autoriza automatizaciones en este equipo.",
+      409,
+      "GENFARMER_DEVICE_NOT_AUTHORIZED",
+      {
+        planId: user.plan?.id,
+        planName: user.plan?.name,
+        planExpiresAt,
+      },
+    );
+  }
+
+  try {
+    await request<unknown>("/backend/auth/client-ip");
+  } catch (error) {
+    if (
+      error instanceof AppError &&
+      (error.status === 401 || /unauthorized|token invalid|re-login/i.test(error.message))
+    ) {
+      throw new AppError(
+        "GenFarmer rechazó la validación de la sesión. Vuelve a iniciar sesión en GenFarmer.",
+        409,
+        "GENFARMER_AUTH_REQUIRED",
+      );
+    }
+    throw error;
   }
 }
 
@@ -215,7 +289,12 @@ export function updateTask(task: GenFarmerTask) {
 export function createRun(appId: string, taskId: string) {
   return request<GenFarmerRun>("/automation/runs", {
     method: "POST",
-    body: JSON.stringify({ appId, taskId, status: 0 }),
+    body: JSON.stringify({
+      userId: appConfig.genFarmerUserId,
+      appId,
+      taskId,
+      status: 0,
+    }),
   });
 }
 

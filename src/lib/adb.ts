@@ -138,30 +138,28 @@ async function focusedPackageUnchecked(deviceId: string) {
 
 const capabilityCache = new Map<
   string,
-  { checkedAt: number; tiktok: boolean; facebook: boolean; whatsapp: boolean }
+  { checkedAt: number; tiktok: boolean; facebook: boolean }
 >();
 
 export async function getDeviceCapabilities(deviceId: string) {
   await assertConnected(deviceId);
   let installed = capabilityCache.get(deviceId);
   if (!installed || Date.now() - installed.checkedAt > 30_000) {
-    const [tiktok, facebook, whatsapp] = await Promise.all([
+    const [tiktok, facebook] = await Promise.all([
       isPackageInstalledUnchecked(deviceId, "com.zhiliaoapp.musically").catch(
         () => false,
       ),
       isPackageInstalledUnchecked(deviceId, "com.facebook.katana").catch(
         () => false,
       ),
-      isPackageInstalledUnchecked(deviceId, "com.whatsapp").catch(() => false),
     ]);
-    installed = { checkedAt: Date.now(), tiktok, facebook, whatsapp };
+    installed = { checkedAt: Date.now(), tiktok, facebook };
     capabilityCache.set(deviceId, installed);
   }
   const focusedPackage = await focusedPackageUnchecked(deviceId).catch(() => null);
   return {
     tiktok: installed.tiktok,
     facebook: installed.facebook,
-    whatsapp: installed.whatsapp,
     focusedPackage,
   };
 }
