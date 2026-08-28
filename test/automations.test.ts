@@ -5,6 +5,7 @@ import test from "node:test";
 
 const files = [
   "device-home.genfarm",
+  "facebook-context-extract.genfarm",
   "facebook-post-like-comment.genfarm",
   "open-social-content.genfarm",
   "tiktok-live-tap-tap.genfarm",
@@ -139,8 +140,10 @@ test("facebook-post-like-comment preserves an existing like and uses approved te
   );
   const likeScript = String(ensureLike?.data.options?.script);
   assert.match(likeScript, /likedXpath/);
-  assert.match(likeScript, /android\.widget\.Button/);
+  assert.match(likeScript, /Ahora no/);
+  assert.match(likeScript, /commentControl/);
   assert.match(likeScript, /contains\(@content-desc,'Me gusta'\)/);
+  assert.match(likeScript, /reactionXpath/);
   assert.match(likeScript, /likeButton\.click/);
 
   const typeComment = parsed.script.flow.nodes.find(
@@ -163,6 +166,34 @@ test("facebook-post-like-comment preserves an existing like and uses approved te
     parsed.script.flow.nodes.filter((node) => node.data.action === "Touch").length,
     2,
   );
+});
+
+test("facebook-context-extract stores context from GenFarmer UIAutomator", async () => {
+  const text = await readFile(
+    resolve(process.cwd(), "automations", "facebook-context-extract.genfarm"),
+    "utf8",
+  );
+  const parsed = JSON.parse(text) as AutomationPackage;
+  const extract = parsed.script.flow.nodes.find(
+    (node) => node.data.action === "Javascript",
+  );
+  const insert = parsed.script.flow.nodes.find(
+    (node) => node.data.action === "InsertData",
+  );
+
+  assert.match(
+    String(extract?.data.options?.script),
+    /clientUiAutomator\.dumpWindowHierarchy/,
+  );
+  assert.match(String(extract?.data.options?.script), /Ahora no/);
+  assert.match(String(extract?.data.options?.script), /Omitir/);
+  assert.match(String(extract?.data.options?.script), /Ver más/);
+  assert.match(String(extract?.data.options?.script), /facebookContext/);
+  assert.doesNotMatch(String(extract?.data.options?.script), /\$\{context\}/);
+  assert.deepEqual(insert?.data.options?.dataRows, [
+    { column: "outputType", value: "facebook-context-v1" },
+    { column: "context", value: "${facebookContext}" },
+  ]);
 });
 
 test("tiktok-live-tap-tap opens TikTok and loops a bounded double touch", async () => {

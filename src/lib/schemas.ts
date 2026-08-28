@@ -76,10 +76,95 @@ export const sendDraftSchema = z.object({
   contentUrl: z.string().trim().url().max(2048).optional(),
 });
 
+export const facebookBatchSchema = z
+  .object({
+    urls: z.array(z.string().trim().url().max(2048)).min(1).max(50),
+  })
+  .strict();
+
+export const facebookExtractSchema = deviceActionSchema.strict();
+
+const facebookAllocationSchema = z
+  .object({
+    intent: z.string().trim().min(3).max(300),
+    tone: z.enum(["amable", "curioso", "entusiasta", "casual"]),
+    count: z.number().int().min(1).max(100),
+  })
+  .strict();
+
+export const facebookDraftsSchema = z
+  .object({
+    context: z.string().trim().min(5).max(1200),
+    deviceIds: z.array(deviceId).min(1).max(100),
+    allocations: z.array(facebookAllocationSchema).min(1).max(20),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (new Set(input.deviceIds).size !== input.deviceIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["deviceIds"],
+        message: "Cada dispositivo solo puede seleccionarse una vez.",
+      });
+    }
+    const allocated = input.allocations.reduce((total, item) => total + item.count, 0);
+    if (allocated !== input.deviceIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["allocations"],
+        message: "La suma de cantidades debe coincidir con los dispositivos seleccionados.",
+      });
+    }
+  });
+
+export const facebookApproveSchema = z
+  .object({
+    comments: z
+      .array(
+        z
+          .object({
+            assignmentId: z.string().uuid(),
+            text: z.string().trim().min(2).max(500),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+  })
+  .strict();
+
+export const facebookReconcileSchema = z
+  .object({
+    outcomes: z
+      .array(
+        z
+          .object({
+            assignmentId: z.string().uuid(),
+            outcome: z.enum(["sent", "not_sent"]),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (new Set(input.outcomes.map((item) => item.assignmentId)).size !== input.outcomes.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["outcomes"],
+        message: "Cada asignación solo puede verificarse una vez.",
+      });
+    }
+  });
+
 export function normalizeContentUrl(
   platform: "tiktok" | "facebook",
   value: string,
 ) {
+  if (/['\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error("El enlace contiene caracteres no permitidos.");
+  }
   const url = new URL(value);
   if (url.protocol !== "https:") {
     throw new Error("El enlace debe usar HTTPS.");
@@ -104,6 +189,42 @@ export function normalizeContentUrl(
 
   url.hash = "";
   return url.toString();
+}
+
+export function normalizeFacebookUrls(values: string[]) {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const url = normalizeContentUrl("facebook", value);
+    if (!seen.has(url)) {
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+export function expandFacebookAllocations(
+  deviceIds: string[],
+  allocations: Array<{ intent: string; tone: string; count: number }>,
+) {
+  const expanded: Array<{ deviceId: string; intent: string; tone: string }> = [];
+  let deviceIndex = 0;
+  for (const allocation of allocations) {
+    for (let index = 0; index < allocation.count; index++) {
+      const deviceId = deviceIds[deviceIndex++];
+      if (!deviceId) throw new Error("La distribución excede los dispositivos elegidos.");
+      expanded.push({
+        deviceId,
+        intent: allocation.intent,
+        tone: allocation.tone,
+      });
+    }
+  }
+  if (deviceIndex !== deviceIds.length) {
+    throw new Error("La distribución no cubre todos los dispositivos elegidos.");
+  }
+  return expanded;
 }
 
 export function normalizePhone(value: string) {

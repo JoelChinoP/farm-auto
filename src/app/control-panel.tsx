@@ -27,7 +27,7 @@ type Draft = {
   kind: "social_comment" | "direct_message";
   platform: "tiktok" | "facebook" | "whatsapp";
   text: string;
-  status: "draft" | "approved" | "sent" | "failed";
+  status: "draft" | "approved" | "running" | "sent" | "failed" | "outcome_unknown";
   consent_confirmed: number;
   recipient: string | null;
   error: string | null;
@@ -52,7 +52,63 @@ type Snapshot = {
   automations: Array<{ slug: string; device_id: string }>;
   drafts: Draft[];
   operations: Operation[];
+  facebookBatch: FacebookBatch | null;
   polledAt: string;
+};
+
+type FacebookAssignment = {
+  id: string;
+  device_id: string;
+  intent: string;
+  tone: (typeof tones)[number][0];
+  status:
+    | "pending"
+    | "generating"
+    | "draft"
+    | "approved"
+    | "running"
+    | "sent"
+    | "failed"
+    | "outcome_unknown";
+  error: string | null;
+  draft: Draft | null;
+};
+
+type FacebookPost = {
+  id: string;
+  position: number;
+  url: string;
+  extracted_context: string | null;
+  context: string | null;
+  status:
+    | "queued"
+    | "extracting"
+    | "context_ready"
+    | "generating"
+    | "drafts_ready"
+    | "approving"
+    | "approved"
+    | "running"
+    | "completed"
+    | "partial_failed"
+    | "outcome_unknown"
+    | "skipped";
+  error: string | null;
+  updated_at: string;
+  assignments: FacebookAssignment[];
+};
+
+type FacebookBatch = {
+  id: string;
+  status: "active" | "completed" | "cancelled";
+  posts: FacebookPost[];
+};
+
+type FacebookAllocation = {
+  id: string;
+  intent: string;
+  tone: (typeof tones)[number][0];
+  count: number;
 };
 
 type ApiPayload<T> = {
@@ -165,7 +221,11 @@ const tones = [
 async function api<T>(path: string, init?: RequestInit) {
   const response = await fetch(path, {
     ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
+    headers: {
+      "Content-Type": "application/json",
+      "X-GenFarmer-Client": "control-panel",
+      ...init?.headers,
+    },
   });
   const payload = (await response.json()) as ApiPayload<T>;
   if (!response.ok || !payload.success) {
@@ -179,6 +239,7 @@ function friendlyAction(kind: string) {
     {
       "device-home": "Pantalla de inicio",
       "facebook-post-like-comment": "Like y comentario en Facebook",
+      "facebook-context-extract": "Extraer contexto de Facebook",
       "open-social-content": "Abrir contenido",
       "tiktok-live-tap-tap": "Tap tap en TikTok Live",
       "tiktok-post-like-comment": "Like y comentario en TikTok",
@@ -196,6 +257,7 @@ function friendlyStatus(status: Operation["status"] | Draft["status"]) {
       failed: "Falló",
       draft: "Borrador",
       approved: "Aprobado",
+      outcome_unknown: "Verificación manual",
       sent: "Enviado",
     }[status] || status
   );
@@ -689,7 +751,7 @@ function SocialCommentWorkspace(
                   rows={6}
                   minLength={2}
                   maxLength={500}
-                  disabled={["sent", "failed"].includes(activeDraft.status)}
+                  disabled={["running", "sent", "failed", "outcome_unknown"].includes(activeDraft.status)}
                 />
                 <small className="field-counter">{draftText.length}/500</small>
               </label>
@@ -750,6 +812,748 @@ function SocialCommentWorkspace(
             </div>
           )}
         </div>
+      </div>
+    </WorkspaceShell>
+  );
+}
+
+function facebookPostStatus(status: FacebookPost["status"]) {
+  return (
+    {
+      queued: "Pendiente",
+      extracting: "Extrayendo contexto",
+      context_ready: "Contexto listo",
+      generating: "Generando",
+      drafts_ready: "En revisión",
+      approving: "Aprobando",
+      approved: "Aprobada",
+      running: "Ejecutando",
+      completed: "Completada",
+      partial_failed: "Requiere atención",
+      outcome_unknown: "Verificación manual",
+      skipped: "Omitida",
+    }[status] || status
+  );
+}
+
+function allocationsFromAssignments(
+  assignments: FacebookAssignment[],
+  defaultCount: number,
+): FacebookAllocation[] {
+  if (!assignments.length) {
+    return [
+      {
+        id: "allocation-primary",
+        intent: "Opinar sobre un elemento concreto de la publicación",
+        tone: "casual",
+        count: Math.max(1, defaultCount),
+      },
+    ];
+  }
+  const allocations: FacebookAllocation[] = [];
+  for (const assignment of assignments) {
+    const existing = allocations.find(
+      (allocation) =>
+        allocation.intent === assignment.intent && allocation.tone === assignment.tone,
+    );
+    if (existing) {
+      existing.count++;
+    } else {
+      allocations.push({
+        id: `allocation-${assignment.id}`,
+        intent: assignment.intent,
+        tone: assignment.tone,
+        count: 1,
+      });
+    }
+  }
+  return allocations;
+}
+
+function FacebookCurrentPost({
+  post,
+  position,
+  total,
+  eligibleDevices,
+  selectedDevice,
+  ready,
+  deepSeekConfigured,
+  busy,
+  runAction,
+}: {
+  post: FacebookPost;
+  position: number;
+  total: number;
+  eligibleDevices: Device[];
+  selectedDevice: string;
+  ready: boolean;
+  deepSeekConfigured: boolean;
+  busy: string | null;
+  runAction: RunAction;
+}) {
+  const assignedDeviceIds = post.assignments.map((assignment) => assignment.device_id);
+  const initialDeviceIds = assignedDeviceIds.length
+    ? assignedDeviceIds
+    : eligibleDevices.map((device) => device.id);
+  const [context, setContext] = useState(
+    post.context || post.extracted_context || "",
+  );
+  const [deviceIds, setDeviceIds] = useState(initialDeviceIds);
+  const [allocations, setAllocations] = useState(() =>
+    allocationsFromAssignments(post.assignments, initialDeviceIds.length),
+  );
+  const [comments, setComments] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      post.assignments.map((assignment) => [assignment.id, assignment.draft?.text || ""]),
+    ),
+  );
+  const [verifiedOutcomes, setVerifiedOutcomes] = useState<
+    Record<string, "" | "sent" | "not_sent">
+  >({});
+  const allocatedCount = allocations.reduce(
+    (totalCount, allocation) => totalCount + allocation.count,
+    0,
+  );
+  const hasLockedAssignments = post.assignments.some(
+    (assignment) => ["sent", "outcome_unknown"].includes(assignment.status),
+  );
+  const draftsComplete =
+    post.assignments.length > 0 &&
+    post.assignments.every((assignment) => assignment.draft);
+  const editable = ![
+    "extracting",
+    "generating",
+    "approving",
+    "approved",
+    "running",
+    "completed",
+    "outcome_unknown",
+  ].includes(post.status) && !hasLockedAssignments;
+
+  function toggleDevice(deviceId: string) {
+    setDeviceIds((current) => {
+      const next = current.includes(deviceId)
+        ? current.filter((id) => id !== deviceId)
+        : [...current, deviceId];
+      setAllocations((currentAllocations) =>
+        currentAllocations.length === 1
+          ? [
+              {
+                ...currentAllocations[0],
+                count: Math.max(1, next.length),
+              },
+            ]
+          : currentAllocations,
+      );
+      return next;
+    });
+  }
+
+  function updateAllocation(
+    id: string,
+    values: Partial<Pick<FacebookAllocation, "intent" | "tone" | "count">>,
+  ) {
+    setAllocations((current) =>
+      current.map((allocation) =>
+        allocation.id === id ? { ...allocation, ...values } : allocation,
+      ),
+    );
+  }
+
+  async function extractContext() {
+    await runAction(
+      "facebook-extract-context",
+      () =>
+        api(`/api/facebook/posts/${post.id}/extract`, {
+          method: "POST",
+          body: JSON.stringify({
+            deviceId: selectedDevice,
+            idempotencyKey: crypto.randomUUID(),
+          }),
+        }),
+      "Contexto accesible extraído. Revísalo y edítalo antes de generar.",
+    );
+  }
+
+  async function generateDrafts(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await runAction(
+      "facebook-generate-batch",
+      () =>
+        api(`/api/facebook/posts/${post.id}/drafts`, {
+          method: "POST",
+          body: JSON.stringify({
+            context,
+            deviceIds,
+            allocations: allocations.map(({ intent, tone, count }) => ({
+              intent,
+              tone,
+              count,
+            })),
+          }),
+        }),
+      `${deviceIds.length} comentarios independientes generados para revisión.`,
+    );
+  }
+
+  async function approveAll() {
+    await runAction(
+      "facebook-approve-batch",
+      () =>
+        api(`/api/facebook/posts/${post.id}/approve`, {
+          method: "POST",
+          body: JSON.stringify({
+            comments: post.assignments.map((assignment) => ({
+              assignmentId: assignment.id,
+              text: comments[assignment.id] || "",
+            })),
+          }),
+        }),
+      "Todos los comentarios quedaron aprobados para sus dispositivos.",
+    );
+  }
+
+  async function executeAll() {
+    await runAction(
+      "facebook-execute-batch",
+      () =>
+        api(`/api/facebook/posts/${post.id}/execute`, {
+          method: "POST",
+        }),
+      "La publicación terminó y la cola avanzó a la siguiente URL.",
+    );
+  }
+
+  async function skipPost() {
+    await runAction(
+      "facebook-skip-post",
+      () =>
+        api(`/api/facebook/posts/${post.id}/skip`, {
+          method: "POST",
+        }),
+      "La publicación fue omitida y la cola avanzó.",
+    );
+  }
+
+  async function reconcileOutcomes() {
+    const unknownAssignments = post.assignments.filter(
+      (assignment) => assignment.status === "outcome_unknown",
+    );
+    await runAction(
+      "facebook-reconcile-post",
+      () =>
+        api(`/api/facebook/posts/${post.id}/reconcile`, {
+          method: "POST",
+          body: JSON.stringify({
+            outcomes: unknownAssignments.map((assignment) => ({
+              assignmentId: assignment.id,
+              outcome: verifiedOutcomes[assignment.id],
+            })),
+          }),
+        }),
+      "La verificación manual quedó registrada para cada dispositivo.",
+    );
+  }
+
+  return (
+    <div className="facebook-batch-current">
+      <div className="facebook-progress-card">
+        <div>
+          <span>Publicación actual</span>
+          <strong>{position} de {total}</strong>
+        </div>
+        <span className={`pill facebook-${post.status}`}>
+          {facebookPostStatus(post.status)}
+        </span>
+      </div>
+
+      <div className="facebook-target-bar">
+        <div>
+          <span>URL bloqueada a esta etapa</span>
+          <a href={post.url} target="_blank" rel="noreferrer">{post.url}</a>
+        </div>
+        <button
+          type="button"
+          className="button secondary"
+          onClick={extractContext}
+          disabled={Boolean(busy) || !ready || !selectedDevice || !editable}
+        >
+          {busy === "facebook-extract-context" ? "Leyendo pantalla..." : "Extraer contexto con ADB"}
+        </button>
+      </div>
+
+      <form className="facebook-configuration" onSubmit={generateDrafts}>
+        <section className="facebook-context-panel">
+          <div className="subheading">
+            <span>01</span>
+            <div>
+              <strong>Contexto editable</strong>
+              <small>Texto accesible detectado en Facebook; corrige cualquier ruido visual.</small>
+            </div>
+          </div>
+          <label className="field">
+            <span>Contexto que recibirá DeepSeek</span>
+            <textarea
+              value={context}
+              onChange={(event) => setContext(event.target.value)}
+              minLength={5}
+              maxLength={1200}
+              rows={7}
+              placeholder="Extrae el contexto o descríbelo manualmente."
+              disabled={!editable}
+              required
+            />
+            <small className="field-counter">{context.length}/1200</small>
+          </label>
+        </section>
+
+        <section className="facebook-devices-panel">
+          <div className="subheading">
+            <span>02</span>
+            <div>
+              <strong>Dispositivos participantes</strong>
+              <small>Solo conectados, con Facebook y paquetes preparados.</small>
+            </div>
+          </div>
+          <div className="facebook-device-list">
+            {eligibleDevices.length ? (
+              eligibleDevices.map((device) => (
+                <label key={device.id} className="facebook-device-option">
+                  <input
+                    type="checkbox"
+                    checked={deviceIds.includes(device.id)}
+                    onChange={() => toggleDevice(device.id)}
+                    disabled={!editable}
+                  />
+                  <span>
+                    <strong>{device.model}</strong>
+                    <small>{device.id}</small>
+                  </span>
+                </label>
+              ))
+            ) : (
+              <p className="inline-error">No hay dispositivos Facebook listos.</p>
+            )}
+          </div>
+          <div className="facebook-device-total">
+            <span>Seleccionados</span>
+            <strong>{deviceIds.length}</strong>
+          </div>
+        </section>
+
+        <section className="facebook-allocation-panel">
+          <div className="subheading">
+            <span>03</span>
+            <div>
+              <strong>Distribución de intención y tono</strong>
+              <small>La cantidad total debe cubrir exactamente los dispositivos elegidos.</small>
+            </div>
+          </div>
+          <div className="facebook-allocation-list">
+            {allocations.map((allocation, index) => (
+              <div className="facebook-allocation-row" key={allocation.id}>
+                <label className="field">
+                  <span>Intención {index + 1}</span>
+                  <input
+                    value={allocation.intent}
+                    onChange={(event) =>
+                      updateAllocation(allocation.id, { intent: event.target.value })
+                    }
+                    minLength={3}
+                    maxLength={300}
+                    disabled={!editable}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span>Tono</span>
+                  <select
+                    value={allocation.tone}
+                    onChange={(event) =>
+                      updateAllocation(allocation.id, {
+                        tone: event.target.value as FacebookAllocation["tone"],
+                      })
+                    }
+                    disabled={!editable}
+                  >
+                    {tones.map(([value, label]) => (
+                      <option value={value} key={value}>{label}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Cantidad</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={allocation.count}
+                    onChange={(event) =>
+                      updateAllocation(allocation.id, {
+                        count: Number(event.target.value),
+                      })
+                    }
+                    disabled={!editable}
+                    required
+                  />
+                </label>
+                {allocations.length > 1 && editable && (
+                  <button
+                    type="button"
+                    className="text-button danger-text"
+                    onClick={() =>
+                      setAllocations((current) =>
+                        current.filter((item) => item.id !== allocation.id),
+                      )
+                    }
+                  >
+                    Quitar
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+          {editable && (
+            <button
+              type="button"
+              className="button secondary"
+              onClick={() =>
+                setAllocations((current) => [
+                  ...current,
+                  {
+                    id: crypto.randomUUID(),
+                    intent: "Hacer una pregunta concreta sobre la publicación",
+                    tone: "curioso",
+                    count: 1,
+                  },
+                ])
+              }
+            >
+              Agregar intención
+            </button>
+          )}
+          <div className={`facebook-allocation-total ${allocatedCount === deviceIds.length ? "ok" : "mismatch"}`}>
+            <span>Distribuidos {allocatedCount} / {deviceIds.length}</span>
+            <strong>{allocatedCount === deviceIds.length ? "Coincide" : "Ajusta cantidades"}</strong>
+          </div>
+          {editable && (
+            <button
+              className="button ink full"
+              disabled={
+                Boolean(busy) ||
+                !deepSeekConfigured ||
+                context.trim().length < 5 ||
+                !deviceIds.length ||
+                allocatedCount !== deviceIds.length
+              }
+            >
+              {busy === "facebook-generate-batch"
+                ? `Generando ${deviceIds.length} comentarios...`
+                : post.assignments.length
+                  ? "Regenerar comentarios independientes"
+                  : "Generar un comentario por dispositivo"}
+            </button>
+          )}
+        </section>
+      </form>
+
+      {post.assignments.length > 0 && (
+        <section className="facebook-review-panel">
+          <div className="subheading">
+            <span>04</span>
+            <div>
+              <strong>Revisión por dispositivo</strong>
+              <small>Cada comentario corresponde a una llamada y un borrador independientes.</small>
+            </div>
+          </div>
+          <div className="facebook-comment-list">
+            {post.assignments.map((assignment) => (
+              <article className="facebook-comment-card" key={assignment.id}>
+                <header>
+                  <div>
+                    <strong>{assignment.device_id}</strong>
+                    <span>{assignment.intent} · {assignment.tone}</span>
+                  </div>
+                  <span className={`pill ${assignment.status}`}>
+                    {assignment.status === "draft"
+                      ? "Borrador"
+                      : assignment.status === "sent"
+                        ? "Enviado"
+                        : assignment.status === "failed"
+                          ? "Falló"
+                          : assignment.status === "outcome_unknown"
+                            ? "Verificar"
+                          : assignment.status === "approved"
+                            ? "Aprobado"
+                            : assignment.status === "running"
+                              ? "Ejecutando"
+                              : "Generando"}
+                  </span>
+                </header>
+                {assignment.draft ? (
+                  <label className="field">
+                    <span>Comentario</span>
+                    <textarea
+                      value={comments[assignment.id] || ""}
+                      onChange={(event) =>
+                        setComments((current) => ({
+                          ...current,
+                          [assignment.id]: event.target.value,
+                        }))
+                      }
+                      minLength={2}
+                      maxLength={500}
+                      rows={3}
+                      disabled={[
+                        "approved",
+                        "running",
+                        "sent",
+                        "failed",
+                        "outcome_unknown",
+                      ].includes(assignment.status)}
+                    />
+                  </label>
+                ) : (
+                  <p className="inline-error">No se generó un borrador para este dispositivo.</p>
+                )}
+                {assignment.error && <p className="inline-error">{assignment.error}</p>}
+                {assignment.status === "outcome_unknown" && (
+                  <label className="field">
+                    <span>Resultado observado en Facebook</span>
+                    <select
+                      value={verifiedOutcomes[assignment.id] || ""}
+                      onChange={(event) =>
+                        setVerifiedOutcomes((current) => ({
+                          ...current,
+                          [assignment.id]: event.target.value as "" | "sent" | "not_sent",
+                        }))
+                      }
+                    >
+                      <option value="">Selecciona después de verificar</option>
+                      <option value="sent">El comentario sí aparece</option>
+                      <option value="not_sent">El comentario no aparece</option>
+                    </select>
+                  </label>
+                )}
+              </article>
+            ))}
+          </div>
+
+          {post.status === "drafts_ready" && (
+            <div className="facebook-approval-bar">
+              <div>
+                <strong>Revisión humana obligatoria</strong>
+                <span>Ningún dispositivo ejecutará una acción hasta aprobar todos los textos.</span>
+              </div>
+              <button
+                type="button"
+                className="button primary"
+                onClick={approveAll}
+                disabled={
+                  Boolean(busy) ||
+                  !draftsComplete ||
+                  post.assignments.some(
+                    (assignment) => (comments[assignment.id] || "").trim().length < 2,
+                  )
+                }
+              >
+                {busy === "facebook-approve-batch" ? "Aprobando..." : "Aprobar todos los comentarios"}
+              </button>
+            </div>
+          )}
+
+          {post.status === "approved" && (
+            <div className="facebook-execution-bar">
+              <div>
+                <strong>Acción pública multidispositivo</strong>
+                <span>{post.assignments.length} dispositivos darán like y publicarán su comentario asignado.</span>
+              </div>
+              <button
+                type="button"
+                className="button danger"
+                onClick={executeAll}
+                disabled={Boolean(busy)}
+              >
+                {busy === "facebook-execute-batch" ? "Ejecutando dispositivos..." : "Ejecutar todos automáticamente"}
+              </button>
+            </div>
+          )}
+
+          {post.status === "outcome_unknown" && (
+            <div className="facebook-reconciliation-bar">
+              <div>
+                <strong>Verificación manual requerida</strong>
+                <span>Revisa cada dispositivo y registra si el comentario aparece en Facebook.</span>
+              </div>
+              <button
+                type="button"
+                className="button primary"
+                onClick={reconcileOutcomes}
+                disabled={
+                  Boolean(busy) ||
+                  post.assignments
+                    .filter((assignment) => assignment.status === "outcome_unknown")
+                    .some((assignment) => !verifiedOutcomes[assignment.id])
+                }
+              >
+                {busy === "facebook-reconcile-post" ? "Guardando..." : "Guardar verificación"}
+              </button>
+            </div>
+          )}
+        </section>
+      )}
+
+      {post.error && <div className="facebook-post-error">{post.error}</div>}
+      {post.status === "partial_failed" && (
+        <div className="facebook-skip-bar">
+          <span>Corrige y regenera si aún no hubo envíos, o avanza dejando registrados los resultados.</span>
+          <button type="button" className="button secondary" onClick={skipPost} disabled={Boolean(busy)}>
+            Continuar con la siguiente URL
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FacebookBatchWorkspace(props: WorkspaceProps) {
+  const [urlsText, setUrlsText] = useState("");
+  const [replacing, setReplacing] = useState(false);
+  const batch = props.snapshot?.facebookBatch ?? null;
+  const currentPost = batch?.posts.find(
+    (post) => !["completed", "skipped"].includes(post.status),
+  );
+  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
+  const registered = new Set(
+    props.snapshot?.automations.map(
+      (automation) => `${automation.device_id}\0${automation.slug}`,
+    ) ?? [],
+  );
+  const eligibleDevices =
+    props.snapshot?.devices.filter(
+      (device) =>
+        device.state === "device" &&
+        Boolean(device.genFarmer) &&
+        Boolean(device.capabilities?.facebook) &&
+        registered.has(`${device.id}\0device-home`) &&
+        registered.has(`${device.id}\0facebook-post-like-comment`),
+    ) ?? [];
+  const completed = batch?.posts.filter(
+    (post) => post.status === "completed" || post.status === "skipped",
+  ).length ?? 0;
+  const showQueueForm = !batch || replacing;
+
+  async function createBatch(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const urls = urlsText
+      .split(/\r?\n/)
+      .map((url) => url.trim())
+      .filter(Boolean);
+    await props.runAction(
+      "facebook-create-batch",
+      async () => {
+        await api("/api/facebook/batches", {
+          method: "POST",
+          body: JSON.stringify({ urls }),
+        });
+        setReplacing(false);
+        setUrlsText("");
+      },
+      `Cola creada con ${urls.length} publicaciones de Facebook.`,
+    );
+  }
+
+  return (
+    <WorkspaceShell {...props} latest={latest}>
+      <div className="facebook-batch-workspace">
+        <header className="facebook-batch-header">
+          <div>
+            <p className="eyebrow">Cola progresiva</p>
+            <h3>Una publicación a la vez, varios dispositivos por etapa.</h3>
+            <p>Extrae, revisa, distribuye, aprueba y ejecuta antes de avanzar a la siguiente URL.</p>
+          </div>
+          {batch && (
+            <div className="facebook-batch-meter">
+              <span>Progreso</span>
+              <strong>{completed} / {batch.posts.length}</strong>
+              <div><span style={{ width: `${batch.posts.length ? (completed / batch.posts.length) * 100 : 0}%` }} /></div>
+            </div>
+          )}
+        </header>
+
+        {showQueueForm ? (
+          <form className="facebook-queue-form" onSubmit={createBatch}>
+            <div className="subheading">
+              <span>URL</span>
+              <div>
+                <strong>Lista de publicaciones</strong>
+                <small>Una URL HTTPS de Facebook por línea; se eliminan duplicados conservando el orden.</small>
+              </div>
+            </div>
+            <label className="field">
+              <span>Hasta 50 enlaces</span>
+              <textarea
+                value={urlsText}
+                onChange={(event) => setUrlsText(event.target.value)}
+                rows={8}
+                placeholder={"https://www.facebook.com/share/p/...\nhttps://fb.watch/..."}
+                required
+              />
+            </label>
+            <div className="facebook-queue-actions">
+              {batch?.status === "active" && (
+                <button type="button" className="button secondary" onClick={() => setReplacing(false)}>
+                  Conservar cola actual
+                </button>
+              )}
+              <button
+                className="button primary"
+                disabled={Boolean(props.busy) || !urlsText.trim()}
+              >
+                {props.busy === "facebook-create-batch" ? "Creando cola..." : "Iniciar cola de Facebook"}
+              </button>
+            </div>
+          </form>
+        ) : currentPost ? (
+          <>
+            <div className="facebook-queue-strip">
+              <div className="facebook-queue-items">
+                {batch.posts.map((post) => (
+                  <span
+                    key={post.id}
+                    className={`facebook-queue-item ${post.id === currentPost.id ? "current" : ""} ${post.status}`}
+                    title={post.url}
+                  >
+                    {post.position + 1}
+                  </span>
+                ))}
+              </div>
+              <button type="button" className="text-button" onClick={() => setReplacing(true)}>
+                Reemplazar cola
+              </button>
+            </div>
+            <FacebookCurrentPost
+              key={`${currentPost.id}-${currentPost.updated_at}`}
+              post={currentPost}
+              position={currentPost.position + 1}
+              total={batch.posts.length}
+              eligibleDevices={eligibleDevices}
+              selectedDevice={props.selectedDevice}
+              ready={props.ready}
+              deepSeekConfigured={Boolean(props.snapshot?.deepSeek.configured)}
+              busy={props.busy}
+              runAction={props.runAction}
+            />
+          </>
+        ) : (
+          <div className="facebook-batch-complete">
+            <strong>Cola completada</strong>
+            <span>Las {batch?.posts.length || 0} publicaciones fueron procesadas u omitidas.</span>
+            <button type="button" className="button primary" onClick={() => setReplacing(true)}>
+              Crear una nueva cola
+            </button>
+          </div>
+        )}
       </div>
     </WorkspaceShell>
   );
@@ -1101,7 +1905,7 @@ function WhatsAppWorkspace(props: WorkspaceProps) {
                   rows={6}
                   minLength={2}
                   maxLength={500}
-                  disabled={["sent", "failed"].includes(activeDraft.status)}
+                  disabled={["running", "sent", "failed", "outcome_unknown"].includes(activeDraft.status)}
                 />
                 <small className="field-counter">{draftText.length}/500</small>
               </label>
@@ -1237,10 +2041,6 @@ export function ControlPanel() {
   }
 
   const runAction: RunAction = async (name, action, successMessage) => {
-    if (!selectedDevice) {
-      setNotice({ type: "error", text: "Selecciona un dispositivo conectado." });
-      return;
-    }
     setBusy(name);
     setNotice(null);
     try {
@@ -1434,13 +2234,7 @@ export function ControlPanel() {
                 return <OpenContentWorkspace {...commonProps} key={definition.slug} />;
               }
               if (definition.slug === "facebook-post-like-comment") {
-                return (
-                  <SocialCommentWorkspace
-                    {...commonProps}
-                    platform="facebook"
-                    key={definition.slug}
-                  />
-                );
+                return <FacebookBatchWorkspace {...commonProps} key={definition.slug} />;
               }
               if (definition.slug === "tiktok-live-tap-tap") {
                 return <TikTokLiveWorkspace {...commonProps} key={definition.slug} />;

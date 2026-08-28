@@ -2,6 +2,7 @@ import { getDeviceCapabilities, listAdbDevices } from "@/lib/adb";
 import { appConfig } from "@/lib/config";
 import { listDrafts, listOperations, listRegistry } from "@/lib/db";
 import { getDevices, getGenFarmerHealth } from "@/lib/genfarmer";
+import { getFacebookBatchSnapshot } from "@/lib/facebook-batch-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +38,7 @@ export async function GET() {
       automations: listRegistry(),
       drafts: listDrafts(),
       operations: listOperations(),
+      facebookBatch: getFacebookBatchSnapshot(),
       polledAt: new Date().toISOString(),
     },
   });

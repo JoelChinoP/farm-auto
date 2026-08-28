@@ -1,17 +1,20 @@
 import "server-only";
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import {
   assertConnected,
+  dumpWindowHierarchy,
   getFocusedPackage,
   isPackageInstalled,
 } from "@/lib/adb";
 import {
   acquireDeviceLock,
   createOperation,
+  getDeviceLock,
+  getOperation,
   getRegistry,
   listRegistry,
   releaseDeviceLock,
@@ -19,6 +22,10 @@ import {
   upsertRegistry,
 } from "@/lib/db";
 import { AppError } from "@/lib/errors";
+import {
+  extractAccessibleFacebookContext,
+  findStoredFacebookContext,
+} from "@/lib/facebook-context";
 import {
   addTaskDevice,
   createRun,
@@ -30,9 +37,11 @@ import {
   getDevices,
   getRun,
   getRunLogs,
+  getRunStorages,
   getTask,
   getTasks,
   importApp,
+  stopRun,
   TaskVariable,
   updateTask,
 } from "@/lib/genfarmer";
@@ -55,6 +64,12 @@ export const automationSpecs = [
     file: "facebook-post-like-comment.genfarm",
     appName: "Control Panel - Facebook like y comentario",
     taskName: "Facebook like y comentario",
+  },
+  {
+    slug: "facebook-context-extract",
+    file: "facebook-context-extract.genfarm",
+    appName: "Control Panel - Extraer contexto de Facebook",
+    taskName: "Extraer contexto de Facebook",
   },
   {
     slug: "tiktok-live-tap-tap",
@@ -96,6 +111,69 @@ async function packageData(file: string) {
   };
 }
 
+async function stopAndConfirmRun(runId: string) {
+  try {
+    await stopRun(runId);
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const run = await getRun(runId);
+      if ([2, 3, 4].includes(run.status)) return true;
+      await sleep(500);
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+async function reconcileDeviceLock(deviceId: string) {
+  const lock = getDeviceLock(deviceId);
+  if (!lock) return;
+  const operation = getOperation(lock.operation_id);
+  if (!operation) {
+    releaseDeviceLock(deviceId, lock.operation_id);
+    return;
+  }
+  if (["starting", "running"].includes(operation.status)) {
+    throw new AppError(
+      "El dispositivo ya está ejecutando otra acción.",
+      409,
+      "DEVICE_BUSY",
+    );
+  }
+  if (!operation.run_id) {
+    releaseDeviceLock(deviceId, operation.id);
+    return;
+  }
+
+  let run: GenFarmerRun;
+  try {
+    run = await getRun(operation.run_id);
+  } catch {
+    throw new AppError(
+      "No se pudo verificar la ejecución anterior; el dispositivo permanece bloqueado.",
+      409,
+      "DEVICE_OUTCOME_UNKNOWN",
+    );
+  }
+  if (
+    [2, 3, 4].includes(run.status) ||
+    (await stopAndConfirmRun(operation.run_id))
+  ) {
+    releaseDeviceLock(deviceId, operation.id);
+    return;
+  }
+  throw new AppError(
+    "La ejecución anterior sigue activa y el dispositivo permanece bloqueado.",
+    409,
+    "DEVICE_OUTCOME_UNKNOWN",
+  );
+}
+
+export function ensureAutomationDeviceReady(deviceId: string) {
+  return reconcileDeviceLock(deviceId);
+}
+
 async function findApp(apps: GenFarmerApp[], appId: string) {
   const listed = apps.find((item) => item.id === appId);
   if (listed) return listed;
@@ -121,6 +199,19 @@ async function resolveDevice(deviceId: string) {
 }
 
 export async function setupAutomations(deviceId: string) {
+  const execution = await executeOperation(
+    "setup",
+    randomUUID(),
+    deviceId,
+    (setRunId) => setupAutomationsUnlocked(deviceId, setRunId),
+  );
+  return execution.result;
+}
+
+async function setupAutomationsUnlocked(
+  deviceId: string,
+  setRunId: (runId: string) => void,
+) {
   const { adbDevice, genFarmerDevice } = await resolveDevice(deviceId);
   const apps = (await getApps()).items;
   const tasks = (await getTasks()).items;
@@ -207,7 +298,7 @@ export async function setupAutomations(deviceId: string) {
     });
   }
 
-  await runAutomation("device-home", deviceId);
+  await runAutomation("device-home", deviceId, undefined, setRunId);
   return results;
 }
 
@@ -289,10 +380,12 @@ async function waitForRun(runId: string, deviceId: string) {
     await sleep(400);
   }
   if (!run || ![2, 3, 4].includes(run.status)) {
+    const stopConfirmed = await stopAndConfirmRun(runId);
     throw new AppError(
       "La automatización excedió el tiempo de espera.",
       504,
       "RUN_TIMEOUT",
+      { runId, stopConfirmed },
     );
   }
 
@@ -321,6 +414,31 @@ async function waitForRun(runId: string, deviceId: string) {
     );
   }
   return run;
+}
+
+async function waitForFacebookContext(runId: string) {
+  const deadline = Date.now() + 5_000;
+  let lastError: unknown;
+  while (Date.now() < deadline) {
+    try {
+      const storage = await getRunStorages(runId);
+      const context = findStoredFacebookContext(storage.items);
+      if (context) return context;
+    } catch (error) {
+      lastError = error;
+    }
+    await sleep(200);
+  }
+  throw new AppError(
+    "GenFarmer termino la lectura sin devolver el contexto.",
+    502,
+    "FACEBOOK_CONTEXT_OUTPUT_MISSING",
+    {
+      runId,
+      storageError:
+        lastError instanceof Error ? lastError.message : String(lastError ?? ""),
+    },
+  );
 }
 
 async function runAutomation(
@@ -352,14 +470,63 @@ async function runAutomation(
   return waitForRun(run.id, deviceId);
 }
 
+async function runCleanupHome(
+  deviceId: string,
+  setRunId: (runId: string) => void,
+  originalError?: unknown,
+) {
+  if (originalError instanceof AppError) {
+    const details =
+      originalError.details && typeof originalError.details === "object"
+        ? (originalError.details as Record<string, unknown>)
+        : null;
+    if (
+      [
+        "GENFARMER_UNAVAILABLE",
+        "GENFARMER_ERROR",
+        "DEVICE_CLEANUP_UNKNOWN",
+      ].includes(originalError.code) ||
+      (originalError.code === "RUN_TIMEOUT" && details?.stopConfirmed !== true)
+    ) {
+      throw originalError;
+    }
+  }
+  try {
+    await runAutomation("device-home", deviceId, undefined, setRunId);
+  } catch (cleanupError) {
+    throw new AppError(
+      "No se pudo confirmar que el dispositivo volvió a inicio.",
+      502,
+      "DEVICE_CLEANUP_UNKNOWN",
+      {
+        originalError:
+          originalError instanceof Error ? originalError.message : originalError,
+        cleanupError:
+          cleanupError instanceof Error ? cleanupError.message : cleanupError,
+      },
+    );
+  }
+}
+
 async function executeOperation<T>(
   kind: string,
   idempotencyKey: string,
   deviceId: string,
   action: (setRunId: (runId: string) => void) => Promise<T>,
 ) {
+  await reconcileDeviceLock(deviceId);
   const reserved = createOperation(kind, idempotencyKey, deviceId);
   if (!reserved.created) {
+    if (
+      reserved.operation.kind !== kind ||
+      reserved.operation.device_id !== deviceId
+    ) {
+      throw new AppError(
+        "La clave de idempotencia pertenece a otra operación.",
+        409,
+        "IDEMPOTENCY_CONFLICT",
+      );
+    }
     if (reserved.operation.status === "failed") {
       throw new AppError(
         "Esta operación ya falló y no se repetirá automáticamente.",
@@ -367,16 +534,29 @@ async function executeOperation<T>(
         "IDEMPOTENT_OPERATION_FAILED",
       );
     }
+    if (["starting", "running"].includes(reserved.operation.status)) {
+      throw new AppError(
+        "Esta operación todavía está en curso.",
+        409,
+        "OPERATION_IN_PROGRESS",
+      );
+    }
+    if (!reserved.operation.result_json) {
+      throw new AppError(
+        "La operación previa no tiene un resultado verificable.",
+        409,
+        "OPERATION_RESULT_MISSING",
+      );
+    }
     return {
       operation: reserved.operation,
-      result: reserved.operation.result_json
-        ? (JSON.parse(reserved.operation.result_json) as T)
-        : null,
+      result: JSON.parse(reserved.operation.result_json) as T,
       replayed: true,
     };
   }
 
   let locked = false;
+  let retainLock = false;
   try {
     acquireDeviceLock(deviceId, reserved.operation.id);
     locked = true;
@@ -390,13 +570,31 @@ async function executeOperation<T>(
     });
     return { operation, result, replayed: false };
   } catch (error) {
+    const operation = getOperation(reserved.operation.id);
+    const details =
+      error instanceof AppError &&
+      error.details &&
+      typeof error.details === "object"
+        ? (error.details as Record<string, unknown>)
+        : null;
+    retainLock = Boolean(operation?.run_id) && (
+      !(error instanceof AppError) ||
+      [
+        "GENFARMER_UNAVAILABLE",
+        "GENFARMER_ERROR",
+        "DEVICE_CLEANUP_UNKNOWN",
+      ].includes(error.code) ||
+      (error.code === "RUN_TIMEOUT" && details?.stopConfirmed !== true)
+    );
     updateOperation(reserved.operation.id, {
       status: "failed",
       error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   } finally {
-    if (locked) releaseDeviceLock(deviceId, reserved.operation.id);
+    if (locked && !retainLock) {
+      releaseDeviceLock(deviceId, reserved.operation.id);
+    }
   }
 }
 
@@ -428,7 +626,7 @@ export function openSocialContent(input: {
       }
 
       try {
-        await runAutomation("device-home", input.deviceId);
+        await runAutomation("device-home", input.deviceId, undefined, setRunId);
         const run = await runAutomation(
           "open-social-content",
           input.deviceId,
@@ -453,7 +651,97 @@ export function openSocialContent(input: {
         }
         return { runId: run.id, focusedPackage, platform: input.platform };
       } catch (error) {
-        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+        await runCleanupHome(input.deviceId, setRunId, error);
+        throw error;
+      }
+    },
+  );
+}
+
+export function extractFacebookPostContext(input: {
+  deviceId: string;
+  idempotencyKey: string;
+  url: string;
+}) {
+  return executeOperation(
+    "facebook-context-extract",
+    input.idempotencyKey,
+    input.deviceId,
+    async (setRunId) => {
+      const packageName = socialPackages.facebook;
+      if (!(await isPackageInstalled(input.deviceId, packageName))) {
+        throw new AppError(
+          "Facebook no está instalado en el dispositivo seleccionado.",
+          409,
+          "FACEBOOK_NOT_INSTALLED",
+        );
+      }
+
+      try {
+        await runAutomation("device-home", input.deviceId, undefined, setRunId);
+        const openRun = await runAutomation(
+          "open-social-content",
+          input.deviceId,
+          { contentUrl: input.url, packageName },
+          setRunId,
+        );
+        let focusedPackage: string | null = null;
+        for (let attempt = 0; attempt < 7; attempt++) {
+          await sleep(1000);
+          focusedPackage = await getFocusedPackage(input.deviceId);
+          if (focusedPackage === packageName) break;
+        }
+        if (focusedPackage !== packageName) {
+          throw new AppError(
+            "Android no dejó Facebook en primer plano para leer la publicación.",
+            502,
+            "UNEXPECTED_FOREGROUND_APP",
+          );
+        }
+        await sleep(1500);
+        let contextRun: GenFarmerRun | undefined;
+        let context: string;
+        try {
+          contextRun = await runAutomation(
+            "facebook-context-extract",
+            input.deviceId,
+            undefined,
+            setRunId,
+          );
+          context = await waitForFacebookContext(contextRun.id);
+        } catch (genFarmerError) {
+          try {
+            context = extractAccessibleFacebookContext(
+              await dumpWindowHierarchy(input.deviceId),
+            );
+          } catch (adbError) {
+            throw new AppError(
+              "No se pudo leer el texto accesible de Facebook. Escribe el contexto manualmente.",
+              502,
+              "FACEBOOK_CONTEXT_UNAVAILABLE",
+              {
+                genFarmerError:
+                  genFarmerError instanceof Error
+                    ? genFarmerError.message
+                    : String(genFarmerError),
+                adbError:
+                  adbError instanceof Error ? adbError.message : String(adbError),
+              },
+            );
+          }
+        }
+        if (context.length < 5) {
+          throw new AppError(
+            "No se encontró texto accesible. Escribe el contexto manualmente.",
+            422,
+            "FACEBOOK_CONTEXT_EMPTY",
+          );
+        }
+        const result = { runId: contextRun?.id ?? openRun.id, context };
+        await runCleanupHome(input.deviceId, setRunId);
+        return result;
+      } catch (error) {
+        await runCleanupHome(input.deviceId, setRunId, error);
         throw error;
       }
     },
@@ -482,7 +770,7 @@ export function runTikTokLiveTapTap(input: {
       }
 
       try {
-        await runAutomation("device-home", input.deviceId);
+        await runAutomation("device-home", input.deviceId, undefined, setRunId);
         const run = await runAutomation(
           "tiktok-live-tap-tap",
           input.deviceId,
@@ -494,13 +782,16 @@ export function runTikTokLiveTapTap(input: {
           },
           setRunId,
         );
-        return {
+        const result = {
           runId: run.id,
           tapRounds: input.tapRounds,
           platform: "tiktok" as const,
         };
-      } finally {
-        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+        await runCleanupHome(input.deviceId, setRunId);
+        return result;
+      } catch (error) {
+        await runCleanupHome(input.deviceId, setRunId, error);
+        throw error;
       }
     },
   );
@@ -526,7 +817,7 @@ export async function likeAndCommentTikTokPost(input: {
     input.idempotencyKey,
     input.deviceId,
     async (setRunId) => {
-      await runAutomation("device-home", input.deviceId);
+      await runAutomation("device-home", input.deviceId, undefined, setRunId);
       try {
         const run = await runAutomation(
           "tiktok-post-like-comment",
@@ -536,7 +827,7 @@ export async function likeAndCommentTikTokPost(input: {
         );
         return { runId: run.id, platform: "tiktok" as const };
       } catch (error) {
-        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+        await runCleanupHome(input.deviceId, setRunId, error);
         throw error;
       }
     },
@@ -563,7 +854,7 @@ export async function likeAndCommentFacebookPost(input: {
     input.idempotencyKey,
     input.deviceId,
     async (setRunId) => {
-      await runAutomation("device-home", input.deviceId);
+      await runAutomation("device-home", input.deviceId, undefined, setRunId);
       try {
         const run = await runAutomation(
           "facebook-post-like-comment",
@@ -573,7 +864,7 @@ export async function likeAndCommentFacebookPost(input: {
         );
         return { runId: run.id, platform: "facebook" as const };
       } catch (error) {
-        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+        await runCleanupHome(input.deviceId, setRunId, error);
         throw error;
       }
     },
@@ -598,7 +889,7 @@ export async function sendWhatsAppMessage(input: {
     input.idempotencyKey,
     input.deviceId,
     async (setRunId) => {
-      await runAutomation("device-home", input.deviceId);
+      await runAutomation("device-home", input.deviceId, undefined, setRunId);
       try {
         const run = await runAutomation(
           "whatsapp-consented",
@@ -611,7 +902,7 @@ export async function sendWhatsAppMessage(input: {
         );
         return { runId: run.id };
       } catch (error) {
-        await runAutomation("device-home", input.deviceId).catch(() => undefined);
+        await runCleanupHome(input.deviceId, setRunId, error);
         throw error;
       }
     },

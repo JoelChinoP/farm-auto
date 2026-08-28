@@ -1438,6 +1438,456 @@ select:focus {
   background: #ffe5dc;
 }
 
+.facebook-batch-workspace {
+  display: grid;
+  gap: 20px;
+  padding: 24px;
+}
+
+.facebook-batch-header {
+  display: flex;
+  gap: 24px;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.facebook-batch-header h3 {
+  max-width: 620px;
+  margin: 0;
+  font-size: clamp(23px, 3vw, 34px);
+  letter-spacing: -0.045em;
+  line-height: 1.08;
+}
+
+.facebook-batch-header > div > p:last-child {
+  max-width: 620px;
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.facebook-batch-meter {
+  display: grid;
+  min-width: 145px;
+  gap: 6px;
+  padding: 13px;
+  border-radius: 11px;
+  background: var(--module-soft);
+}
+
+.facebook-batch-meter > span {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.facebook-batch-meter strong {
+  color: var(--module-accent);
+  font-size: 18px;
+}
+
+.facebook-batch-meter > div {
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgb(40 103 199 / 14%);
+}
+
+.facebook-batch-meter > div > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--module-accent);
+}
+
+.facebook-queue-form {
+  display: grid;
+  max-width: 720px;
+  width: 100%;
+  gap: 18px;
+  margin: 14px auto 26px;
+  padding: 22px;
+  border: 1px solid var(--line);
+  border-radius: 15px;
+  background: #faf9f4;
+}
+
+.facebook-queue-actions,
+.facebook-queue-strip,
+.facebook-progress-card,
+.facebook-target-bar,
+.facebook-device-total,
+.facebook-allocation-total,
+.facebook-approval-bar,
+.facebook-execution-bar,
+.facebook-reconciliation-bar,
+.facebook-skip-bar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.facebook-queue-actions {
+  justify-content: flex-end;
+}
+
+.facebook-queue-strip {
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #faf9f4;
+}
+
+.facebook-queue-items {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.facebook-queue-item {
+  display: grid;
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--white);
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 800;
+}
+
+.facebook-queue-item.current {
+  border-color: var(--module-accent);
+  background: var(--module-soft);
+  color: var(--module-accent);
+}
+
+.facebook-queue-item.completed {
+  border-color: #a8c860;
+  background: #eaf6ca;
+  color: #3f5a00;
+}
+
+.facebook-queue-item.skipped,
+.facebook-queue-item.partial_failed,
+.facebook-queue-item.outcome_unknown {
+  border-color: #e0a08a;
+  background: #ffe5dc;
+  color: #8f2d1d;
+}
+
+.facebook-batch-current {
+  display: grid;
+  gap: 16px;
+}
+
+.facebook-progress-card {
+  padding: 13px 15px;
+  border-radius: 12px;
+  background: var(--module-soft);
+}
+
+.facebook-progress-card > div {
+  display: grid;
+  gap: 3px;
+}
+
+.facebook-progress-card > div > span,
+.facebook-target-bar > div > span,
+.facebook-device-total span,
+.facebook-allocation-total span {
+  color: var(--muted);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.facebook-progress-card strong {
+  font-size: 14px;
+}
+
+.pill.facebook-context_ready,
+.pill.facebook-drafts_ready {
+  background: #fff1bd;
+  color: #735b00;
+}
+
+.pill.facebook-approved,
+.pill.facebook-completed {
+  background: #e6f6bc;
+  color: #3f5a00;
+}
+
+.pill.facebook-running,
+.pill.facebook-generating,
+.pill.facebook-extracting,
+.pill.facebook-approving {
+  background: #dce9ff;
+  color: #2358a8;
+}
+
+.pill.facebook-partial_failed,
+.pill.facebook-outcome_unknown,
+.pill.outcome_unknown {
+  background: #ffe1d5;
+  color: #8f2d1d;
+}
+
+.facebook-target-bar {
+  align-items: flex-end;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--module-accent) 20%, var(--line));
+  border-radius: 12px;
+}
+
+.facebook-target-bar > div {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.facebook-target-bar a {
+  overflow: hidden;
+  color: var(--module-accent);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facebook-configuration {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.facebook-context-panel,
+.facebook-devices-panel,
+.facebook-allocation-panel,
+.facebook-review-panel {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #faf9f4;
+}
+
+.facebook-allocation-panel {
+  grid-column: 1 / -1;
+}
+
+.facebook-device-list {
+  display: grid;
+  gap: 7px;
+  max-height: 245px;
+  overflow-y: auto;
+}
+
+.facebook-device-option {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--white);
+}
+
+.facebook-device-option input {
+  width: 17px;
+  height: 17px;
+  min-height: auto;
+  accent-color: var(--module-accent);
+}
+
+.facebook-device-option > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.facebook-device-option strong,
+.facebook-comment-card header strong {
+  font-size: 10px;
+}
+
+.facebook-device-option small,
+.facebook-comment-card header span {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facebook-device-total,
+.facebook-allocation-total {
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: var(--module-soft);
+}
+
+.facebook-device-total strong {
+  color: var(--module-accent);
+  font-size: 17px;
+}
+
+.facebook-allocation-list,
+.facebook-comment-list {
+  display: grid;
+  gap: 10px;
+}
+
+.facebook-allocation-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 125px 90px auto;
+  gap: 9px;
+  align-items: end;
+  padding: 11px;
+  border-radius: 11px;
+  background: var(--white);
+}
+
+.facebook-allocation-row .text-button {
+  min-height: 44px;
+}
+
+.facebook-allocation-total.ok {
+  background: #eaf6ca;
+}
+
+.facebook-allocation-total.mismatch {
+  background: #ffe5dc;
+}
+
+.facebook-allocation-total strong {
+  font-size: 10px;
+}
+
+.facebook-review-panel {
+  background: var(--white);
+}
+
+.facebook-comment-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.facebook-comment-card {
+  display: grid;
+  min-width: 0;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #faf9f4;
+}
+
+.facebook-comment-card header {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.facebook-comment-card header > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.facebook-comment-card .inline-error {
+  margin: 0;
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.facebook-approval-bar,
+.facebook-execution-bar,
+.facebook-reconciliation-bar,
+.facebook-skip-bar {
+  padding: 14px;
+  border-radius: 11px;
+}
+
+.facebook-approval-bar {
+  background: #f0f7dd;
+}
+
+.facebook-execution-bar {
+  background: #fff0e8;
+}
+
+.facebook-reconciliation-bar {
+  background: #e8f0ff;
+}
+
+.facebook-approval-bar > div,
+.facebook-execution-bar > div,
+.facebook-reconciliation-bar > div {
+  display: grid;
+  gap: 3px;
+}
+
+.facebook-approval-bar strong,
+.facebook-execution-bar strong,
+.facebook-reconciliation-bar strong {
+  font-size: 11px;
+}
+
+.facebook-approval-bar span,
+.facebook-execution-bar span,
+.facebook-reconciliation-bar span,
+.facebook-skip-bar span {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
+}
+
+.facebook-post-error {
+  padding: 12px 14px;
+  border: 1px solid #e0a08a;
+  border-radius: 10px;
+  background: #fff0e9;
+  color: #8f2d1d;
+  font-size: 10px;
+}
+
+.facebook-skip-bar {
+  border: 1px dashed #d7a08d;
+  background: #fff8f4;
+}
+
+.facebook-batch-complete {
+  display: grid;
+  max-width: 520px;
+  gap: 10px;
+  justify-items: start;
+  margin: 28px auto;
+  padding: 24px;
+  border-radius: 14px;
+  background: #eaf6ca;
+}
+
+.facebook-batch-complete span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .live-workspace-grid {
   display: grid;
   grid-template-columns: 0.72fr 1.28fr;
@@ -1740,6 +2190,24 @@ select:focus-visible {
   .target-column .requirement-stack {
     grid-column: 1 / -1;
   }
+
+  .facebook-configuration {
+    grid-template-columns: 1fr;
+  }
+
+  .facebook-allocation-panel {
+    grid-column: auto;
+  }
+
+  .facebook-allocation-row {
+    grid-template-columns: minmax(170px, 1fr) 120px 80px;
+  }
+
+  .facebook-allocation-row .text-button {
+    grid-column: 1 / -1;
+    min-height: auto;
+    justify-self: end;
+  }
 }
 
 @media (max-width: 860px) {
@@ -2014,5 +2482,54 @@ select:focus-visible {
 
   .live-summary small {
     grid-column: 1 / -1;
+  }
+
+  .facebook-batch-workspace {
+    padding: 15px;
+  }
+
+  .facebook-batch-header,
+  .facebook-target-bar,
+  .facebook-approval-bar,
+  .facebook-execution-bar,
+  .facebook-reconciliation-bar,
+  .facebook-skip-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .facebook-batch-meter,
+  .facebook-target-bar .button,
+  .facebook-approval-bar .button,
+  .facebook-execution-bar .button,
+  .facebook-reconciliation-bar .button,
+  .facebook-skip-bar .button {
+    width: 100%;
+  }
+
+  .facebook-queue-form,
+  .facebook-context-panel,
+  .facebook-devices-panel,
+  .facebook-allocation-panel,
+  .facebook-review-panel {
+    padding: 14px;
+  }
+
+  .facebook-queue-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .facebook-allocation-row,
+  .facebook-comment-list {
+    grid-template-columns: 1fr;
+  }
+
+  .facebook-allocation-row .text-button {
+    grid-column: auto;
+  }
+
+  .facebook-progress-card {
+    align-items: flex-start;
   }
 }

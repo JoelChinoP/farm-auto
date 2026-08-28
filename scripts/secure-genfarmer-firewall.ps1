@@ -1,7 +1,7 @@
 #Requires -RunAsAdministrator
 
 $ErrorActionPreference = "Stop"
-$genFarmerExe = "C:\Users\Joel\AppData\Local\Programs\GenFarmer\GenFarmer.exe"
+$genFarmerExe = Join-Path $env:LOCALAPPDATA "Programs\GenFarmer\GenFarmer.exe"
 
 $rules = Get-NetFirewallApplicationFilter -Program $genFarmerExe |
   Get-NetFirewallRule |

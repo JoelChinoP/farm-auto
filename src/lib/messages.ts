@@ -9,6 +9,8 @@ import {
   createDraft,
   DraftRow,
   getDraft,
+  getFacebookAssignmentByDraftId,
+  reserveDraftForSend,
   setDraftOutcome,
 } from "@/lib/db";
 import { AppError } from "@/lib/errors";
@@ -29,7 +31,30 @@ type DraftInput = {
   context: string;
   intent: string;
   tone: string;
+  variation?: string;
 };
+
+const uncertainDeliveryCodes = new Set([
+  "RUN_TIMEOUT",
+  "RUN_FAILED",
+  "GENFARMER_UNAVAILABLE",
+  "GENFARMER_ERROR",
+  "OPERATION_IN_PROGRESS",
+  "DEVICE_CLEANUP_UNKNOWN",
+]);
+
+const retryablePreflightCodes = new Set([
+  "TIKTOK_NOT_INSTALLED",
+  "FACEBOOK_NOT_INSTALLED",
+  "WHATSAPP_NOT_INSTALLED",
+  "SETUP_REQUIRED",
+  "DEVICE_NOT_CONNECTED",
+  "DEVICE_NOT_IN_GENFARMER",
+  "DEVICE_BUSY",
+  "DEVICE_OUTCOME_UNKNOWN",
+  "ADB_ERROR",
+  "IDEMPOTENT_OPERATION_FAILED",
+]);
 
 export async function generateDraft(input: DraftInput) {
   if (!appConfig.deepSeekApiKey) {
@@ -65,6 +90,7 @@ export async function generateDraft(input: DraftInput) {
             context: input.context,
             intent: input.intent,
             tone: input.tone,
+            variation: input.variation,
           }),
         },
       ],
@@ -100,15 +126,31 @@ export async function generateDraft(input: DraftInput) {
       "INVALID_MODEL_RESPONSE",
     );
   }
-  return createDraft({ ...input, text: generated.text });
+  return createDraft({
+    kind: input.kind,
+    platform: input.platform,
+    context: input.context,
+    intent: input.intent,
+    tone: input.tone,
+    text: generated.text,
+  });
 }
 
 export function approveMessage(
   id: string,
   input: { text: string; consentConfirmed: boolean; recipient: string },
+  facebookAssignmentId?: string,
 ) {
   const draft = getDraft(id);
   if (!draft) throw new AppError("Borrador no encontrado.", 404, "NOT_FOUND");
+  const assignment = getFacebookAssignmentByDraftId(id);
+  if (assignment && assignment.id !== facebookAssignmentId) {
+    throw new AppError(
+      "Este borrador se administra desde su cola de Facebook.",
+      409,
+      "BATCH_DRAFT_MANAGED",
+    );
+  }
 
   if (draft.kind === "direct_message") {
     if (draft.platform !== "whatsapp") {
@@ -153,9 +195,18 @@ export async function sendApprovedMessage(
   id: string,
   deviceId: string,
   contentUrl?: string,
+  facebookAssignmentId?: string,
 ) {
   const draft = getDraft(id);
   if (!draft) throw new AppError("Borrador no encontrado.", 404, "NOT_FOUND");
+  const assignment = getFacebookAssignmentByDraftId(id);
+  if (assignment && assignment.id !== facebookAssignmentId) {
+    throw new AppError(
+      "Este borrador se ejecuta únicamente desde su cola de Facebook.",
+      409,
+      "BATCH_DRAFT_MANAGED",
+    );
+  }
   if (draft.status !== "approved") {
     throw new AppError(
       "El texto debe estar aprobado antes de publicarse.",
@@ -192,7 +243,9 @@ export async function sendApprovedMessage(
     }
 
     const idempotencyKey = createHash("sha256")
-      .update(`${draft.id}\0${deviceId}\0${normalizedUrl}\0${draft.text}`)
+      .update(
+        `${draft.id}\0${deviceId}\0${normalizedUrl}\0${draft.text}\0${draft.updated_at}`,
+      )
       .digest("hex")
       .slice(0, 8)
       .padEnd(8, "0")
@@ -204,6 +257,7 @@ export async function sendApprovedMessage(
           .slice(0, 12),
       );
 
+    reserveDraftForSend(id);
     try {
       const interact =
         draft.platform === "tiktok"
@@ -218,18 +272,21 @@ export async function sendApprovedMessage(
       setDraftOutcome(id, "sent");
       return result;
     } catch (error) {
-      if (
-        !(
-          error instanceof AppError &&
-          ["TIKTOK_NOT_INSTALLED", "FACEBOOK_NOT_INSTALLED"].includes(error.code)
-        )
-      ) {
-        setDraftOutcome(
-          id,
-          "failed",
-          error instanceof Error ? error.message : String(error),
-        );
-      }
+      const code = error instanceof AppError ? error.code : "";
+      const status = retryablePreflightCodes.has(code)
+        ? "approved"
+        : uncertainDeliveryCodes.has(code)
+          ? "outcome_unknown"
+          : "failed";
+      setDraftOutcome(
+        id,
+        status,
+        status === "approved"
+          ? null
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      );
       throw error;
     }
   }
@@ -248,13 +305,16 @@ export async function sendApprovedMessage(
   }
 
   const idempotencyKey = createHash("sha256")
-    .update(`${draft.id}\0${deviceId}\0${draft.recipient}\0${draft.text}`)
+    .update(
+      `${draft.id}\0${deviceId}\0${draft.recipient}\0${draft.text}\0${draft.updated_at}`,
+    )
     .digest("hex")
     .slice(0, 8)
     .padEnd(8, "0")
     .concat("-0000-4000-8000-")
     .concat(createHash("sha256").update(draft.text).digest("hex").slice(0, 12));
 
+  reserveDraftForSend(id);
   try {
     const result = await sendWhatsAppMessage({
       deviceId,
@@ -265,13 +325,21 @@ export async function sendApprovedMessage(
     setDraftOutcome(id, "sent");
     return result;
   } catch (error) {
-    if (!(error instanceof AppError && error.code === "WHATSAPP_NOT_INSTALLED")) {
-      setDraftOutcome(
-        id,
-        "failed",
-        error instanceof Error ? error.message : String(error),
-      );
-    }
+    const code = error instanceof AppError ? error.code : "";
+    const status = retryablePreflightCodes.has(code)
+      ? "approved"
+      : uncertainDeliveryCodes.has(code)
+        ? "outcome_unknown"
+        : "failed";
+    setDraftOutcome(
+      id,
+      status,
+      status === "approved"
+        ? null
+        : error instanceof Error
+          ? error.message
+          : String(error),
+    );
     throw error;
   }
 }
