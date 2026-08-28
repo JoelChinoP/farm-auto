@@ -6,6 +6,7 @@ import {
   startTransition,
   useEffect,
   useEffectEvent,
+  useId,
   useState,
 } from "react";
 
@@ -303,7 +304,7 @@ function WorkspaceShell({
       className={`automation-workspace accent-${definition.accent}`}
       hidden={!active}
       aria-labelledby={`workspace-${definition.slug}`}
-    >
+      >
       <header className="workspace-header">
         <div className="workspace-identity">
           <span className="workspace-code">{definition.code}</span>
@@ -314,14 +315,59 @@ function WorkspaceShell({
           </div>
         </div>
         <div className="workspace-state">
-          <span className={`pill ${latest?.status || (ready ? "succeeded" : "failed")}`}>
-            {latest ? friendlyStatus(latest.status) : ready ? "Preparada" : "Sin preparar"}
+          <span className={`pill ${ready ? "succeeded" : "failed"}`}>
+            {ready ? "Lista para ejecutar" : "Preparación pendiente"}
           </span>
-          <code>{definition.file}</code>
+          {latest && (
+            <span className={`last-run ${latest.status}`}>
+              Última ejecución: {friendlyStatus(latest.status)}
+            </span>
+          )}
+          <HelpTip label={`Detalles técnicos de ${definition.title}`}>
+            <li>Paquete: {definition.file}</li>
+            <li>El estado depende del dispositivo seleccionado.</li>
+          </HelpTip>
         </div>
       </header>
       {children}
     </section>
+  );
+}
+
+function HelpTip({ label, children }: { label: string; children: ReactNode }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+
+  return (
+    <span
+      className="help-tip"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <button
+        type="button"
+        aria-label={label}
+        aria-describedby={open ? id : undefined}
+        aria-expanded={open}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen(true)}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setOpen(false);
+          }
+        }}
+      >
+        <span aria-hidden="true">?</span>
+      </button>
+      {open && (
+        <span id={id} role="tooltip" className="help-tip-content">
+          <strong>{label}</strong>
+          <ul>{children}</ul>
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -346,6 +392,7 @@ function WorkflowSteps({ current }: { current: 1 | 2 | 3 | 4 }) {
         <li
           className={Number(step) < current ? "complete" : Number(step) === current ? "active" : ""}
           key={step}
+          aria-current={Number(step) === current ? "step" : undefined}
         >
           <span>{step}</span>
           {label}
@@ -473,11 +520,12 @@ function OpenContentWorkspace(props: WorkspaceProps) {
           </div>
         </div>
         <form onSubmit={submit} className="workspace-form">
-          <div className="platform-choice" aria-label="Plataforma objetivo">
+          <div className="platform-choice" role="group" aria-label="Plataforma objetivo">
             <button
               type="button"
               className={platform === "tiktok" ? "active tiktok" : "tiktok"}
               onClick={() => setPlatform("tiktok")}
+              aria-pressed={platform === "tiktok"}
             >
               <span>TK</span>
               <strong>TikTok</strong>
@@ -487,6 +535,7 @@ function OpenContentWorkspace(props: WorkspaceProps) {
               type="button"
               className={platform === "facebook" ? "active facebook" : "facebook"}
               onClick={() => setPlatform("facebook")}
+              aria-pressed={platform === "facebook"}
             >
               <span>FB</span>
               <strong>Facebook</strong>
@@ -549,7 +598,7 @@ function SocialCommentWorkspace(
     : activeDraft.status === "draft"
       ? 2
       : activeDraft.status === "approved"
-        ? 3
+        ? 4
         : 4;
 
   function selectDraft(draft: Draft) {
@@ -1563,12 +1612,14 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
         ) : currentPost ? (
           <>
             <div className="facebook-queue-strip">
-              <div className="facebook-queue-items">
+              <div className="facebook-queue-items" role="list" aria-label="Estado de la cola">
                 {batch.posts.map((post) => (
                   <span
                     key={post.id}
                     className={`facebook-queue-item ${post.id === currentPost.id ? "current" : ""} ${post.status}`}
-                    title={post.url}
+                    role="listitem"
+                    aria-current={post.id === currentPost.id ? "step" : undefined}
+                    aria-label={`Publicación ${post.position + 1}: ${facebookPostStatus(post.status)}`}
                   >
                     {post.position + 1}
                   </span>
@@ -1985,246 +2036,128 @@ export function ControlPanel() {
           <span className="brand-mark">GF</span>
           <div>
             <strong>Control local</strong>
-            <span>Un módulo por automatización</span>
+            <span>Automatizaciones con revisión humana</span>
           </div>
         </div>
+        <nav className="primary-nav" aria-label="Áreas del panel">
+          <a
+            href="#operar"
+            aria-current={activeAutomation !== "facebook-post-like-comment" ? "page" : undefined}
+            onClick={(event) => {
+              event.preventDefault();
+              setActiveAutomation("open-social-content");
+              window.history.replaceState(null, "", "#open-social-content");
+              document.getElementById("operar")?.scrollIntoView();
+            }}
+          >
+            Operar
+          </a>
+          <a
+            href="#operar"
+            aria-current={activeAutomation === "facebook-post-like-comment" ? "page" : undefined}
+            onClick={(event) => {
+              event.preventDefault();
+              setActiveAutomation("facebook-post-like-comment");
+              window.history.replaceState(null, "", "#facebook-post-like-comment");
+              document.getElementById("operar")?.scrollIntoView();
+            }}
+          >
+            Facebook
+          </a>
+          <a href="#dispositivos">Dispositivos</a>
+          <a href="#actividad">Actividad</a>
+        </nav>
         <div className="system-state">
           <span className={`status-dot ${snapshot?.health.ok ? "online" : ""}`} />
-          {snapshot?.health.ok ? snapshot.health.version : "GenFarmer sin conexión"}
+          {snapshot
+            ? snapshot.health.ok
+              ? snapshot.health.version || "GenFarmer conectado"
+              : "GenFarmer sin conexión"
+            : "Comprobando conexión"}
         </div>
       </header>
 
-      <section className="intro independent-intro">
-        <div>
-          <p className="eyebrow">
-            {requiredAutomations.length || "—"} paquetes · cinco puestos de mando
-          </p>
-          <h1>Cada automatización, su propia interfaz.</h1>
-          <p className="intro-copy">
-            Los campos, borradores y acciones quedan aislados por `.genfarm`. Ves solo lo
-            necesario y sabes qué ocurrirá antes de ejecutar.
-          </p>
-        </div>
-        <div className="connection-card">
-          <span className="connection-label">Asistente de redacción</span>
-          <strong>{snapshot?.deepSeek.model || "Comprobando..."}</strong>
-          <span className={snapshot?.deepSeek.configured ? "ok-text" : "error-text"}>
-            {snapshot?.deepSeek.configured ? "DeepSeek disponible" : "Falta API_DEEPSEEK"}
-          </span>
-        </div>
-      </section>
-
-      <section className="device-strip compact-device-strip">
-        <div className="device-heading">
-          <span className="section-number">01</span>
+      <section className="command-deck" aria-labelledby="control-title">
+        <div className="command-deck-heading">
           <div>
-            <h2>Dispositivo activo</h2>
-            <p>Todas las interfaces respetan esta selección.</p>
+            <p className="eyebrow">Panel local de operación</p>
+            <h1 id="control-title">Una acción clara por vez.</h1>
+            <p>
+              Elige una tarea, revisa su alcance y ejecuta solo cuando el dispositivo esté listo.
+            </p>
           </div>
-        </div>
-        <label className="device-select">
-          <span>ADB conectado</span>
-          <select
-            value={selectedDevice}
-            onChange={(event) => setSelectedDevice(event.target.value)}
-          >
-            {orderedDevices.length ? (
-              orderedDevices.map((item) => (
-                <option value={item.id} key={item.id}>
-                  {item.genFarmer?.index === undefined
-                    ? "GF s/n"
-                    : `GF #${item.genFarmer.index}`} · {item.model} · {item.id}
-                </option>
-              ))
-            ) : (
-              <option value="">Sin dispositivos</option>
-            )}
-          </select>
-        </label>
-        <div className="device-facts compact-facts">
-          <div>
-            <span>GenFarmer</span>
-            <strong>
-              {device?.genFarmer
-                ? `GF #${device.genFarmer.index ?? "s/n"}`
-                : "No detectado"}
-            </strong>
-          </div>
-          <div>
-            <span>Paquetes</span>
-            <strong>
-              {isReady
-                ? `${requiredAutomations.length} de ${requiredAutomations.length} registrados`
-                : `${setupCount} de ${requiredAutomations.length}`}
-            </strong>
-          </div>
-          <div>
-            <span>En pantalla</span>
-            <strong>{device?.capabilities?.focusedPackage || "Sin lectura"}</strong>
-          </div>
-        </div>
-      </section>
-
-      <section className="device-preparation" aria-labelledby="device-preparation-title">
-        <header className="preparation-heading">
-          <div>
-            <p className="eyebrow">Preparación por lote</p>
-            <h2 id="device-preparation-title">Selecciona y verifica dispositivos</h2>
-            <p>La búsqueda es local y conserva la numeración original de GenFarmer.</p>
-          </div>
-          <strong>{setupDeviceIds.length} seleccionados</strong>
-        </header>
-        <div className="preparation-grid">
-          <div className="setup-picker">
-            <label className="field">
-              <span>Buscar por número GF, modelo o serial</span>
-              <input
-                type="search"
-                value={setupQuery}
-                onChange={(event) => setSetupQuery(event.target.value)}
-                placeholder="Ej. GF #7 o 988c..."
-              />
-            </label>
-            <div className="setup-picker-actions">
-              <button
-                type="button"
-                className="text-button"
-                onClick={() =>
-                  setSetupDeviceIds((current) => [
-                    ...new Set([...current, ...visibleSetupDevices.map((item) => item.id)]),
-                  ])
-                }
-                disabled={!visibleSetupDevices.length || busy === "setup"}
-              >
-                Seleccionar visibles
-              </button>
-              <button
-                type="button"
-                className="text-button danger-text"
-                onClick={() => setSetupDeviceIds([])}
-                disabled={!setupDeviceIds.length || busy === "setup"}
-              >
-                Limpiar
-              </button>
+          <div className="assistant-state">
+            <div>
+              <span>Asistente de redacción</span>
+              <strong>{snapshot?.deepSeek.model || "Comprobando..."}</strong>
+              <small className={snapshot?.deepSeek.configured ? "ok-text" : "error-text"}>
+                {snapshot?.deepSeek.configured ? "Disponible" : "No configurado"}
+              </small>
             </div>
-            <div className="setup-device-list">
-              {visibleSetupDevices.length ? (
-                visibleSetupDevices.map((item) => {
-                  const result = preparationResult(item);
-                  return (
-                    <label className="setup-device-option" key={item.id}>
-                      <input
-                        type="checkbox"
-                        checked={setupDeviceIds.includes(item.id)}
-                        onChange={() => toggleSetupDevice(item.id)}
-                        disabled={busy === "setup"}
-                      />
-                      <span className="genfarmer-index">
-                        {item.genFarmer?.index === undefined
-                          ? "GF s/n"
-                          : `GF #${item.genFarmer.index}`}
-                      </span>
-                      <span className="setup-device-copy">
-                        <strong>{item.genFarmer?.name || item.model}</strong>
-                        <small>{item.id}</small>
-                      </span>
-                      <span
-                        className={`pill ${
-                          result.status === "ready"
-                            ? "succeeded"
-                            : result.status === "not_ready"
-                              ? "failed"
-                              : result.status
-                        }`}
-                      >
-                        {result.status === "ready"
-                          ? "Listo"
-                          : result.status === "not_ready"
-                            ? "No listo"
-                            : result.status === "running"
-                              ? "Preparando"
-                              : "Pendiente"}
-                      </span>
-                    </label>
-                  );
-                })
+            <HelpTip label="Uso del asistente de redacción">
+              <li>Solo genera borradores para revisar.</li>
+              <li>Nunca publica contenido sin aprobación.</li>
+            </HelpTip>
+          </div>
+        </div>
+        <div className="device-strip compact-device-strip">
+          <div className="device-heading">
+            <span className="section-number">01</span>
+            <div>
+              <h2>Dispositivo activo</h2>
+              <p>Este equipo se usa para las acciones individuales.</p>
+            </div>
+            <HelpTip label="Alcance del dispositivo activo">
+              <li>Inicio, abrir contenido y TikTok usan este dispositivo.</li>
+              <li>Facebook define sus participantes dentro de su propia campaña.</li>
+            </HelpTip>
+          </div>
+          <label className="device-select">
+            <span>Equipo conectado por ADB</span>
+            <select
+              value={selectedDevice}
+              onChange={(event) => setSelectedDevice(event.target.value)}
+            >
+              {orderedDevices.length ? (
+                orderedDevices.map((item) => (
+                  <option value={item.id} key={item.id}>
+                    {item.genFarmer?.index === undefined
+                      ? "GF s/n"
+                      : `GF #${item.genFarmer.index}`} · {item.model} · {item.id}
+                  </option>
+                ))
               ) : (
-                <div className="empty-state">No hay coincidencias locales.</div>
+                <option value="">Sin dispositivos</option>
               )}
+            </select>
+          </label>
+          <div className="device-facts compact-facts">
+            <div>
+              <span>GenFarmer</span>
+              <strong>
+                {device?.genFarmer
+                  ? `GF #${device.genFarmer.index ?? "s/n"}`
+                  : "No detectado"}
+              </strong>
             </div>
-          </div>
-          <div className="setup-results" aria-live="polite">
-            <div className="setup-results-heading">
-              <div>
-                <span>Resultados</span>
-                <strong>Listos y problemas detectados</strong>
-              </div>
-              <button
-                type="button"
-                className="button primary"
-                onClick={prepareDevices}
-                disabled={Boolean(busy) || !setupDeviceIds.length}
-              >
-                {busy === "setup"
-                  ? "Preparando selección..."
-                  : `Preparar ${setupDeviceIds.length || ""} dispositivo${
-                      setupDeviceIds.length === 1 ? "" : "s"
-                    }`}
-              </button>
+            <div>
+              <span>Preparación</span>
+              <strong>
+                {isReady
+                  ? "Lista para ejecutar"
+                  : `${setupCount} de ${requiredAutomations.length} paquetes`}
+              </strong>
             </div>
-            <div className="setup-result-list">
-              {setupDeviceIds.length ? (
-                orderedDevices
-                  .filter((item) => setupDeviceIds.includes(item.id))
-                  .map((item) => {
-                    const result = preparationResult(item);
-                    return (
-                      <article className="setup-result-row" key={item.id}>
-                        <span className="genfarmer-index">
-                          {item.genFarmer?.index === undefined
-                            ? "GF s/n"
-                            : `GF #${item.genFarmer.index}`}
-                        </span>
-                        <div>
-                          <strong>{item.genFarmer?.name || item.model}</strong>
-                          <code>{item.id}</code>
-                          <small>
-                            {result.problem ||
-                              `${requiredAutomations.length} paquetes y Home verificados.`}
-                          </small>
-                        </div>
-                        <span
-                          className={`pill ${
-                            result.status === "ready"
-                              ? "succeeded"
-                              : result.status === "not_ready"
-                                ? "failed"
-                                : result.status
-                          }`}
-                        >
-                          {result.status === "ready"
-                            ? "Listo"
-                            : result.status === "not_ready"
-                              ? "No listo"
-                              : result.status === "running"
-                                ? "Preparando"
-                                : "Pendiente"}
-                        </span>
-                      </article>
-                    );
-                  })
-              ) : (
-                <div className="empty-state">
-                  Selecciona uno o más dispositivos para ver su diagnóstico.
-                </div>
-              )}
+            <div>
+              <span>Aplicación visible</span>
+              <strong>{device?.capabilities?.focusedPackage || "Sin lectura"}</strong>
             </div>
           </div>
         </div>
       </section>
 
       {notice && (
-        <div className={`notice ${notice.type}`} role="status">
+        <div className={`notice ${notice.type}`} role={notice.type === "error" ? "alert" : "status"}>
           <span>{notice.type === "success" ? "Listo" : "Atención"}</span>
           {notice.text}
           <button type="button" onClick={() => setNotice(null)} aria-label="Cerrar">
@@ -2233,16 +2166,27 @@ export function ControlPanel() {
         </div>
       )}
 
-      <section className="automation-console">
+      <section className="automation-console" id="operar" aria-labelledby="operations-title">
         <div className="console-heading">
           <div>
             <span className="section-number">02</span>
             <div>
-              <p className="eyebrow">Control por paquete</p>
-              <h2>Elige una automatización</h2>
+              <p className="eyebrow">
+                {activeAutomation === "facebook-post-like-comment"
+                  ? "Campaña multidispositivo"
+                  : "Operar un dispositivo"}
+              </p>
+              <h2 id="operations-title">
+                {activeAutomation === "facebook-post-like-comment"
+                  ? "Campaña Facebook"
+                  : "Elige una acción"}
+              </h2>
             </div>
           </div>
-          <span className="console-hint">Los formularios conservan su estado al cambiar.</span>
+          <HelpTip label="Cómo usar las automatizaciones">
+            <li>Completa solo los campos de la acción elegida.</li>
+            <li>Las acciones públicas se revisan antes de ejecutarse.</li>
+          </HelpTip>
         </div>
 
         <div className="automation-layout">
@@ -2250,6 +2194,11 @@ export function ControlPanel() {
             {automationDefinitions.map((definition) => {
               const ready = automationReady(definition.slug);
               const available = appAvailable(definition, device);
+              const availability = !ready
+                ? "Sin preparar"
+                : available
+                  ? "Lista para ejecutar"
+                  : "Aplicación no instalada";
               return (
                 <button
                   type="button"
@@ -2261,18 +2210,16 @@ export function ControlPanel() {
                     window.history.replaceState(null, "", `#${definition.slug}`);
                   }}
                   aria-pressed={activeAutomation === definition.slug}
+                  aria-label={`${definition.title}. ${availability}.`}
                   key={definition.slug}
                 >
                   <span className="nav-code">{definition.code}</span>
                   <span className="nav-copy">
                     <small>{definition.group}</small>
                     <strong>{definition.title}</strong>
-                    <span>{definition.description}</span>
+                    <span className="nav-status">{availability}</span>
                   </span>
-                  <span
-                    className={`nav-state ${ready && available ? "ready" : "missing"}`}
-                    title={ready ? (available ? "Lista" : "Aplicación no instalada") : "Sin preparar"}
-                  />
+                  <span className={`nav-state ${ready && available ? "ready" : "missing"}`} aria-hidden="true" />
                 </button>
               );
             })}
@@ -2314,11 +2261,143 @@ export function ControlPanel() {
         </div>
       </section>
 
-      <section className="activity">
+      <section
+        className="device-preparation"
+        id="dispositivos"
+        aria-labelledby="device-preparation-title"
+      >
+        <header className="preparation-heading">
+          <div>
+            <p className="eyebrow">Dispositivos y diagnóstico</p>
+            <h2 id="device-preparation-title">Prepara solo los equipos que vas a usar</h2>
+            <p>La verificación se ejecuta de uno en uno y deja el resultado junto a cada equipo.</p>
+          </div>
+          <strong>{setupDeviceIds.length} seleccionados</strong>
+        </header>
+        <div className="preparation-grid">
+          <div className="setup-picker">
+            <label className="field">
+              <span>Buscar por número GF, modelo o serial</span>
+              <input
+                type="search"
+                value={setupQuery}
+                onChange={(event) => setSetupQuery(event.target.value)}
+                placeholder="Ej. GF #7 o 988c..."
+              />
+            </label>
+            <div className="setup-picker-actions">
+              <button
+                type="button"
+                className="text-button"
+                onClick={() =>
+                  setSetupDeviceIds((current) => [
+                    ...new Set([...current, ...visibleSetupDevices.map((item) => item.id)]),
+                  ])
+                }
+                disabled={!visibleSetupDevices.length || busy === "setup"}
+              >
+                Seleccionar visibles
+              </button>
+              <button
+                type="button"
+                className="text-button danger-text"
+                onClick={() => setSetupDeviceIds([])}
+                disabled={!setupDeviceIds.length || busy === "setup"}
+              >
+                Limpiar selección
+              </button>
+            </div>
+            <div className="setup-device-list" aria-live="polite">
+              {visibleSetupDevices.length ? (
+                visibleSetupDevices.map((item) => {
+                  const result = preparationResult(item);
+                  return (
+                    <label className="setup-device-option" key={item.id}>
+                      <input
+                        type="checkbox"
+                        checked={setupDeviceIds.includes(item.id)}
+                        onChange={() => toggleSetupDevice(item.id)}
+                        disabled={busy === "setup"}
+                      />
+                      <span className="genfarmer-index">
+                        {item.genFarmer?.index === undefined
+                          ? "GF s/n"
+                          : `GF #${item.genFarmer.index}`}
+                      </span>
+                      <span className="setup-device-copy">
+                        <strong>{item.genFarmer?.name || item.model}</strong>
+                        <small>{item.id}</small>
+                        <small className="preparation-problem">
+                          {result.problem || `${requiredAutomations.length} paquetes y Home verificados.`}
+                        </small>
+                      </span>
+                      <span
+                        className={`pill ${
+                          result.status === "ready"
+                            ? "succeeded"
+                            : result.status === "not_ready"
+                              ? "failed"
+                              : result.status
+                        }`}
+                      >
+                        {result.status === "ready"
+                          ? "Listo"
+                          : result.status === "not_ready"
+                            ? "No listo"
+                            : result.status === "running"
+                              ? "Preparando"
+                              : "Pendiente"}
+                      </span>
+                    </label>
+                  );
+                })
+              ) : (
+                <div className="empty-state">No hay dispositivos que coincidan con la búsqueda.</div>
+              )}
+            </div>
+          </div>
+          <aside className="setup-summary" aria-live="polite">
+            <div>
+              <span>Selección actual</span>
+              <strong>
+                {setupDeviceIds.length
+                  ? `${setupDeviceIds.length} dispositivo${setupDeviceIds.length === 1 ? "" : "s"}`
+                  : "Ningún dispositivo"}
+              </strong>
+              <p>
+                {setupDeviceIds.length
+                  ? "Se prepararán uno por uno. El resultado queda visible en cada fila."
+                  : "Marca los equipos que vas a usar y después inicia la preparación."}
+              </p>
+            </div>
+            <details className="inline-details">
+              <summary>Qué verifica la preparación</summary>
+              <ul>
+                <li>Conexión ADB y reconocimiento por GenFarmer.</li>
+                <li>Paquetes requeridos y una prueba de inicio.</li>
+              </ul>
+            </details>
+            <button
+              type="button"
+              className="button primary"
+              onClick={prepareDevices}
+              disabled={Boolean(busy) || !setupDeviceIds.length}
+            >
+              {busy === "setup"
+                ? "Preparando selección..."
+                : `Preparar ${setupDeviceIds.length || ""} dispositivo${
+                    setupDeviceIds.length === 1 ? "" : "s"
+                  }`}
+            </button>
+          </aside>
+        </div>
+      </section>
+
+      <section className="activity" id="actividad" aria-labelledby="activity-title">
         <div className="activity-heading">
           <div>
-            <p className="eyebrow">Auditoría compartida</p>
-            <h2>Actividad reciente</h2>
+            <p className="eyebrow">Ejecuciones recientes</p>
+            <h2 id="activity-title">Actividad</h2>
           </div>
           <span>
             SQLite · {snapshot ? new Date(snapshot.polledAt).toLocaleTimeString("es-PE") : "--:--"}
@@ -2332,6 +2411,7 @@ export function ControlPanel() {
                 <div>
                   <strong>{friendlyAction(operation.kind)}</strong>
                   <span>{operation.device_id}</span>
+                  {operation.error && <small className="activity-error">{operation.error}</small>}
                 </div>
                 <time>{new Date(operation.created_at).toLocaleString("es-PE")}</time>
                 <span className={`pill ${operation.status}`}>
