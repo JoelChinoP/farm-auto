@@ -40,6 +40,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/automations ./automations
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Next's output tracer skips playwright-core's browsers.json (read dynamically,
+# not via require/import), so the standalone node_modules copy is incomplete.
+COPY --from=dependencies --chown=nextjs:nodejs /app/node_modules/playwright-core ./node_modules/playwright-core
+
 USER nextjs
 
 EXPOSE 3000
