@@ -62,6 +62,11 @@ export type DevicePreparationRow = {
 export type FacebookBatchRow = {
   id: string;
   status: "active" | "completed" | "cancelled";
+  device_ids_json: string;
+  plan_version: "legacy" | "rotation_v1";
+  current_round: number;
+  execution_status: "idle" | "running";
+  next_execution_at: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -110,6 +115,14 @@ export type FacebookAssignmentRow = {
   error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+export type FacebookRotationSlotRow = {
+  batch_id: string;
+  post_id: string;
+  device_id: string;
+  round_index: number;
+  sequence_index: number;
 };
 
 const globalDatabase = globalThis as typeof globalThis & {
@@ -178,6 +191,11 @@ function createDatabase() {
     CREATE TABLE IF NOT EXISTS facebook_batches (
       id TEXT PRIMARY KEY,
       status TEXT NOT NULL,
+      device_ids_json TEXT NOT NULL DEFAULT '[]',
+      plan_version TEXT NOT NULL DEFAULT 'legacy',
+      current_round INTEGER NOT NULL DEFAULT 0,
+      execution_status TEXT NOT NULL DEFAULT 'idle',
+      next_execution_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -211,14 +229,27 @@ function createDatabase() {
       UNIQUE (post_id, device_id)
     );
 
+    CREATE TABLE IF NOT EXISTS facebook_rotation_slots (
+      batch_id TEXT NOT NULL REFERENCES facebook_batches(id) ON DELETE CASCADE,
+      post_id TEXT NOT NULL REFERENCES facebook_posts(id) ON DELETE CASCADE,
+      device_id TEXT NOT NULL,
+      round_index INTEGER NOT NULL CHECK (round_index >= 0),
+      sequence_index INTEGER NOT NULL CHECK (sequence_index >= 0),
+      PRIMARY KEY (post_id, device_id),
+      UNIQUE (batch_id, round_index, device_id),
+      UNIQUE (post_id, round_index, sequence_index)
+    );
+
     CREATE INDEX IF NOT EXISTS facebook_posts_batch_position
       ON facebook_posts(batch_id, position);
     CREATE INDEX IF NOT EXISTS facebook_assignments_post
       ON facebook_assignments(post_id);
+    CREATE INDEX IF NOT EXISTS facebook_rotation_slots_round
+      ON facebook_rotation_slots(batch_id, round_index, post_id, sequence_index);
   `);
   const migrate = database.transaction(() => {
     let version = database.pragma("user_version", { simple: true }) as number;
-    if (version > 2) {
+    if (version > 7) {
       throw new Error(`La base de datos usa una versión futura (${version}).`);
     }
     if (version < 1) {
@@ -277,6 +308,140 @@ function createDatabase() {
           );
       `);
       database.pragma("user_version = 2");
+      version = 2;
+    }
+    if (version < 3) {
+      const batchColumns = database.pragma("table_info(facebook_batches)") as Array<{
+        name: string;
+      }>;
+      if (!batchColumns.some((column) => column.name === "device_ids_json")) {
+        database.exec(
+          "ALTER TABLE facebook_batches ADD COLUMN device_ids_json TEXT NOT NULL DEFAULT '[]'",
+        );
+      }
+      database.pragma("user_version = 3");
+      version = 3;
+    }
+    if (version < 4) {
+      const batchColumns = database.pragma("table_info(facebook_batches)") as Array<{
+        name: string;
+      }>;
+      if (!batchColumns.some((column) => column.name === "plan_version")) {
+        database.exec(
+          "ALTER TABLE facebook_batches ADD COLUMN plan_version TEXT NOT NULL DEFAULT 'legacy'",
+        );
+      }
+      if (!batchColumns.some((column) => column.name === "current_round")) {
+        database.exec(
+          "ALTER TABLE facebook_batches ADD COLUMN current_round INTEGER NOT NULL DEFAULT 0",
+        );
+      }
+      if (!batchColumns.some((column) => column.name === "execution_status")) {
+        database.exec(
+          "ALTER TABLE facebook_batches ADD COLUMN execution_status TEXT NOT NULL DEFAULT 'idle'",
+        );
+      }
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS facebook_rotation_slots (
+          batch_id TEXT NOT NULL REFERENCES facebook_batches(id) ON DELETE CASCADE,
+          post_id TEXT NOT NULL REFERENCES facebook_posts(id) ON DELETE CASCADE,
+          device_id TEXT NOT NULL,
+          round_index INTEGER NOT NULL CHECK (round_index >= 0),
+          sequence_index INTEGER NOT NULL CHECK (sequence_index >= 0),
+          PRIMARY KEY (post_id, device_id),
+          UNIQUE (batch_id, round_index, device_id),
+          UNIQUE (post_id, round_index, sequence_index)
+        );
+        CREATE INDEX IF NOT EXISTS facebook_rotation_slots_round
+          ON facebook_rotation_slots(batch_id, round_index, post_id, sequence_index);
+      `);
+      database.pragma("user_version = 4");
+      version = 4;
+    }
+    if (version < 5) {
+      const batchColumns = database.pragma("table_info(facebook_batches)") as Array<{
+        name: string;
+      }>;
+      if (!batchColumns.some((column) => column.name === "next_execution_at")) {
+        database.exec(
+          "ALTER TABLE facebook_batches ADD COLUMN next_execution_at TEXT",
+        );
+      }
+      database.pragma("user_version = 5");
+      version = 5;
+    }
+    if (version < 6) {
+      database.exec(`
+        UPDATE message_drafts
+        SET status = 'outcome_unknown',
+            error = 'Resultado previo a la verificación estricta del objetivo; confirma manualmente.',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id IN (
+          SELECT assignment.draft_id
+          FROM facebook_assignments AS assignment
+          JOIN facebook_posts AS post ON post.id = assignment.post_id
+          JOIN facebook_batches AS batch ON batch.id = post.batch_id
+          WHERE assignment.status = 'sent'
+            AND assignment.draft_id IS NOT NULL
+            AND batch.status = 'active'
+        );
+        UPDATE facebook_assignments
+        SET status = 'outcome_unknown',
+            error = 'Resultado previo a la verificación estricta del objetivo; confirma manualmente.',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE status = 'sent'
+          AND post_id IN (
+            SELECT post.id
+            FROM facebook_posts AS post
+            JOIN facebook_batches AS batch ON batch.id = post.batch_id
+            WHERE batch.status = 'active'
+          );
+        UPDATE facebook_posts
+        SET status = 'outcome_unknown',
+            error = 'Hay resultados anteriores que deben verificarse antes de continuar.',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE batch_id IN (
+            SELECT id FROM facebook_batches
+            WHERE status = 'active'
+          )
+          AND EXISTS (
+            SELECT 1 FROM facebook_assignments AS assignment
+            WHERE assignment.post_id = facebook_posts.id
+              AND assignment.status = 'outcome_unknown'
+          );
+        UPDATE facebook_batches
+        SET next_execution_at = NULL
+        WHERE status = 'active' AND plan_version = 'rotation_v1';
+      `);
+      database.pragma("user_version = 6");
+      version = 6;
+    }
+    if (version < 7) {
+      database.exec(`
+        UPDATE facebook_batches
+        SET current_round = (
+              SELECT MIN(slot.round_index)
+              FROM facebook_rotation_slots AS slot
+              JOIN facebook_assignments AS assignment
+                ON assignment.post_id = slot.post_id
+               AND assignment.device_id = slot.device_id
+              WHERE slot.batch_id = facebook_batches.id
+                AND assignment.status = 'outcome_unknown'
+            ),
+            next_execution_at = NULL
+        WHERE status = 'active'
+          AND plan_version = 'rotation_v1'
+          AND EXISTS (
+            SELECT 1
+            FROM facebook_rotation_slots AS slot
+            JOIN facebook_assignments AS assignment
+              ON assignment.post_id = slot.post_id
+             AND assignment.device_id = slot.device_id
+            WHERE slot.batch_id = facebook_batches.id
+              AND assignment.status = 'outcome_unknown'
+          );
+      `);
+      database.pragma("user_version = 7");
     }
   });
   migrate.immediate();
@@ -326,17 +491,14 @@ function createDatabase() {
            ELSE 'La generación fue interrumpida al reiniciar el panel.'
          END,
          updated_at = ?
-       WHERE status IN ('generating', 'running')`,
-    )
-    .run(recoveryTimestamp);
-  database
-    .prepare(
-      `UPDATE facebook_assignments SET status = 'failed',
-         error = 'La ejecución se interrumpió antes de iniciar esta asignación.',
-         updated_at = ?
-       WHERE status = 'approved' AND post_id IN (
-         SELECT id FROM facebook_posts WHERE status = 'outcome_unknown'
-       )`,
+       WHERE status IN ('generating', 'running')
+          OR (
+            status = 'pending' AND post_id IN (
+              SELECT id FROM facebook_posts
+              WHERE status = 'partial_failed'
+                AND error = 'La etapa fue interrumpida al reiniciar el panel.'
+            )
+          )`,
     )
     .run(recoveryTimestamp);
   database
@@ -348,6 +510,11 @@ function createDatabase() {
              WHERE facebook_assignments.post_id = facebook_posts.id
                AND facebook_assignments.status = 'outcome_unknown'
            ) THEN 'outcome_unknown'
+           WHEN EXISTS (
+             SELECT 1 FROM facebook_assignments
+             WHERE facebook_assignments.post_id = facebook_posts.id
+               AND facebook_assignments.status = 'approved'
+           ) THEN 'approved'
            WHEN EXISTS (
              SELECT 1 FROM facebook_assignments
              WHERE facebook_assignments.post_id = facebook_posts.id
@@ -372,6 +539,11 @@ function createDatabase() {
            WHEN EXISTS (
              SELECT 1 FROM facebook_assignments
              WHERE facebook_assignments.post_id = facebook_posts.id
+               AND facebook_assignments.status = 'approved'
+           ) THEN 'La ejecución se interrumpió antes de iniciar todas las asignaciones; puede reanudarse.'
+           WHEN EXISTS (
+             SELECT 1 FROM facebook_assignments
+             WHERE facebook_assignments.post_id = facebook_posts.id
                AND facebook_assignments.status = 'failed'
            ) THEN 'La ejecución interrumpida dejó asignaciones no enviadas.'
            ELSE NULL
@@ -388,6 +560,40 @@ function createDatabase() {
          WHERE facebook_posts.batch_id = facebook_batches.id
            AND facebook_posts.status NOT IN ('completed', 'skipped')
        )`,
+    )
+    .run(recoveryTimestamp);
+  database
+    .prepare(
+      `UPDATE facebook_posts SET status = 'drafts_ready', error = NULL, updated_at = ?
+       WHERE status = 'partial_failed'
+         AND error = 'La etapa fue interrumpida al reiniciar el panel.'
+         AND EXISTS (
+           SELECT 1 FROM facebook_assignments
+           WHERE facebook_assignments.post_id = facebook_posts.id
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM facebook_assignments
+           WHERE facebook_assignments.post_id = facebook_posts.id
+             AND (
+               facebook_assignments.draft_id IS NULL OR
+               facebook_assignments.status NOT IN ('draft', 'approved')
+             )
+         )`,
+    )
+    .run(recoveryTimestamp);
+  database
+    .prepare(
+      `UPDATE facebook_batches SET execution_status = 'idle', updated_at = ?
+       WHERE execution_status = 'running'`,
+    )
+    .run(recoveryTimestamp);
+  database
+    .prepare(
+      `UPDATE facebook_batches SET status = 'completed', execution_status = 'idle', updated_at = ?
+       WHERE status = 'active' AND plan_version = 'rotation_v1'
+         AND current_round >= (
+           SELECT COUNT(*) FROM facebook_posts WHERE batch_id = facebook_batches.id
+         )`,
     )
     .run(recoveryTimestamp);
   return database;
@@ -636,21 +842,49 @@ export function releaseDeviceLock(deviceId: string, operationId: string) {
   ).run(deviceId, operationId);
 }
 
-export function createFacebookBatch(urls: string[]) {
+export function createFacebookBatch(
+  urls: string[],
+  deviceIds: string[],
+  rotationSlots: Array<{
+    postPosition: number;
+    deviceId: string;
+    roundIndex: number;
+    sequenceIndex: number;
+  }>,
+) {
   const timestamp = now();
   const batch: FacebookBatchRow = {
     id: randomUUID(),
     status: "active",
+    device_ids_json: JSON.stringify(deviceIds),
+    plan_version: "rotation_v1",
+    current_round: 0,
+    execution_status: "idle",
+    next_execution_at: null,
     created_at: timestamp,
     updated_at: timestamp,
   };
   const create = db.transaction(() => {
     const busy = db
       .prepare(
-        `SELECT 1 FROM facebook_posts
-         JOIN facebook_batches ON facebook_batches.id = facebook_posts.batch_id
+        `SELECT 1 FROM facebook_batches
+         LEFT JOIN facebook_posts ON facebook_batches.id = facebook_posts.batch_id
          WHERE facebook_batches.status = 'active'
-           AND facebook_posts.status IN ('extracting', 'generating', 'approving', 'running', 'outcome_unknown')
+           AND (
+             facebook_batches.execution_status = 'running' OR
+             facebook_posts.status IN ('extracting', 'generating', 'approving', 'running', 'outcome_unknown') OR
+             EXISTS (
+               SELECT 1
+               FROM facebook_posts AS delivery_post
+               JOIN facebook_assignments AS delivery
+                 ON delivery.post_id = delivery_post.id
+               WHERE delivery_post.batch_id = facebook_batches.id
+                 AND (
+                   delivery.status IN ('sent', 'running', 'outcome_unknown') OR
+                   (delivery.status = 'failed' AND delivery.draft_id IS NOT NULL)
+                 )
+             )
+           )
          LIMIT 1`,
       )
       .get();
@@ -665,16 +899,36 @@ export function createFacebookBatch(urls: string[]) {
       "UPDATE facebook_batches SET status = 'cancelled', updated_at = ? WHERE status = 'active'",
     ).run(timestamp);
     db.prepare(
-      `INSERT INTO facebook_batches (id, status, created_at, updated_at)
-       VALUES (@id, @status, @created_at, @updated_at)`,
+      `INSERT INTO facebook_batches
+       (id, status, device_ids_json, plan_version, current_round, execution_status, next_execution_at, created_at, updated_at)
+       VALUES (@id, @status, @device_ids_json, @plan_version, @current_round, @execution_status, @next_execution_at, @created_at, @updated_at)`,
     ).run(batch);
     const insertPost = db.prepare(
       `INSERT INTO facebook_posts
        (id, batch_id, position, url, extracted_context, context, status, error, created_at, updated_at)
        VALUES (?, ?, ?, ?, NULL, NULL, 'queued', NULL, ?, ?)`,
     );
+    const postIds = urls.map(() => randomUUID());
     urls.forEach((url, position) => {
-      insertPost.run(randomUUID(), batch.id, position, url, timestamp, timestamp);
+      insertPost.run(postIds[position], batch.id, position, url, timestamp, timestamp);
+    });
+    const insertSlot = db.prepare(
+      `INSERT INTO facebook_rotation_slots
+       (batch_id, post_id, device_id, round_index, sequence_index)
+       VALUES (?, ?, ?, ?, ?)`,
+    );
+    rotationSlots.forEach((slot) => {
+      const postId = postIds[slot.postPosition];
+      if (!postId) {
+        throw new AppError("El plan de rotación contiene una publicación inválida.", 500, "INVALID_ROTATION_PLAN");
+      }
+      insertSlot.run(
+        batch.id,
+        postId,
+        slot.deviceId,
+        slot.roundIndex,
+        slot.sequenceIndex,
+      );
     });
   });
   create();
@@ -702,8 +956,10 @@ export function updateFacebookBatch(
   status: FacebookBatchRow["status"],
 ) {
   db.prepare(
-    "UPDATE facebook_batches SET status = ?, updated_at = ? WHERE id = ?",
-  ).run(status, now(), id);
+    `UPDATE facebook_batches SET status = ?,
+       execution_status = CASE WHEN ? = 'active' THEN execution_status ELSE 'idle' END,
+       updated_at = ? WHERE id = ?`,
+  ).run(status, status, now(), id);
   return getFacebookBatch(id);
 }
 
@@ -711,6 +967,103 @@ export function listFacebookPosts(batchId: string) {
   return db
     .prepare("SELECT * FROM facebook_posts WHERE batch_id = ? ORDER BY position")
     .all(batchId) as FacebookPostRow[];
+}
+
+export function hasFacebookBatchPublicActions(batchId: string) {
+  return Boolean(
+    db.prepare(
+      `SELECT 1
+       FROM facebook_posts
+       JOIN facebook_assignments ON facebook_assignments.post_id = facebook_posts.id
+       WHERE facebook_posts.batch_id = ?
+         AND (
+           facebook_assignments.status IN ('sent', 'running', 'outcome_unknown') OR
+           (facebook_assignments.status = 'failed' AND facebook_assignments.draft_id IS NOT NULL)
+         )
+       LIMIT 1`,
+    ).get(batchId),
+  );
+}
+
+export function listFacebookRotationSlots(batchId: string, roundIndex?: number) {
+  if (roundIndex === undefined) {
+    return db
+      .prepare(
+        `SELECT * FROM facebook_rotation_slots WHERE batch_id = ?
+         ORDER BY round_index, post_id, sequence_index`,
+      )
+      .all(batchId) as FacebookRotationSlotRow[];
+  }
+  return db
+    .prepare(
+      `SELECT * FROM facebook_rotation_slots WHERE batch_id = ? AND round_index = ?
+       ORDER BY post_id, sequence_index`,
+    )
+    .all(batchId, roundIndex) as FacebookRotationSlotRow[];
+}
+
+export function claimFacebookBatchExecution(id: string) {
+  const result = db
+    .prepare(
+      `UPDATE facebook_batches SET execution_status = 'running', updated_at = ?
+       WHERE id = ? AND status = 'active' AND plan_version = 'rotation_v1'
+         AND execution_status = 'idle'`,
+    )
+    .run(now(), id);
+  if (result.changes !== 1) {
+    throw new AppError(
+      "La cola ya está ejecutándose o dejó de estar activa.",
+      409,
+      "BATCH_EXECUTION_BUSY",
+    );
+  }
+  return getFacebookBatch(id)!;
+}
+
+export function releaseFacebookBatchExecution(id: string) {
+  db.prepare(
+    "UPDATE facebook_batches SET execution_status = 'idle', updated_at = ? WHERE id = ?",
+  ).run(now(), id);
+}
+
+export function setFacebookBatchNextExecutionAt(id: string, value: string | null) {
+  db.prepare(
+    "UPDATE facebook_batches SET next_execution_at = ?, updated_at = ? WHERE id = ?",
+  ).run(value, now(), id);
+  return getFacebookBatch(id)!;
+}
+
+export function advanceFacebookBatchRound(
+  id: string,
+  expectedRound: number,
+  finalRound: boolean,
+) {
+  const result = db
+    .prepare(
+      `UPDATE facebook_batches SET current_round = current_round + 1,
+         status = CASE WHEN ? THEN 'completed' ELSE status END,
+         execution_status = CASE WHEN ? THEN 'idle' ELSE execution_status END,
+         next_execution_at = CASE WHEN ? THEN NULL ELSE next_execution_at END,
+         updated_at = ?
+       WHERE id = ? AND status = 'active' AND plan_version = 'rotation_v1'
+         AND execution_status = 'running' AND current_round = ?`,
+    )
+    .run(
+      finalRound ? 1 : 0,
+      finalRound ? 1 : 0,
+      finalRound ? 1 : 0,
+      now(),
+      id,
+      expectedRound,
+    );
+  if (result.changes !== 1) {
+    throw new AppError(
+      "La ronda cambió durante la ejecución.",
+      409,
+      "BATCH_ROUND_CHANGED",
+    );
+  }
+  return getFacebookBatch(id)!;
 }
 
 export function getFacebookPost(id: string) {
@@ -786,7 +1139,16 @@ export function getFacebookAssignment(id: string) {
 
 export function getFacebookAssignmentByDraftId(draftId: string) {
   return db
-    .prepare("SELECT * FROM facebook_assignments WHERE draft_id = ?")
+    .prepare(
+      `SELECT facebook_assignments.*
+       FROM facebook_assignments
+       JOIN facebook_posts ON facebook_posts.id = facebook_assignments.post_id
+       JOIN facebook_batches ON facebook_batches.id = facebook_posts.batch_id
+       WHERE facebook_assignments.draft_id = ?
+       ORDER BY CASE facebook_batches.status WHEN 'active' THEN 0 ELSE 1 END,
+                facebook_assignments.created_at DESC
+       LIMIT 1`,
+    )
     .get(draftId) as FacebookAssignmentRow | undefined;
 }
 

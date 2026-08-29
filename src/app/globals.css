@@ -1639,6 +1639,86 @@ select:focus {
   background: #faf9f4;
 }
 
+.facebook-batch-device-plan,
+.facebook-plan-preview {
+  display: grid;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--white);
+}
+
+.facebook-batch-device-plan .facebook-device-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-height: 190px;
+}
+
+.facebook-plan-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.facebook-plan-grid article {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 11px;
+  border-radius: 10px;
+  background: var(--module-soft);
+}
+
+.facebook-plan-grid article > span {
+  color: var(--module-accent);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.facebook-plan-grid article > strong {
+  font-size: 11px;
+}
+
+.facebook-plan-grid article > small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facebook-round-preview-list,
+.facebook-round-preview {
+  display: grid;
+  gap: 10px;
+}
+
+.facebook-round-preview {
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.facebook-round-preview:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.facebook-round-preview > strong {
+  color: var(--module-accent);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.facebook-round-overflow {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .facebook-queue-actions,
 .facebook-queue-strip,
 .facebook-progress-card,
@@ -1686,6 +1766,17 @@ select:focus {
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
   font-weight: 800;
+}
+
+button.facebook-queue-item {
+  min-height: 27px;
+  padding: 0;
+  cursor: pointer;
+}
+
+button.facebook-queue-item:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .facebook-queue-item.current {
@@ -1772,6 +1863,71 @@ select:focus {
   padding: 14px;
   border: 1px solid color-mix(in srgb, var(--module-accent) 20%, var(--line));
   border-radius: 12px;
+}
+
+.facebook-browser-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 13px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid #d5cfc2;
+  border-radius: 12px;
+  background: #f8f6ef;
+}
+
+.facebook-browser-bar.ready {
+  border-color: #a9c86c;
+  background: #f0f7dd;
+}
+
+.facebook-browser-bar.login_required {
+  border-color: #e1bb68;
+  background: #fff6dc;
+}
+
+.facebook-browser-bar.extracting {
+  border-color: #9cb9e7;
+  background: #eef4ff;
+}
+
+.facebook-browser-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: #1877f2;
+  color: white;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.facebook-browser-bar > div:not(.facebook-browser-actions) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.facebook-browser-bar strong {
+  font-size: 11px;
+}
+
+.facebook-browser-bar small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.facebook-browser-bar .facebook-browser-error {
+  color: #8f2d1d;
+}
+
+.facebook-browser-actions {
+  display: flex;
+  gap: 9px;
+  align-items: center;
 }
 
 .facebook-target-bar > div {
@@ -1951,6 +2107,34 @@ select:focus {
 
 .facebook-execution-bar {
   background: #fff0e8;
+}
+
+.facebook-execution-controls {
+  min-width: min(100%, 330px);
+  gap: 9px !important;
+}
+
+.facebook-rotation-execution {
+  align-items: flex-start;
+}
+
+.facebook-rotation-execution .facebook-execution-controls {
+  min-width: min(100%, 460px);
+}
+
+.facebook-timing-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.facebook-timing-grid input {
+  min-height: 36px;
+}
+
+.facebook-timing-grid .field > small {
+  color: var(--muted);
+  font-size: 8px;
 }
 
 .facebook-reconciliation-bar {
@@ -2598,6 +2782,7 @@ select:focus-visible {
   }
 
   .facebook-batch-header,
+  .facebook-browser-actions,
   .facebook-target-bar,
   .facebook-approval-bar,
   .facebook-execution-bar,
@@ -2605,6 +2790,20 @@ select:focus-visible {
   .facebook-skip-bar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .facebook-browser-bar {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .facebook-browser-actions {
+    width: 100%;
+    grid-column: 1 / -1;
+  }
+
+  .facebook-browser-actions .button {
+    width: 100%;
   }
 
   .facebook-batch-meter,
@@ -2617,6 +2816,8 @@ select:focus-visible {
   }
 
   .facebook-queue-form,
+  .facebook-batch-device-plan,
+  .facebook-plan-preview,
   .facebook-context-panel,
   .facebook-devices-panel,
   .facebook-allocation-panel,
@@ -2630,8 +2831,14 @@ select:focus-visible {
   }
 
   .facebook-allocation-row,
-  .facebook-comment-list {
+  .facebook-comment-list,
+  .facebook-batch-device-plan .facebook-device-list,
+  .facebook-plan-grid {
     grid-template-columns: 1fr;
+  }
+
+  .facebook-execution-controls {
+    width: 100%;
   }
 
   .facebook-allocation-row .text-button {

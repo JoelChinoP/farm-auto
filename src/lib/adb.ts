@@ -104,30 +104,6 @@ export async function getFocusedPackage(deviceId: string) {
   return focusedPackageUnchecked(deviceId);
 }
 
-export async function dumpWindowHierarchy(deviceId: string) {
-  await assertConnected(deviceId);
-  const remotePath = "/sdcard/genfarmer-facebook-context.xml";
-  await adb(
-    ["-s", deviceId, "shell", "uiautomator", "dump", remotePath],
-    20_000,
-  );
-  try {
-    const xml = await adb(["-s", deviceId, "exec-out", "cat", remotePath]);
-    if (!xml.includes("<hierarchy")) {
-      throw new AppError(
-        "Android no devolvió el contenido accesible de la pantalla.",
-        502,
-        "UI_HIERARCHY_EMPTY",
-      );
-    }
-    return xml;
-  } finally {
-    await adb(["-s", deviceId, "shell", "rm", "-f", remotePath]).catch(
-      () => undefined,
-    );
-  }
-}
-
 async function focusedPackageUnchecked(deviceId: string) {
   const output = await adb(["-s", deviceId, "shell", "dumpsys", "window"]);
   const focusLine = output
@@ -138,28 +114,49 @@ async function focusedPackageUnchecked(deviceId: string) {
 
 const capabilityCache = new Map<
   string,
-  { checkedAt: number; tiktok: boolean; facebook: boolean }
+  { checkedAt: number; tiktok: boolean; facebook: boolean; hardwareId: string }
 >();
+
+export async function getDeviceHardwareId(deviceId: string) {
+  await assertConnected(deviceId);
+  const [serialNumber, androidId] = await Promise.all([
+    adb(["-s", deviceId, "shell", "getprop", "ro.serialno"]),
+    adb(["-s", deviceId, "shell", "settings", "get", "secure", "android_id"]),
+  ]);
+  const parts = [serialNumber, androidId].filter(
+    (value) => value && value.toLowerCase() !== "null",
+  );
+  if (!parts.length) {
+    throw new AppError(
+      "ADB no pudo identificar el hardware del dispositivo.",
+      409,
+      "DEVICE_IDENTITY_UNAVAILABLE",
+    );
+  }
+  return parts.join(":");
+}
 
 export async function getDeviceCapabilities(deviceId: string) {
   await assertConnected(deviceId);
   let installed = capabilityCache.get(deviceId);
   if (!installed || Date.now() - installed.checkedAt > 30_000) {
-    const [tiktok, facebook] = await Promise.all([
+    const [tiktok, facebook, hardwareId] = await Promise.all([
       isPackageInstalledUnchecked(deviceId, "com.zhiliaoapp.musically").catch(
         () => false,
       ),
       isPackageInstalledUnchecked(deviceId, "com.facebook.katana").catch(
         () => false,
       ),
+      getDeviceHardwareId(deviceId),
     ]);
-    installed = { checkedAt: Date.now(), tiktok, facebook };
+    installed = { checkedAt: Date.now(), tiktok, facebook, hardwareId };
     capabilityCache.set(deviceId, installed);
   }
   const focusedPackage = await focusedPackageUnchecked(deviceId).catch(() => null);
   return {
     tiktok: installed.tiktok,
     facebook: installed.facebook,
+    hardwareId: installed.hardwareId,
     focusedPackage,
   };
 }

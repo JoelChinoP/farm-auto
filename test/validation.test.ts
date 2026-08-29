@@ -3,10 +3,15 @@ import test from "node:test";
 
 import {
   approveDraftSchema,
+  distributeFacebookDevices,
   draftInputSchema,
   expandFacebookAllocations,
+  facebookBatchExecuteSchema,
   facebookBatchSchema,
+  facebookBrowserActionSchema,
   facebookDraftsSchema,
+  facebookExecuteSchema,
+  facebookExtractSchema,
   facebookReconcileSchema,
   normalizeContentUrl,
   normalizeFacebookUrls,
@@ -15,8 +20,13 @@ import {
   tiktokLiveTapTapSchema,
 } from "../src/lib/schemas.ts";
 import {
-  extractAccessibleFacebookContext,
-  findStoredFacebookContext,
+  buildFacebookRotationPlan,
+  getFacebookRoundDisposition,
+  runFacebookRound,
+} from "../src/lib/facebook-rotation.ts";
+import {
+  buildFacebookPostDescription,
+  buildFacebookTargetMarker,
 } from "../src/lib/facebook-context.ts";
 
 test("accepts TikTok and Facebook HTTPS links", () => {
@@ -39,6 +49,12 @@ test("rejects mismatched, insecure, and unrelated links", () => {
   );
   assert.throws(() =>
     normalizeContentUrl("facebook", "https://facebook.com.example.test/video"),
+  );
+  assert.throws(() =>
+    normalizeContentUrl("facebook", "https://user@facebook.com/video"),
+  );
+  assert.throws(() =>
+    normalizeContentUrl("facebook", "https://facebook.com:444/video"),
   );
   assert.throws(() =>
     normalizeContentUrl(
@@ -163,11 +179,136 @@ test("normalizes and deduplicates an ordered Facebook URL batch", () => {
       "https://www.facebook.com/share/p/first",
       "https://fb.watch/second/",
     ],
+    deviceIds: ["device-a", "device-b"],
   }).urls;
   assert.deepEqual(normalizeFacebookUrls(urls), [
     "https://www.facebook.com/share/p/first",
     "https://fb.watch/second/",
   ]);
+});
+
+test("distributes every Facebook device once across balanced link groups", () => {
+  const deviceIds = Array.from({ length: 10 }, (_, index) => `device-${index + 1}`);
+  const groups = distributeFacebookDevices(deviceIds, 3);
+  assert.deepEqual(groups.map((group) => group.length), [4, 3, 3]);
+  assert.deepEqual(groups.flat(), deviceIds);
+  assert.throws(() => distributeFacebookDevices(["device-a", "device-a"], 1));
+  assert.deepEqual(distributeFacebookDevices(["device-a"], 2), [["device-a"], []]);
+  assert.throws(() => distributeFacebookDevices([], 2));
+});
+
+test("rotates one Facebook device through every link", () => {
+  const plan = buildFacebookRotationPlan(
+    distributeFacebookDevices(["device-a"], 2),
+  );
+  assert.deepEqual(plan, [
+    { postPosition: 0, deviceId: "device-a", roundIndex: 0, sequenceIndex: 0 },
+    { postPosition: 1, deviceId: "device-a", roundIndex: 1, sequenceIndex: 0 },
+  ]);
+});
+
+test("builds a complete Facebook rotation without device conflicts", () => {
+  const deviceIds = ["device-a", "device-b", "device-c", "device-d"];
+  const plan = buildFacebookRotationPlan(
+    distributeFacebookDevices(deviceIds, 3),
+  );
+
+  assert.equal(plan.length, 12);
+  assert.equal(
+    new Set(plan.map((slot) => `${slot.postPosition}:${slot.deviceId}`)).size,
+    12,
+  );
+  for (let roundIndex = 0; roundIndex < 3; roundIndex++) {
+    const round = plan.filter((slot) => slot.roundIndex === roundIndex);
+    assert.deepEqual(
+      new Set(round.map((slot) => slot.deviceId)),
+      new Set(deviceIds),
+    );
+  }
+  assert.deepEqual(
+    plan.filter((slot) => slot.roundIndex === 1).map((slot) => ({
+      post: slot.postPosition,
+      device: slot.deviceId,
+    })),
+    [
+      { post: 0, device: "device-d" },
+      { post: 1, device: "device-a" },
+      { post: 1, device: "device-b" },
+      { post: 2, device: "device-c" },
+    ],
+  );
+});
+
+test("runs Facebook links in parallel and devices sequentially per link", async () => {
+  let releaseFirstLane!: () => void;
+  const firstLaneGate = new Promise<void>((resolve) => {
+    releaseFirstLane = resolve;
+  });
+  const events: string[] = [];
+
+  await runFacebookRound(
+    [["link-a-1", "link-a-2"], ["link-b-1"]],
+    async (item) => {
+      events.push(`start:${item}`);
+      if (item === "link-a-1") await firstLaneGate;
+      if (item === "link-b-1") releaseFirstLane();
+      events.push(`end:${item}`);
+    },
+    async () => {
+      events.push("pause");
+    },
+  );
+
+  assert.ok(events.indexOf("start:link-b-1") < events.indexOf("end:link-a-1"));
+  assert.ok(events.indexOf("end:link-a-1") < events.indexOf("start:link-a-2"));
+  assert.equal(events.filter((event) => event === "pause").length, 1);
+});
+
+test("blocks a Facebook round for retries or uncertain outcomes", () => {
+  assert.equal(getFacebookRoundDisposition(["sent", "sent"]), "complete");
+  assert.equal(getFacebookRoundDisposition(["sent", "failed"]), "failed");
+  assert.equal(getFacebookRoundDisposition(["sent", "approved"]), "retryable");
+  assert.equal(
+    getFacebookRoundDisposition(["approved", "outcome_unknown"]),
+    "outcome_unknown",
+  );
+  assert.throws(() => getFacebookRoundDisposition([]));
+});
+
+test("validates the random delay range for Facebook comments", () => {
+  assert.equal(
+    facebookExecuteSchema.safeParse({ minDelaySeconds: 15, maxDelaySeconds: 45 })
+      .success,
+    true,
+  );
+  assert.equal(
+    facebookExecuteSchema.safeParse({ minDelaySeconds: 60, maxDelaySeconds: 10 })
+      .success,
+    false,
+  );
+  assert.equal(
+    facebookExecuteSchema.safeParse({ minDelaySeconds: 0, maxDelaySeconds: 10 })
+      .success,
+    false,
+  );
+  assert.equal(
+    facebookBatchExecuteSchema.safeParse({
+      minDelaySeconds: 15,
+      maxDelaySeconds: 45,
+      minRoundDelaySeconds: 60,
+      maxRoundDelaySeconds: 120,
+    }).success,
+    true,
+  );
+  assert.equal(
+    facebookBatchExecuteSchema.safeParse({
+      minDelaySeconds: 15,
+      maxDelaySeconds: 45,
+      minRoundDelaySeconds: 120,
+      maxRoundDelaySeconds: 60,
+    }).success,
+    false,
+  );
 });
 
 test("requires an exact, unique Facebook device allocation", () => {
@@ -180,6 +321,20 @@ test("requires an exact, unique Facebook device allocation", () => {
     ],
   };
   assert.equal(facebookDraftsSchema.safeParse(valid).success, true);
+  assert.equal(
+    facebookDraftsSchema.safeParse({
+      context: valid.context,
+      deviceIds: ["device-a"],
+      allocations: [
+        {
+          intent: "Desinformación o Error Factual",
+          tone: "frio-cortante",
+          count: 1,
+        },
+      ],
+    }).success,
+    true,
+  );
   assert.equal(
     facebookDraftsSchema.safeParse({
       ...valid,
@@ -201,53 +356,62 @@ test("requires an exact, unique Facebook device allocation", () => {
   ]);
 });
 
-test("extracts useful accessible Facebook text without duplicated controls", () => {
-  const xml = `<?xml version="1.0" encoding="UTF-8"?>
-    <hierarchy>
-      <node text="Facebook" content-desc="" />
-      <node package="com.android.systemui" text="Notificación del sistema" content-desc="" />
-      <node text="Autor del post" content-desc="Autor del post" />
-      <node text="Añádelo como amigo para que sea aún más fácil compartir contenido." content-desc="" />
-      <node text="Una idea &amp; un detalle concreto" content-desc="" />
-      <node text="" content-desc="Descripción accesible de la imagen" />
-      <node text="Detalles del reel" content-desc="" />
-      <node text="47 reacciones" content-desc="" />
-      <node text="Me gusta" content-desc="Like" />
-    </hierarchy>`;
+test("keeps only the Facebook post description", () => {
   assert.equal(
-    extractAccessibleFacebookContext(xml),
-    "Autor del post\nUna idea & un detalle concreto\nDescripción accesible de la imagen",
+    buildFacebookPostDescription({
+      messages: [
+        "Hoy cosechamos las primeras fresas.",
+        "Hoy cosechamos las primeras fresas.",
+      ],
+      metadata: "Log into Facebook to start sharing and connecting.",
+    }),
+    "Hoy cosechamos las primeras fresas.",
+  );
+  assert.equal(
+    buildFacebookPostDescription({
+      messages: [],
+      metadata: "Descripción pública disponible en los metadatos.",
+    }),
+    "Descripción pública disponible en los metadatos.",
+  );
+  assert.equal(
+    buildFacebookPostDescription({
+      messages: [],
+      metadata: "Log into Facebook to start sharing and connecting.",
+    }),
+    "",
   );
 });
 
-test("finds a bounded Facebook context in nested GenFarmer storage", () => {
+test("builds a normalized marker for fail-closed Facebook targeting", () => {
   assert.equal(
-    findStoredFacebookContext([
-      {
-        data: {
-          runId: "run-1",
-          data: {
-            outputType: "facebook-context-v1",
-            context: "  Texto de la publicacion  ",
-          },
-        },
-      },
-    ]),
-    "Texto de la publicacion",
+    buildFacebookTargetMarker("¡Cosecha de verano sostenible para toda la comunidad!"),
+    "cosecha de verano sostenible para toda",
   );
   assert.equal(
-    findStoredFacebookContext({
-      outputType: "unrelated-output",
-      context: "No debe aceptarse",
-    }),
-    null,
+    buildFacebookTargetMarker(
+      "Fredy Apaza Zarate, candidato · Ver más\n🔥 GRAN MITIN Y APERTURA DE CAMPAÑA",
+    ),
+    "gran mitin apertura de campana",
   );
+  assert.equal(buildFacebookTargetMarker("Muy bien"), null);
+});
+
+test("accepts only an empty request for server-side Facebook extraction", () => {
+  assert.deepEqual(facebookExtractSchema.parse({}), {});
   assert.equal(
-    findStoredFacebookContext({
-      outputType: "facebook-context-v1",
-      context: "x".repeat(1201),
-    }),
-    null,
+    facebookExtractSchema.safeParse({ deviceId: "device-a" }).success,
+    false,
+  );
+  assert.deepEqual(facebookBrowserActionSchema.parse({ action: "open" }), {
+    action: "open",
+  });
+  assert.deepEqual(facebookBrowserActionSchema.parse({ action: "close" }), {
+    action: "close",
+  });
+  assert.equal(
+    facebookBrowserActionSchema.safeParse({ action: "login" }).success,
+    false,
   );
 });
 

@@ -1,112 +1,76 @@
-const ignoredLabels = new Set(
-  [
-    "facebook",
-    "like",
-    "me gusta",
-    "comment",
-    "comentar",
-    "share",
-    "compartir",
-    "send",
-    "enviar",
-    "post",
-    "publicar",
-    "write a comment",
-    "escribe un comentario",
-    "see more",
-    "ver más",
-    "ver mas",
-    "back",
-    "atrás",
-    "atras",
-    "close",
-    "cerrar",
-    "not now",
-    "ahora no",
-    "add friend",
-    "add as friend",
-    "añadir como amigo(a)",
-    "agregar como amigo(a)",
-  ].map((value) => value.toLocaleLowerCase("es")),
-);
-
-const ignoredFragments = [
-  "añádelo como amigo para que sea aún más fácil compartir contenido",
-  "add them as a friend to make sharing content even easier",
+const boilerplateFragments = [
+  "create an account or log into facebook",
+  "facebook helps you connect and share",
+  "inicia sesión en facebook",
+  "log into facebook",
+  "see posts, photos and more on facebook",
+  "regístrate o inicia sesión en facebook",
 ];
 
-const contextBoundaries = new Set(["detalles del reel", "reel details"]);
-
-function decodeXml(value: string) {
-  return value
-    .replaceAll("&quot;", '"')
-    .replaceAll("&apos;", "'")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&")
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, code: string) =>
-      String.fromCodePoint(Number.parseInt(code, 16)),
-    );
+function normalize(value: string) {
+  return value.replace(/\s+/g, " ").trim();
 }
 
-export function extractAccessibleFacebookContext(xml: string, maxLength = 1200) {
-  const values: string[] = [];
-  const seen = new Set<string>();
-  for (const node of xml.matchAll(/<node\b[^>]*>/g)) {
-    const attributes = node[0];
-    const packageName = attributes.match(/\bpackage="([^"]*)"/)?.[1];
-    if (packageName && packageName !== "com.facebook.katana") continue;
-    for (const match of attributes.matchAll(/(?:text|content-desc)="([^"]*)"/g)) {
-      const value = decodeXml(match[1]).replace(/\s+/g, " ").trim();
-      const normalized = value.toLocaleLowerCase("es");
-      if (
-        value.length < 2 ||
-        ignoredLabels.has(normalized) ||
-        ignoredFragments.some((fragment) => normalized.includes(fragment)) ||
-        seen.has(normalized)
-      ) {
-        continue;
-      }
-      seen.add(normalized);
-      values.push(value);
-    }
-  }
+export function buildFacebookTargetMarker(value: string) {
+  const canonical = normalize(value)
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const segments = canonical.split(/\b(?:ver mas|see more)\b/);
+  const relevant = segments.at(-1) || canonical;
+  const headline = relevant
+    .split(/[.!?]/)
+    .find((segment) => segment.replace(/[^a-z0-9]+/g, " ").trim().length >= 12);
+  const normalized = (headline || relevant)
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  const words = normalized
+    .split(" ")
+    .filter((word) => word.length > 1)
+    .slice(0, 6);
+  const marker = words.join(" ").slice(0, 80).trim();
+  return words.length >= 3 && marker.length >= 12 ? marker : null;
+}
 
-  let context = "";
-  for (const value of values) {
-    if (contextBoundaries.has(value.toLocaleLowerCase("es"))) break;
-    const candidate = context ? `${context}\n${value}` : value;
+function uniqueUseful(values: string[]) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const rawValue of values) {
+    const value = normalize(rawValue);
+    const key = value.toLocaleLowerCase("es");
+    if (
+      value.length < 3 ||
+      seen.has(key) ||
+      boilerplateFragments.some((fragment) => key.includes(fragment))
+    ) {
+      continue;
+    }
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+export function buildFacebookPostDescription(
+  input: {
+    messages: string[];
+    metadata?: string;
+  },
+  maxLength = 1_200,
+) {
+  const messages = uniqueUseful(input.messages);
+  const values = messages.length
+    ? messages
+    : uniqueUseful(input.metadata ? [input.metadata] : []);
+
+  let source = "";
+  for (const value of uniqueUseful(values)) {
+    const candidate = source ? `${source}\n${value}` : value;
     if (candidate.length > maxLength) {
-      if (!context) context = value.slice(0, maxLength).trim();
+      if (!source) source = value.slice(0, maxLength).trim();
       break;
     }
-    context = candidate;
+    source = candidate;
   }
-  return context;
-}
-
-export function findStoredFacebookContext(value: unknown): string | null {
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const context = findStoredFacebookContext(item);
-      if (context) return context;
-    }
-    return null;
-  }
-  if (!value || typeof value !== "object") return null;
-
-  const record = value as Record<string, unknown>;
-  if (
-    record.outputType === "facebook-context-v1" &&
-    typeof record.context === "string"
-  ) {
-    const context = record.context.trim();
-    return context.length <= 1200 ? context : null;
-  }
-  for (const item of Object.values(record)) {
-    const context = findStoredFacebookContext(item);
-    if (context) return context;
-  }
-  return null;
+  return source;
 }

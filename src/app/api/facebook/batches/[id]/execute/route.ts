@@ -1,6 +1,6 @@
 import { errorResponse, readJson } from "@/lib/errors";
-import { executePostAssignments } from "@/lib/facebook-batch-service";
-import { facebookExecuteSchema } from "@/lib/schemas";
+import { executeFacebookBatch } from "@/lib/facebook-batch-service";
+import { facebookBatchExecuteSchema } from "@/lib/schemas";
 
 export const runtime = "nodejs";
 
@@ -9,9 +9,9 @@ export async function POST(
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const input = facebookExecuteSchema.parse(await readJson(request));
+    const input = facebookBatchExecuteSchema.parse(await readJson(request));
     const { id } = await params;
-    const batch = await executePostAssignments(id, input);
+    const batch = await executeFacebookBatch(id, input);
     return Response.json({ success: true, data: { batch } });
   } catch (error) {
     return errorResponse(error);

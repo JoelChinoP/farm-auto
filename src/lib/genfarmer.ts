@@ -58,10 +58,6 @@ export type GenFarmerRun = {
   }>;
 };
 
-export type GenFarmerRunStorage = {
-  data: unknown;
-};
-
 type ApiEnvelope<T> = { success: boolean; data: T; message?: string };
 type ListEnvelope<T> = {
   items: T[];
@@ -306,13 +302,6 @@ export function getRunLogs(id: string, deviceId: string) {
   const query = new URLSearchParams({ deviceId });
   return request<{ deviceId: string; content: unknown[] }>(
     `/automation/runs/${encodeURIComponent(id)}/logs?${query}`,
-  );
-}
-
-export function getRunStorages(id: string) {
-  const query = new URLSearchParams({ limit: "20", page: "1" });
-  return request<ListEnvelope<GenFarmerRunStorage>>(
-    `/automation/runs/${encodeURIComponent(id)}/storages?${query}`,
   );
 }
 

@@ -6,7 +6,6 @@ import { resolve } from "node:path";
 
 import {
   assertConnected,
-  dumpWindowHierarchy,
   getFocusedPackage,
   isPackageInstalled,
 } from "@/lib/adb";
@@ -25,10 +24,6 @@ import {
 } from "@/lib/db";
 import { AppError } from "@/lib/errors";
 import {
-  extractAccessibleFacebookContext,
-  findStoredFacebookContext,
-} from "@/lib/facebook-context";
-import {
   addTaskDevice,
   assertGenFarmerAuthenticated,
   createRun,
@@ -41,7 +36,6 @@ import {
   getDevices,
   getRun,
   getRunLogs,
-  getRunStorages,
   getTask,
   getTasks,
   importApp,
@@ -69,12 +63,6 @@ export const automationSpecs = [
     file: "facebook-post-like-comment.genfarm",
     appName: "Control Panel - Facebook like y comentario",
     taskName: "Facebook like y comentario",
-  },
-  {
-    slug: "facebook-context-extract",
-    file: "facebook-context-extract.genfarm",
-    appName: "Control Panel - Extraer contexto de Facebook",
-    taskName: "Extraer contexto de Facebook",
   },
   {
     slug: "tiktok-live-tap-tap",
@@ -183,8 +171,23 @@ export function assertDevicePrepared(deviceId: string) {
   }
 }
 
-export function ensureAutomationDeviceReady(deviceId: string) {
+export async function ensureAutomationDeviceReady(deviceId: string) {
   assertDevicePrepared(deviceId);
+  const stalePackages: string[] = [];
+  for (const spec of automationSpecs) {
+    const source = await packageData(spec.file);
+    if (getRegistry(spec.slug, deviceId)?.package_hash !== source.hash) {
+      stalePackages.push(spec.slug);
+    }
+  }
+  if (stalePackages.length) {
+    throw new AppError(
+      "Los paquetes de automatización cambiaron. Prepara otra vez este dispositivo.",
+      409,
+      "SETUP_REQUIRED",
+      { staleSlugs: stalePackages },
+    );
+  }
   return reconcileDeviceLock(deviceId);
 }
 
@@ -447,6 +450,19 @@ async function waitForRun(runId: string, deviceId: string) {
       { runId: run.id },
     );
   }
+  if (
+    failureLog &&
+    /\[(facebook_open_url|facebook_bind_visible_target|facebook_refresh_visible_target|facebook_scroll_target|facebook_scroll_wait|facebook_diagnose_scrolled|facebook_verify_selected_like|facebook_bind_scrolled_controls|facebook_strict_target_action)\][\s\S]*\[Failed\]/.test(
+      failureLog,
+    )
+  ) {
+    throw new AppError(
+      "Facebook no abrió o no expuso inequívocamente la publicación objetivo; no se realizó ninguna acción pública.",
+      409,
+      "FACEBOOK_TARGET_NOT_VERIFIED",
+      { runId: run.id, failureLog },
+    );
+  }
   if (run.status !== 4 || deviceFailed || failureLog) {
     throw new AppError(
       "GenFarmer no pudo completar la automatización.",
@@ -461,31 +477,6 @@ async function waitForRun(runId: string, deviceId: string) {
     );
   }
   return run;
-}
-
-async function waitForFacebookContext(runId: string) {
-  const deadline = Date.now() + 5_000;
-  let lastError: unknown;
-  while (Date.now() < deadline) {
-    try {
-      const storage = await getRunStorages(runId);
-      const context = findStoredFacebookContext(storage.items);
-      if (context) return context;
-    } catch (error) {
-      lastError = error;
-    }
-    await sleep(200);
-  }
-  throw new AppError(
-    "GenFarmer termino la lectura sin devolver el contexto.",
-    502,
-    "FACEBOOK_CONTEXT_OUTPUT_MISSING",
-    {
-      runId,
-      storageError:
-        lastError instanceof Error ? lastError.message : String(lastError ?? ""),
-    },
-  );
 }
 
 async function runAutomation(
@@ -519,7 +510,6 @@ async function runAutomation(
 
 async function runCleanupHome(
   deviceId: string,
-  setRunId: (runId: string) => void,
   originalError?: unknown,
 ) {
   if (originalError instanceof AppError) {
@@ -539,7 +529,7 @@ async function runCleanupHome(
     }
   }
   try {
-    await runAutomation("device-home", deviceId, undefined, setRunId);
+    await runAutomation("device-home", deviceId);
   } catch (cleanupError) {
     throw new AppError(
       "No se pudo confirmar que el dispositivo volvió a inicio.",
@@ -700,98 +690,7 @@ export function openSocialContent(input: {
         }
         return { runId: run.id, focusedPackage, platform: input.platform };
       } catch (error) {
-        await runCleanupHome(input.deviceId, setRunId, error);
-        throw error;
-      }
-    },
-  );
-}
-
-export function extractFacebookPostContext(input: {
-  deviceId: string;
-  idempotencyKey: string;
-  url: string;
-}) {
-  assertDevicePrepared(input.deviceId);
-  return executeOperation(
-    "facebook-context-extract",
-    input.idempotencyKey,
-    input.deviceId,
-    async (setRunId) => {
-      const packageName = socialPackages.facebook;
-      if (!(await isPackageInstalled(input.deviceId, packageName))) {
-        throw new AppError(
-          "Facebook no está instalado en el dispositivo seleccionado.",
-          409,
-          "FACEBOOK_NOT_INSTALLED",
-        );
-      }
-
-      try {
-        await runAutomation("device-home", input.deviceId, undefined, setRunId);
-        const openRun = await runAutomation(
-          "open-social-content",
-          input.deviceId,
-          { contentUrl: input.url, packageName },
-          setRunId,
-        );
-        let focusedPackage: string | null = null;
-        for (let attempt = 0; attempt < 7; attempt++) {
-          await sleep(1000);
-          focusedPackage = await getFocusedPackage(input.deviceId);
-          if (focusedPackage === packageName) break;
-        }
-        if (focusedPackage !== packageName) {
-          throw new AppError(
-            "Android no dejó Facebook en primer plano para leer la publicación.",
-            502,
-            "UNEXPECTED_FOREGROUND_APP",
-          );
-        }
-        await sleep(1500);
-        let contextRun: GenFarmerRun | undefined;
-        let context: string;
-        try {
-          contextRun = await runAutomation(
-            "facebook-context-extract",
-            input.deviceId,
-            undefined,
-            setRunId,
-          );
-          context = await waitForFacebookContext(contextRun.id);
-        } catch (genFarmerError) {
-          try {
-            context = extractAccessibleFacebookContext(
-              await dumpWindowHierarchy(input.deviceId),
-            );
-          } catch (adbError) {
-            throw new AppError(
-              "No se pudo leer el texto accesible de Facebook. Escribe el contexto manualmente.",
-              502,
-              "FACEBOOK_CONTEXT_UNAVAILABLE",
-              {
-                genFarmerError:
-                  genFarmerError instanceof Error
-                    ? genFarmerError.message
-                    : String(genFarmerError),
-                adbError:
-                  adbError instanceof Error ? adbError.message : String(adbError),
-              },
-            );
-          }
-        }
-        if (context.length < 5) {
-          throw new AppError(
-            "No se encontró texto accesible. Escribe el contexto manualmente.",
-            422,
-            "FACEBOOK_CONTEXT_EMPTY",
-          );
-        }
-        const result = { runId: contextRun?.id ?? openRun.id, context };
-        await runCleanupHome(input.deviceId, setRunId);
-        return result;
-      } catch (error) {
-        await runCleanupHome(input.deviceId, setRunId, error);
+        await runCleanupHome(input.deviceId, error);
         throw error;
       }
     },
@@ -838,10 +737,10 @@ export function runTikTokLiveTapTap(input: {
           tapRounds: input.tapRounds,
           platform: "tiktok" as const,
         };
-        await runCleanupHome(input.deviceId, setRunId);
+        await runCleanupHome(input.deviceId);
         return result;
       } catch (error) {
-        await runCleanupHome(input.deviceId, setRunId, error);
+        await runCleanupHome(input.deviceId, error);
         throw error;
       }
     },
@@ -854,7 +753,7 @@ export async function likeAndCommentTikTokPost(input: {
   url: string;
   commentText: string;
 }) {
-  assertDevicePrepared(input.deviceId);
+  await ensureAutomationDeviceReady(input.deviceId);
   const packageName = socialPackages.tiktok;
   if (!(await isPackageInstalled(input.deviceId, packageName))) {
     throw new AppError(
@@ -879,7 +778,7 @@ export async function likeAndCommentTikTokPost(input: {
         );
         return { runId: run.id, platform: "tiktok" as const };
       } catch (error) {
-        await runCleanupHome(input.deviceId, setRunId, error);
+        await runCleanupHome(input.deviceId, error);
         throw error;
       }
     },
@@ -891,8 +790,9 @@ export async function likeAndCommentFacebookPost(input: {
   idempotencyKey: string;
   url: string;
   commentText: string;
+  targetMarker: string;
 }) {
-  assertDevicePrepared(input.deviceId);
+  await ensureAutomationDeviceReady(input.deviceId);
   const packageName = socialPackages.facebook;
   if (!(await isPackageInstalled(input.deviceId, packageName))) {
     throw new AppError(
@@ -912,12 +812,16 @@ export async function likeAndCommentFacebookPost(input: {
         const run = await runAutomation(
           "facebook-post-like-comment",
           input.deviceId,
-          { contentUrl: input.url, commentText: input.commentText },
+          {
+            contentUrl: input.url,
+            commentText: input.commentText,
+            targetMarker: input.targetMarker,
+          },
           setRunId,
         );
         return { runId: run.id, platform: "facebook" as const };
       } catch (error) {
-        await runCleanupHome(input.deviceId, setRunId, error);
+        await runCleanupHome(input.deviceId, error);
         throw error;
       }
     },

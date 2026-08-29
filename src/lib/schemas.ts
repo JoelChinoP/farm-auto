@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { facebookToneValues } from "./facebook-copy-options.ts";
+
 const deviceId = z.string().trim().min(1).max(120);
 const idempotencyKey = z.string().uuid();
 
@@ -28,7 +30,7 @@ export const draftInputSchema = z
     platform: z.enum(["tiktok", "facebook"]),
     context: z.string().trim().min(5).max(1200),
     intent: z.string().trim().min(3).max(300),
-    tone: z.enum(["amable", "curioso", "entusiasta", "casual"]),
+    tone: z.enum(facebookToneValues),
   })
   .strict();
 
@@ -81,15 +83,31 @@ export const sendDraftSchema = z.object({
 export const facebookBatchSchema = z
   .object({
     urls: z.array(z.string().trim().url().max(2048)).min(1).max(50),
+    deviceIds: z.array(deviceId).min(1).max(100),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (new Set(input.deviceIds).size !== input.deviceIds.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["deviceIds"],
+        message: "Cada dispositivo solo puede incluirse una vez en la cola.",
+      });
+    }
+  });
+
+export const facebookExtractSchema = z.object({}).strict();
+
+export const facebookBrowserActionSchema = z
+  .object({
+    action: z.enum(["open", "close"]),
   })
   .strict();
-
-export const facebookExtractSchema = deviceActionSchema.strict();
 
 const facebookAllocationSchema = z
   .object({
     intent: z.string().trim().min(3).max(300),
-    tone: z.enum(["amable", "curioso", "entusiasta", "casual"]),
+    tone: z.enum(facebookToneValues),
     count: z.number().int().min(1).max(100),
   })
   .strict();
@@ -135,6 +153,37 @@ export const facebookApproveSchema = z
   })
   .strict();
 
+export const facebookExecuteSchema = z
+  .object({
+    minDelaySeconds: z.number().int().min(1).max(600),
+    maxDelaySeconds: z.number().int().min(1).max(600),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.maxDelaySeconds < input.minDelaySeconds) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxDelaySeconds"],
+        message: "El tiempo máximo debe ser igual o mayor que el mínimo.",
+      });
+    }
+  });
+
+export const facebookBatchExecuteSchema = facebookExecuteSchema
+  .safeExtend({
+    minRoundDelaySeconds: z.number().int().min(1).max(600),
+    maxRoundDelaySeconds: z.number().int().min(1).max(600),
+  })
+  .superRefine((input, context) => {
+    if (input.maxRoundDelaySeconds < input.minRoundDelaySeconds) {
+      context.addIssue({
+        code: "custom",
+        path: ["maxRoundDelaySeconds"],
+        message: "El tiempo máximo entre rondas debe ser igual o mayor que el mínimo.",
+      });
+    }
+  });
+
 export const facebookReconcileSchema = z
   .object({
     outcomes: z
@@ -171,6 +220,9 @@ export function normalizeContentUrl(
   if (url.protocol !== "https:") {
     throw new Error("El enlace debe usar HTTPS.");
   }
+  if (url.username || url.password || (url.port && url.port !== "443")) {
+    throw new Error("El enlace contiene credenciales o un puerto no permitido.");
+  }
 
   const hostname = url.hostname.toLowerCase();
   const allowed =
@@ -204,6 +256,29 @@ export function normalizeFacebookUrls(values: string[]) {
     }
   }
   return urls;
+}
+
+export function distributeFacebookDevices(deviceIds: string[], postCount: number) {
+  if (!Number.isInteger(postCount) || postCount < 1) {
+    throw new Error("La cola debe contener al menos una publicación.");
+  }
+  if (new Set(deviceIds).size !== deviceIds.length) {
+    throw new Error("Cada dispositivo solo puede incluirse una vez en la cola.");
+  }
+  if (!deviceIds.length) {
+    throw new Error("Se necesita al menos un dispositivo preparado.");
+  }
+
+  const baseSize = Math.floor(deviceIds.length / postCount);
+  const extraDevices = deviceIds.length % postCount;
+  const groups: string[][] = [];
+  let offset = 0;
+  for (let index = 0; index < postCount; index++) {
+    const size = baseSize + (index < extraDevices ? 1 : 0);
+    groups.push(deviceIds.slice(offset, offset + size));
+    offset += size;
+  }
+  return groups;
 }
 
 export function expandFacebookAllocations(

@@ -2,22 +2,16 @@
   "id": "control-panel-facebook-post-like-comment",
   "userId": 0,
   "name": "Control Panel - Facebook like y comentario",
-  "description": "Abre una publicación de Facebook, conserva o aplica el like y publica un único comentario previamente aprobado.",
+  "description": "Abre una publicación de Facebook, verifica un marcador inequívoco antes del like y confirma visualmente el comentario publicado.",
   "logo": null,
-  "version": "1.0.0",
+  "version": "1.3.5",
   "input": [
     {
       "id": "input-content-url",
       "type": "input",
       "name": "Enlace de la publicación",
       "options": {
-        "variable": {
-          "id": "content_url",
-          "name": "contentUrl",
-          "label": "Enlace de la publicación",
-          "value": "",
-          "secret": false
-        },
+        "variable": { "id": "content_url", "name": "contentUrl", "label": "Enlace de la publicación", "value": "", "secret": false },
         "hideLabel": false,
         "value": "",
         "placeholder": "https://www.facebook.com/...",
@@ -35,13 +29,7 @@
       "type": "textarea",
       "name": "Comentario aprobado",
       "options": {
-        "variable": {
-          "id": "comment_text",
-          "name": "commentText",
-          "label": "Comentario aprobado",
-          "value": "",
-          "secret": false
-        },
+        "variable": { "id": "comment_text", "name": "commentText", "label": "Comentario aprobado", "value": "", "secret": false },
         "hideLabel": false,
         "value": "",
         "placeholder": "Texto generado con DeepSeek y aprobado por el operador",
@@ -53,28 +41,37 @@
         "disabled": false,
         "showCount": true
       }
+    },
+    {
+      "id": "input-target-marker",
+      "type": "input",
+      "name": "Marcador de la publicación",
+      "options": {
+        "variable": { "id": "target_marker", "name": "targetMarker", "label": "Marcador de la publicación", "value": "", "secret": false },
+        "hideLabel": false,
+        "value": "",
+        "placeholder": "Frase distintiva de la publicación",
+        "width": null,
+        "height": null,
+        "labelWidth": 190,
+        "maxLength": 80,
+        "minLength": 12,
+        "disabled": false,
+        "showCount": false
+      }
     }
   ],
   "script": {
     "id": "control-panel-facebook-post-like-comment",
     "name": "Control Panel - Facebook like y comentario",
-    "description": "Abre una publicación de Facebook, conserva o aplica el like y publica un único comentario previamente aprobado.",
-    "version": "1.0.0",
+    "description": "Abre una publicación de Facebook, verifica un marcador inequívoco antes del like y confirma visualmente el comentario publicado.",
+    "version": "1.3.0",
     "variables": [
-      {
-        "id": "content_url",
-        "name": "contentUrl",
-        "label": "Enlace de la publicación",
-        "value": "",
-        "secret": false
-      },
-      {
-        "id": "comment_text",
-        "name": "commentText",
-        "label": "Comentario aprobado",
-        "value": "",
-        "secret": false
-      }
+      { "id": "content_url", "name": "contentUrl", "label": "Enlace de la publicación", "value": "", "secret": false },
+      { "id": "comment_text", "name": "commentText", "label": "Comentario aprobado", "value": "", "secret": false },
+      { "id": "target_marker", "name": "targetMarker", "label": "Marcador de la publicación", "value": "", "secret": false },
+      { "id": "facebook_comment_bounds", "name": "facebookCommentBounds", "label": "Bounds del comentario", "value": "", "secret": false },
+      { "id": "facebook_interface", "name": "facebookInterface", "label": "Interfaz detectada", "value": "", "secret": false }
     ],
     "flow": {
       "nodes": [
@@ -82,12 +79,7 @@
           "id": "facebook_start",
           "type": "input",
           "position": { "x": 60, "y": 200 },
-          "data": {
-            "action": "Start",
-            "options": {},
-            "successNode": "facebook_open_app",
-            "failNode": null
-          },
+          "data": { "action": "Start", "options": {}, "successNode": "facebook_open_url", "failNode": null },
           "label": "Start",
           "sourcePosition": "right",
           "targetPosition": "left",
@@ -95,53 +87,17 @@
           "class": ""
         },
         {
-          "id": "facebook_open_app",
+          "id": "facebook_open_url",
           "type": "custom",
           "position": { "x": 290, "y": 200 },
           "data": {
-            "icon": "play",
-            "action": "StartApp",
-            "options": {
-              "packageName": "com.facebook.katana",
-              "timeout": "30",
-              "disabled": false,
-              "nodeSleep": "0",
-              "nodeTimeout": "45",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
-            "successNode": "facebook_open_url",
-            "failNode": null
-          },
-          "label": "Abrir Facebook",
-          "sourcePosition": "right",
-          "targetPosition": "left",
-          "class": ""
-        },
-        {
-          "id": "facebook_open_url",
-          "type": "custom",
-          "position": { "x": 520, "y": 200 },
-          "data": {
             "icon": "terminal",
             "action": "Adb",
-            "options": {
-              "command": "am start -W -a android.intent.action.VIEW -d '${contentUrl}' -p com.facebook.katana",
-              "outputVariable": null,
-              "disabled": false,
-              "nodeSleep": "0",
-              "nodeTimeout": "45",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
+            "options": { "command": "am start -W -S -a android.intent.action.VIEW -d '${contentUrl}' -n com.facebook.katana/.IntentUriHandler", "outputVariable": null, "disabled": false, "nodeSleep": "0", "nodeTimeout": "15", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
             "successNode": "facebook_wait",
             "failNode": null
           },
-          "label": "Abrir publicación",
+          "label": "Abrir publicación exacta",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -149,24 +105,12 @@
         {
           "id": "facebook_wait",
           "type": "custom",
-          "position": { "x": 750, "y": 200 },
+          "position": { "x": 520, "y": 200 },
           "data": {
             "icon": "actionPause",
             "action": "Pause",
-            "options": {
-              "timeoutType": "fixed",
-              "timeout": "5",
-              "timeoutFrom": "1",
-              "timeoutTo": "3",
-              "disabled": false,
-              "nodeSleep": "0",
-              "nodeTimeout": "10",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
-            "successNode": "facebook_ensure_like",
+            "options": { "timeoutType": "fixed", "timeout": "15", "timeoutFrom": "1", "timeoutTo": "3", "disabled": false, "nodeSleep": "0", "nodeTimeout": "20", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
+            "successNode": "facebook_refresh_visible_target",
             "failNode": null
           },
           "label": "Esperar publicación",
@@ -175,18 +119,100 @@
           "class": ""
         },
         {
-          "id": "facebook_ensure_like",
+          "id": "facebook_bind_visible_target",
           "type": "custom",
-          "position": { "x": 980, "y": 200 },
+          "position": { "x": 750, "y": 20 },
           "data": {
             "icon": "actionEval",
             "action": "Javascript",
             "options": {
-              "script": "let { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); const dismissXpath = \"//*[@text='Ahora no' or @content-desc='Ahora no' or @text='Not now' or @content-desc='Not now' or @text='Omitir' or @content-desc='Omitir' or @text='Skip' or @content-desc='Skip' or @text='No permitir' or @content-desc='No permitir']\"; for (let attempt = 0; attempt < 4; attempt++) { const dismiss = await this.clientUiAutomator.xpath(dismissXpath, xmlDump); if (!dismiss) break; await dismiss.click(); await new Promise((resolve) => setTimeout(resolve, 1200)); ({ xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy()); } const inputXpath = \"//*[(@class='android.widget.EditText' or @class='android.widget.AutoCompleteTextView') and (contains(@content-desc,'comment') or contains(@content-desc,'Comment') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario') or contains(@hint,'comment') or contains(@hint,'Comment') or contains(@hint,'comentario') or contains(@hint,'Comentario') or contains(@text,'comment') or contains(@text,'Comment') or contains(@text,'comentario') or contains(@text,'Comentario'))]\"; const openerXpath = \"//*[contains(@content-desc,'Comment') or contains(@content-desc,'comment') or contains(@content-desc,'Comentar') or contains(@content-desc,'comentar') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario') or contains(@text,' comentarios') or contains(@text,' comments') or @text='Comment' or @text='Comentar']\"; const commentControl = await this.clientUiAutomator.xpath(inputXpath, xmlDump) || await this.clientUiAutomator.xpath(openerXpath, xmlDump); if (!commentControl) throw new Error('No se encontró el control de comentarios de Facebook antes del like.'); const likedXpath = \"//*[contains(@content-desc,'Unlike') or contains(@content-desc,'Remove Like') or contains(@content-desc,'Ya no me gusta') or contains(@content-desc,'Eliminar Me gusta') or (((contains(@content-desc,'Like') or contains(@content-desc,'Me gusta') or contains(@text,'Like') or contains(@text,'Me gusta') or contains(@content-desc,'reacci') or contains(@content-desc,'reaction'))) and (@checked='true' or @selected='true'))]\"; const liked = await this.clientUiAutomator.xpath(likedXpath, xmlDump); if (liked) return; const likeXpath = \"//*[(contains(@content-desc,'Like') or contains(@content-desc,'Me gusta') or contains(@text,'Like') or contains(@text,'Me gusta')) and not(contains(@content-desc,'Unlike')) and not(contains(@content-desc,'Remove Like')) and not(contains(@content-desc,'Ya no me gusta')) and not(contains(@content-desc,'Eliminar Me gusta')) and not(@checked='true') and not(@selected='true')]\"; const reactionXpath = \"//*[@class='android.widget.Button' and @long-clickable='true' and (contains(@content-desc,'reacci') or contains(@content-desc,'reaction')) and not(@checked='true') and not(@selected='true')]\"; const likeButton = await this.clientUiAutomator.xpath(likeXpath, xmlDump) || await this.clientUiAutomator.xpath(reactionXpath, xmlDump); if (!likeButton) { const candidates = Array.from(xmlDump.matchAll(/<node\\b[^>]*>/g), (match) => match[0]).filter((node) => /reacci|gusta|like|coment|share|compart/i.test(node)).slice(0, 8).join(' || ').slice(0, 1000); throw new Error('No se encontró el botón Me gusta de Facebook. Nodos: ' + candidates); } await likeButton.click(); await new Promise((resolve) => setTimeout(resolve, 800));",
+              "script": "const simplify = (value) => Array.from(String(value || '').replace(/&#([0-9]+);/g, (_match, code) => String.fromCharCode(Number(code))).replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD')).filter((character) => { const code = character.charCodeAt(0); return code < 768 || code > 879; }).join('').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const marker = simplify('${targetMarker}'); if (marker.length < 12) throw new Error('Marcador objetivo invalido.'); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || !xmlDump.includes('<hierarchy')) throw new Error('Facebook no expuso una interfaz accesible.'); const quote = String.fromCharCode(34); const attr = (tag, name) => { const key = name + '=' + quote; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf(quote, begin); return end < 0 ? '' : tag.slice(begin, end); }; const labels = (xmlDump.match(/<node[^>]*>/g) || []).filter((tag) => attr(tag, 'package') === 'com.facebook.katana').map((tag) => simplify(attr(tag, 'text') + ' ' + attr(tag, 'content-desc') + ' ' + attr(tag, 'hint'))).filter(Boolean); const visibleText = labels.join(' '); let cursor = 0; const matched = marker.split(' ').every((word) => { const index = visibleText.indexOf(word, cursor); if (index < 0) return false; cursor = index + word.length; return true; }); if (!matched) throw new Error('La publicacion objetivo no esta visible; accesibilidad: ' + labels.slice(0, 12).join(' | ').slice(0, 600)); this.variables.facebookInterface = 'target-marker-bound';",
               "disabled": false,
               "nodeSleep": "0",
               "nodeTimeout": "30",
-              "timeoutNextNode": "successNode",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_scroll_target",
+            "failNode": null
+          },
+          "label": "Vincular marcador visible",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_refresh_visible_target",
+          "type": "custom",
+          "position": { "x": 750, "y": 20 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)); const simplify = (value) => Array.from(String(value || '').replace(/&#([0-9]+);/g, (_match, code) => String.fromCharCode(Number(code))).replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD')).filter((character) => { const code = character.charCodeAt(0); return code < 768 || code > 879; }).join('').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const marker = simplify('${targetMarker}'); if (marker.length < 12) throw new Error('Marcador objetivo invalido.'); const quote = String.fromCharCode(34); const attr = (tag, name) => { const key = name + '=' + quote; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf(quote, begin); return end < 0 ? '' : tag.slice(begin, end); }; let lastLabels = []; for (let attempt = 0; attempt < 8; attempt++) { const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (xmlDump && xmlDump.includes('<hierarchy')) { const labels = (xmlDump.match(/<node[^>]*>/g) || []).filter((tag) => attr(tag, 'package') === 'com.facebook.katana').map((tag) => simplify(attr(tag, 'text') + ' ' + attr(tag, 'content-desc') + ' ' + attr(tag, 'hint'))).filter(Boolean); lastLabels = labels; const visibleText = labels.join(' '); let cursor = 0; const matched = marker.split(' ').every((word) => { const index = visibleText.indexOf(word, cursor); if (index < 0) return false; cursor = index + word.length; return true; }); if (matched) { this.variables.facebookInterface = 'target-marker-bound'; return; } } await wait(1000); } throw new Error('La publicacion objetivo no esta visible tras refrescar accesibilidad: ' + lastLabels.slice(0, 12).join(' | ').slice(0, 600));",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_scroll_target",
+            "failNode": null
+          },
+          "label": "Refrescar y vincular marcador",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_scroll_target",
+          "type": "custom",
+          "position": { "x": 980, "y": 20 },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": { "command": "input swipe 540 1650 540 650 500", "outputVariable": null, "disabled": false, "nodeSleep": "0", "nodeTimeout": "15", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
+            "successNode": "facebook_scroll_wait",
+            "failNode": null
+          },
+          "label": "Mostrar acciones del objetivo",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_scroll_wait",
+          "type": "custom",
+          "position": { "x": 1210, "y": 20 },
+          "data": {
+            "icon": "actionPause",
+            "action": "Pause",
+            "options": { "timeoutType": "fixed", "timeout": "2", "timeoutFrom": "1", "timeoutTo": "3", "disabled": false, "nodeSleep": "0", "nodeTimeout": "10", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
+            "successNode": "facebook_bind_scrolled_controls",
+            "failNode": null
+          },
+          "label": "Esperar barra de acciones",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_target_action_after_scroll",
+          "type": "custom",
+          "position": { "x": 1440, "y": 20 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "if (this.variables.facebookInterface !== 'target-marker-bound') throw new Error('La publicacion objetivo no fue vinculada antes del desplazamiento.'); const simplify = (value) => Array.from(String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD')).filter((character) => { const code = character.charCodeAt(0); return code < 768 || code > 879; }).join('').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || !xmlDump.includes('<hierarchy')) throw new Error('Facebook no expuso una interfaz accesible.'); const quote = String.fromCharCode(34); const attr = (tag, name) => { const key = name + '=' + quote; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf(quote, begin); return end < 0 ? '' : tag.slice(begin, end); }; const nodes = (xmlDump.match(/<node[^>]*>/g) || []).map((tag) => { const bounds = attr(tag, 'bounds'); const coordinates = bounds.split(/[^0-9]+/).filter(Boolean).map(Number); if (coordinates.length < 4) return null; return { bounds, label: simplify(attr(tag, 'text') + ' ' + attr(tag, 'content-desc') + ' ' + attr(tag, 'hint')), packageName: attr(tag, 'package'), className: attr(tag, 'class'), clickable: attr(tag, 'clickable') === 'true', focusable: attr(tag, 'focusable') === 'true', selected: attr(tag, 'selected') === 'true' || attr(tag, 'checked') === 'true', left: coordinates[0], top: coordinates[1], right: coordinates[2], bottom: coordinates[3] }; }).filter(Boolean).filter((node) => node.packageName === 'com.facebook.katana'); const screenHeight = Math.max(...nodes.map((node) => node.bottom), 1) - Math.min(...nodes.map((node) => node.top), 0); const composers = nodes.filter((node) => /EditText|AutoCompleteTextView/.test(node.className) && node.focusable && /(escribe un comentario|write a comment|comentario|comment)/.test(node.label)); const likes = nodes.filter((node) => node.clickable && /(me gusta|like|liked|unlike|ya no me gusta|eliminar me gusta|remove like)/.test(node.label)); const pairs = []; for (const like of likes) for (const composer of composers) { const gap = composer.top - like.bottom; if (like.right <= composer.left + 80 && gap >= 80 && gap <= screenHeight * 0.65) pairs.push({ like, composer }); } const unique = pairs.filter((pair, index) => pairs.findIndex((item) => item.like.bounds === pair.like.bounds && item.composer.bounds === pair.composer.bounds) === index); if (unique.length !== 1) throw new Error('No existe una unica barra principal vinculable al compositor del objetivo.'); const pair = unique[0]; this.variables.facebookCommentBounds = pair.composer.bounds; this.variables.facebookInterface = 'strict-target-scrolled'; const alreadyLiked = pair.like.selected || /(liked|unlike|ya no me gusta|eliminar me gusta|remove like)/.test(pair.like.label); if (!alreadyLiked) { const target = await this.clientUiAutomator.xpath('//*[@bounds=' + quote + pair.like.bounds + quote + ']', xmlDump); if (!target) throw new Error('No se pudo fijar el Like principal del objetivo.'); await target.click(); }",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
               "breakpoint": false,
               "timeoutAdbReconnect": "30",
               "nodeLog": ""
@@ -194,7 +220,207 @@
             "successNode": "facebook_like_pause",
             "failNode": null
           },
-          "label": "Conservar o dar like",
+          "label": "Validar acciones tras desplazar",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_verify_selected_like",
+          "type": "custom",
+          "position": { "x": 1440, "y": 20 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "if (this.variables.facebookInterface !== 'target-marker-bound') throw new Error('La publicacion objetivo no fue vinculada antes del desplazamiento.'); const simplify = (value) => Array.from(String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD')).filter((character) => { const code = character.charCodeAt(0); return code < 768 || code > 879; }).join('').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || !xmlDump.includes('<hierarchy')) throw new Error('Facebook no expuso una interfaz accesible.'); const quote = String.fromCharCode(34); const attr = (tag, name) => { const key = name + '=' + quote; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf(quote, begin); return end < 0 ? '' : tag.slice(begin, end); }; const nodes = (xmlDump.match(/<node[^>]*>/g) || []).map((tag) => { const bounds = attr(tag, 'bounds'); const coordinates = bounds.split(/[^0-9]+/).filter(Boolean).map(Number); if (coordinates.length < 4) return null; return { bounds, label: simplify(attr(tag, 'text') + ' ' + attr(tag, 'content-desc') + ' ' + attr(tag, 'hint')), packageName: attr(tag, 'package'), className: attr(tag, 'class'), clickable: attr(tag, 'clickable') === 'true', focusable: attr(tag, 'focusable') === 'true', selected: attr(tag, 'selected') === 'true' || attr(tag, 'checked') === 'true', left: coordinates[0], top: coordinates[1], right: coordinates[2], bottom: coordinates[3] }; }).filter(Boolean).filter((node) => node.packageName === 'com.facebook.katana'); const screenHeight = Math.max(...nodes.map((node) => node.bottom), 1) - Math.min(...nodes.map((node) => node.top), 0); const composers = nodes.filter((node) => /EditText|AutoCompleteTextView/.test(node.className) && node.focusable && /(escribe un comentario|write a comment|comentario|comment)/.test(node.label)); const selectedControls = nodes.filter((node) => node.clickable && node.selected); const matches = []; for (const selectedControl of selectedControls) for (const composer of composers) { const gap = composer.top - selectedControl.bottom; if (gap > 0 && gap <= screenHeight * 0.5 && selectedControl.right >= composer.left - 300 && selectedControl.left <= composer.right + 300) matches.push({ selectedControl, composer }); } const unique = Array.from(new Map(matches.map((match) => [match.selectedControl.bounds + '|' + match.composer.bounds, match])).values()); if (unique.length !== 1) { const details = selectedControls.slice(0, 8).map((node) => (node.label || node.className) + '@' + node.bounds).join('|'); throw new Error('No existe un unico like seleccionado vinculable al compositor principal. selected=' + selectedControls.length + ' composers=' + composers.length + ' details=' + details); } this.variables.facebookCommentBounds = unique[0].composer.bounds; this.variables.facebookInterface = 'strict-target-scrolled';",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_like_pause",
+            "failNode": null
+          },
+          "label": "Confirmar like seleccionado",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_diagnose_scrolled",
+          "type": "custom",
+          "position": { "x": 1440, "y": 160 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').replace(/[^a-zA-Z0-9 ]+/g, ' ').trim(); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); const quote = String.fromCharCode(34); const attr = (tag, name) => { const key = name + '=' + quote; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf(quote, begin); return end < 0 ? '' : tag.slice(begin, end); }; const rows = (xmlDump.match(/<node[^>]*>/g) || []).map((tag) => ({ label: simplify(attr(tag, 'text') + ' ' + attr(tag, 'content-desc') + ' ' + attr(tag, 'hint')), packageName: attr(tag, 'package'), className: attr(tag, 'class').split('.').pop(), clickable: attr(tag, 'clickable'), focusable: attr(tag, 'focusable'), selected: attr(tag, 'selected'), checked: attr(tag, 'checked'), bounds: attr(tag, 'bounds') })).filter((node) => node.packageName === 'com.facebook.katana' && (node.label || node.clickable === 'true' || node.focusable === 'true')); const details = rows.slice(-45).map((node) => [node.label || '_', node.className, 'c' + node.clickable, 'f' + node.focusable, 's' + node.selected, 'k' + node.checked, node.bounds].join('~')).join('|'); throw new Error('SCROLLED_UI=' + details);",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_verify_selected_like",
+            "failNode": null
+          },
+          "label": "Diagnosticar interfaz desplazada",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_bind_scrolled_controls",
+          "type": "custom",
+          "position": { "x": 1440, "y": 20 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "if (this.variables.facebookInterface !== 'target-marker-bound') throw new Error('La publicacion objetivo no fue vinculada antes del desplazamiento.'); const simplify = (value) => Array.from(String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD')).filter((character) => { const code = character.charCodeAt(0); return code < 768 || code > 879; }).join('').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || !xmlDump.includes('<hierarchy')) throw new Error('Facebook no expuso una interfaz accesible.'); const quote = String.fromCharCode(34); const attr = (tag, name) => { const key = name + '=' + quote; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf(quote, begin); return end < 0 ? '' : tag.slice(begin, end); }; const nodes = (xmlDump.match(/<node[^>]*>/g) || []).map((tag) => { const bounds = attr(tag, 'bounds'); const coordinates = bounds.split(/[^0-9]+/).filter(Boolean).map(Number); if (coordinates.length < 4) return null; return { bounds, label: simplify(attr(tag, 'text') + ' ' + attr(tag, 'content-desc') + ' ' + attr(tag, 'hint')), packageName: attr(tag, 'package'), className: attr(tag, 'class'), clickable: attr(tag, 'clickable') === 'true', selected: attr(tag, 'selected') === 'true' || attr(tag, 'checked') === 'true', left: coordinates[0], top: coordinates[1], right: coordinates[2], bottom: coordinates[3] }; }).filter(Boolean).filter((node) => node.packageName === 'com.facebook.katana'); const screenHeight = Math.max(...nodes.map((node) => node.bottom), 1) - Math.min(...nodes.map((node) => node.top), 0); const comments = nodes.filter((node) => node.clickable && /^(comentar|comment)$/.test(node.label)); const shares = nodes.filter((node) => node.clickable && /(compartir|share)/.test(node.label)); const saves = nodes.filter((node) => node.clickable && /(guardar publicacion|save post)/.test(node.label)); const composers = Array.from(new Map(nodes.filter((node) => /(escribe un comentario|write a comment)/.test(node.label)).map((node) => [node.bounds, node])).values()); const matches = []; for (const comment of comments) for (const share of shares) for (const save of saves) { const sameRow = Math.abs(comment.top - share.top) <= 20 && Math.abs(comment.top - save.top) <= 20 && Math.abs(comment.bottom - share.bottom) <= 20 && Math.abs(comment.bottom - save.bottom) <= 20; if (!sameRow || comment.right > share.left + 20 || share.right > save.left + 20) continue; const likeCandidates = nodes.filter((node) => node.clickable && /Button$/.test(node.className) && node.left < comment.left && node.right <= comment.left + 20 && Math.abs(node.top - comment.top) <= 20 && Math.abs(node.bottom - comment.bottom) <= 20).sort((a, b) => b.right - a.right); if (!likeCandidates.length) continue; for (const composer of composers) { const gap = composer.top - comment.bottom; if (gap >= 0 && gap <= screenHeight * 0.6) matches.push({ like: likeCandidates[0], composer }); } } const unique = Array.from(new Map(matches.map((match) => [match.like.bounds + '|' + match.composer.bounds, match])).values()); if (unique.length !== 1) throw new Error('No existe una unica fila principal vinculable al compositor del objetivo. rows=' + comments.length + '/' + shares.length + '/' + saves.length + ' composers=' + composers.length); const match = unique[0]; this.variables.facebookCommentBounds = match.composer.bounds; this.variables.facebookLikeBounds = match.like.bounds; this.variables.facebookLikeRequired = !match.like.selected && /^(me gusta|like)$/.test(match.like.label) ? 'true' : 'false'; this.variables.facebookInterface = 'strict-target-scrolled';",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_apply_scrolled_like",
+            "failNode": null
+          },
+          "label": "Vincular acciones desplazadas",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_apply_scrolled_like",
+          "type": "custom",
+          "position": { "x": 1670, "y": 20 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "if (this.variables.facebookInterface !== 'strict-target-scrolled') throw new Error('Las acciones del objetivo no fueron vinculadas.'); if (this.variables.facebookLikeRequired === 'true') { const coordinates = String(this.variables.facebookLikeBounds || '').split(/[^0-9]+/).filter(Boolean).map(Number); if (coordinates.length < 4) throw new Error('Los limites del like objetivo son invalidos.'); await this.clientUiAutomator.click((coordinates[0] + coordinates[2]) / 2, (coordinates[1] + coordinates[3]) / 2); }",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_like_pause",
+            "failNode": null
+          },
+          "label": "Aplicar like si falta",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_strict_target_action",
+          "type": "custom",
+          "position": { "x": 750, "y": 340 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const marker = simplify('${targetMarker}'); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || marker.length < 12) throw new Error('No se pudo validar el objetivo.'); const attr = (tag, name) => { const key = name + '=\"'; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf('\"', begin); return end < 0 ? '' : tag.slice(begin, end); }; const parsed = []; const stack = []; for (const token of xmlDump.match(/<node[^>]*(?:[/])?>|<[/]node>/g) || []) { if (token === '</node>') { stack.pop(); continue; } const coordinates = attr(token, 'bounds').split(/[^0-9]+/).filter(Boolean).map(Number); const labels = [attr(token, 'text'), attr(token, 'content-desc'), attr(token, 'hint')].map(simplify).filter(Boolean); const node = { id: parsed.length, bounds: attr(token, 'bounds'), label: [...new Set(labels)].join(' '), packageName: attr(token, 'package'), className: attr(token, 'class'), scrollable: attr(token, 'scrollable') === 'true', ancestors: stack.map((item) => item.id), left: coordinates[0] || 0, top: coordinates[1] || 0, right: coordinates[2] || 0, bottom: coordinates[3] || 0, selected: attr(token, 'selected') === 'true' || attr(token, 'checked') === 'true' }; parsed.push(node); if (!token.endsWith('/>')) stack.push(node); } const facebookNodes = parsed.filter((node) => node.packageName === 'com.facebook.katana'); const screenWidth = Math.max(...facebookNodes.map((node) => node.right), 1) - Math.min(...facebookNodes.map((node) => node.left), 0); const screenHeight = Math.max(...facebookNodes.map((node) => node.bottom), 1) - Math.min(...facebookNodes.map((node) => node.top), 0); const eligibleContainer = (node) => node && node.ancestors.length >= 1 && !node.scrollable && !/RecyclerView|ListView|ScrollView/.test(node.className) && node.bottom > node.top && node.right > node.left && (node.bottom - node.top) < screenHeight * 0.85 && (node.right - node.left) <= screenWidth; const markers = facebookNodes.filter((node) => node.label.includes(marker)); const likes = facebookNodes.filter((node) => /^(me gusta|like|liked|unlike|ya no me gusta)$/.test(node.label)); const comments = facebookNodes.filter((node) => /^(comentar|comentario|comment)$/.test(node.label)); const matches = []; for (const markerNode of markers) for (const like of likes) for (const comment of comments) { if (comment.left <= like.left || Math.abs(comment.top - like.top) > 180) continue; const common = markerNode.ancestors.filter((id) => like.ancestors.includes(id) && comment.ancestors.includes(id)).map((id) => parsed[id]).filter(eligibleContainer); if (common.length) matches.push({ like, comment }); } const unique = matches.filter((match, index) => matches.findIndex((item) => item.like.bounds === match.like.bounds && item.comment.bounds === match.comment.bounds) === index); if (unique.length !== 1) throw new Error('No existe un unico contenedor de publicacion verificable para el objetivo.'); const pair = unique[0]; this.variables.facebookCommentBounds = pair.comment.bounds; this.variables.facebookInterface = 'strict-target-verified'; const alreadyLiked = pair.like.selected || /^(liked|unlike|ya no me gusta)$/.test(pair.like.label); if (!alreadyLiked) { const target = await this.clientUiAutomator.xpath(\"//*[@bounds='\" + pair.like.bounds + \"']\", xmlDump); if (!target) throw new Error('No se pudo fijar el Like del objetivo verificado.'); await target.click(); }",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_like_pause",
+            "failNode": null
+          },
+          "label": "Verificación estricta y like",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_verify_and_like",
+          "type": "custom",
+          "position": { "x": 750, "y": 200 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const marker = simplify('${targetMarker}'); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || marker.length < 12) throw new Error('No se pudo validar el objetivo.'); const attr = (tag, name) => { const key = name + '=\"'; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf('\"', begin); return end < 0 ? '' : tag.slice(begin, end); }; const parsed = []; const stack = []; for (const token of xmlDump.match(/<node[^>]*(?:[/])?>|<[/]node>/g) || []) { if (token === '</node>') { stack.pop(); continue; } const coordinates = attr(token, 'bounds').split(/[^0-9]+/).filter(Boolean).map(Number); const labels = [attr(token, 'text'), attr(token, 'content-desc'), attr(token, 'hint')].map(simplify).filter(Boolean); const node = { id: parsed.length, bounds: attr(token, 'bounds'), label: [...new Set(labels)].join(' '), packageName: attr(token, 'package'), ancestors: stack.map((item) => item.id), left: coordinates[0] || 0, top: coordinates[1] || 0, right: coordinates[2] || 0, bottom: coordinates[3] || 0, selected: attr(token, 'selected') === 'true' || attr(token, 'checked') === 'true' }; parsed.push(node); if (!token.endsWith('/>')) stack.push(node); } const facebookNodes = parsed.filter((node) => node.packageName === 'com.facebook.katana'); const markers = facebookNodes.filter((node) => node.label.includes(marker)); const likes = facebookNodes.filter((node) => /^(me gusta|like|liked|unlike|ya no me gusta)$/.test(node.label)); const comments = facebookNodes.filter((node) => /^(comentar|comentario|comment)$/.test(node.label)); const matches = []; for (const markerNode of markers) for (const like of likes) for (const comment of comments) { if (comment.left <= like.left || Math.abs(comment.top - like.top) > 180) continue; const linked = markerNode.ancestors.some((id) => { const ancestor = parsed[id]; return ancestor && ancestor.ancestors.length >= 1 && like.ancestors.includes(id) && comment.ancestors.includes(id); }); if (linked) matches.push({ like, comment }); } const unique = matches.filter((match, index) => matches.findIndex((item) => item.like.bounds === match.like.bounds && item.comment.bounds === match.comment.bounds) === index); if (unique.length !== 1) throw new Error('El marcador y la barra no pertenecen inequivocamente a la misma publicacion.'); const pair = unique[0]; this.variables.facebookCommentBounds = pair.comment.bounds; this.variables.facebookInterface = 'target-container-verified'; const alreadyLiked = pair.like.selected || /^(liked|unlike|ya no me gusta)$/.test(pair.like.label); if (!alreadyLiked) { const target = await this.clientUiAutomator.xpath(\"//*[@bounds='\" + pair.like.bounds + \"']\", xmlDump); if (!target) throw new Error('No se pudo fijar el Like del objetivo verificado.'); await target.click(); }",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_like_pause",
+            "failNode": null
+          },
+          "label": "Verificar objetivo y aplicar like",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_bind_target",
+          "type": "custom",
+          "position": { "x": 750, "y": 60 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const marker = simplify('${targetMarker}'); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || marker.length < 12) throw new Error('No se pudo validar el objetivo.'); const attr = (tag, name) => { const key = name + '=\"'; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf('\"', begin); return end < 0 ? '' : tag.slice(begin, end); }; const parsed = []; const stack = []; for (const token of xmlDump.match(/<node[^>]*(?:[/])?>|<[/]node>/g) || []) { if (token === '</node>') { stack.pop(); continue; } const bounds = attr(token, 'bounds'); const coordinates = bounds.split(/[^0-9]+/).filter(Boolean).map(Number); const node = { id: parsed.length, bounds, label: simplify(attr(token, 'text') + ' ' + attr(token, 'content-desc') + ' ' + attr(token, 'hint')), packageName: attr(token, 'package'), ancestors: stack.map((item) => item.id), left: coordinates[0] || 0, top: coordinates[1] || 0, right: coordinates[2] || 0, bottom: coordinates[3] || 0 }; parsed.push(node); if (!token.endsWith('/>')) stack.push(node); } const facebookNodes = parsed.filter((node) => node.packageName === 'com.facebook.katana'); const screenRight = Math.max(...facebookNodes.map((node) => node.right), 1); const screenBottom = Math.max(...facebookNodes.map((node) => node.bottom), 1); const markers = facebookNodes.filter((node) => node.label.includes(marker)); const likes = facebookNodes.filter((node) => /^(me gusta|like|liked|unlike|ya no me gusta)$/.test(node.label)); const comments = facebookNodes.filter((node) => /^(comentar|comentario|comment)$/.test(node.label)); const linked = []; for (const markerNode of markers) for (const like of likes) for (const comment of comments) { if (comment.left <= like.left || Math.abs(comment.top - like.top) > 180) continue; const common = markerNode.ancestors.filter((id) => like.ancestors.includes(id) && comment.ancestors.includes(id)).map((id) => parsed[id]).filter((node) => node && node.packageName === 'com.facebook.katana' && ((node.right - node.left) < screenRight * 0.95 || (node.bottom - node.top) < screenBottom * 0.85)); if (common.length) linked.push(like.bounds + '|' + comment.bounds); } if (new Set(linked).size !== 1) throw new Error('El marcador y la barra de acciones no pertenecen inequivocamente a la misma publicacion.');",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_verify_target",
+            "failNode": null
+          },
+          "label": "Vincular marcador con publicación",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_verify_target",
+          "type": "custom",
+          "position": { "x": 750, "y": 200 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const marker = simplify('${targetMarker}'); if (marker.length < 12) throw new Error('Marcador objetivo invalido.'); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); if (!xmlDump || !xmlDump.includes('<hierarchy')) throw new Error('Facebook no expuso una interfaz accesible.'); const attr = (tag, name) => { const key = name + '=\"'; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf('\"', begin); return end < 0 ? '' : tag.slice(begin, end); }; const nodes = (xmlDump.match(/<node[^>]*>/g) || []).map((tag) => { const bounds = attr(tag, 'bounds'); const coordinates = bounds.split(/[^0-9]+/).filter(Boolean).map(Number); if (coordinates.length < 4) return null; return { bounds, label: simplify(attr(tag, 'text') + ' ' + attr(tag, 'content-desc') + ' ' + attr(tag, 'hint')), packageName: attr(tag, 'package'), cx: (coordinates[0] + coordinates[2]) / 2, cy: (coordinates[1] + coordinates[3]) / 2, selected: attr(tag, 'selected') === 'true' || attr(tag, 'checked') === 'true' }; }).filter(Boolean); const facebookNodes = nodes.filter((node) => node.packageName === 'com.facebook.katana'); if (!facebookNodes.some((node) => node.label.includes(marker))) throw new Error('La publicacion objetivo no esta visible; se cancela antes del like.'); const likes = facebookNodes.filter((node) => /^(me gusta|like|liked|unlike|ya no me gusta)$/.test(node.label)); const comments = facebookNodes.filter((node) => /^(comentar|comentario|comment)$/.test(node.label)); const pairs = []; for (const like of likes) for (const comment of comments) if (comment.cx > like.cx && Math.abs(comment.cy - like.cy) <= 180 && Math.abs(comment.cx - like.cx) >= 40) pairs.push({ like, comment }); const uniquePairs = pairs.filter((pair, index) => pairs.findIndex((item) => item.like.bounds === pair.like.bounds && item.comment.bounds === pair.comment.bounds) === index); if (uniquePairs.length !== 1) throw new Error('No se encontro una unica barra de acciones para la publicacion objetivo.'); const pair = uniquePairs[0]; this.variables.facebookCommentBounds = pair.comment.bounds; this.variables.facebookInterface = 'target-verified'; const alreadyLiked = pair.like.selected || /^(liked|unlike|ya no me gusta)$/.test(pair.like.label); if (!alreadyLiked) { const target = await this.clientUiAutomator.xpath(\"//*[@bounds='\" + pair.like.bounds + \"']\", xmlDump); if (!target) throw new Error('No se pudo fijar el control Like verificado.'); await target.click(); }",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_like_pause",
+            "failNode": null
+          },
+          "label": "Verificar publicación y barra única",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -202,23 +428,11 @@
         {
           "id": "facebook_like_pause",
           "type": "custom",
-          "position": { "x": 1210, "y": 200 },
+          "position": { "x": 980, "y": 200 },
           "data": {
             "icon": "actionPause",
             "action": "Pause",
-            "options": {
-              "timeoutType": "fixed",
-              "timeout": "1",
-              "timeoutFrom": "1",
-              "timeoutTo": "3",
-              "disabled": false,
-              "nodeSleep": "0",
-              "nodeTimeout": "5",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
+            "options": { "timeoutType": "fixed", "timeout": "1", "timeoutFrom": "1", "timeoutTo": "3", "disabled": false, "nodeSleep": "0", "nodeTimeout": "5", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
             "successNode": "facebook_open_comments",
             "failNode": null
           },
@@ -230,32 +444,15 @@
         {
           "id": "facebook_open_comments",
           "type": "custom",
-          "position": { "x": 1440, "y": 200 },
+          "position": { "x": 1210, "y": 200 },
           "data": {
             "icon": "actionMouseMove",
             "action": "Touch",
-            "options": {
-              "selectorBy": "selector",
-              "touchType": "normal",
-              "selector": "",
-              "xpath": "//*[contains(@content-desc,'Comment') or contains(@content-desc,'comment') or contains(@content-desc,'Comentar') or contains(@content-desc,'comentar') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario') or contains(@text,' comentarios') or contains(@text,' comments') or contains(@text,'comentario') or contains(@text,'Comentario') or @text='Comment' or @text='Comentar']",
-              "x": "",
-              "y": "",
-              "touchCount": "1",
-              "delay": "",
-              "timeout": "15",
-              "disabled": false,
-              "nodeSleep": "0",
-              "nodeTimeout": "30",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
+            "options": { "selectorBy": "selector", "touchType": "normal", "selector": "", "xpath": "//*[@bounds='${facebookCommentBounds}']", "x": "", "y": "", "touchCount": "1", "delay": "", "timeout": "12", "disabled": false, "nodeSleep": "0", "nodeTimeout": "25", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
             "successNode": "facebook_comments_wait",
             "failNode": null
           },
-          "label": "Abrir comentarios",
+          "label": "Abrir comentarios verificados",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -263,23 +460,11 @@
         {
           "id": "facebook_comments_wait",
           "type": "custom",
-          "position": { "x": 1670, "y": 200 },
+          "position": { "x": 1440, "y": 200 },
           "data": {
             "icon": "actionPause",
             "action": "Pause",
-            "options": {
-              "timeoutType": "fixed",
-              "timeout": "2",
-              "timeoutFrom": "1",
-              "timeoutTo": "3",
-              "disabled": false,
-              "nodeSleep": "0",
-              "nodeTimeout": "5",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
+            "options": { "timeoutType": "fixed", "timeout": "2", "timeoutFrom": "1", "timeoutTo": "3", "disabled": false, "nodeSleep": "0", "nodeTimeout": "5", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
             "successNode": "facebook_type_comment",
             "failNode": null
           },
@@ -291,24 +476,11 @@
         {
           "id": "facebook_type_comment",
           "type": "custom",
-          "position": { "x": 1900, "y": 200 },
+          "position": { "x": 1670, "y": 200 },
           "data": {
             "icon": "actionTypeText",
             "action": "TypeText",
-            "options": {
-              "xpath": "//*[(@class='android.widget.EditText' or @class='android.widget.AutoCompleteTextView') and @focusable='true' and (contains(@content-desc,'comment') or contains(@content-desc,'Comment') or contains(@content-desc,'comentar') or contains(@content-desc,'Comentar') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario') or contains(@hint,'comment') or contains(@hint,'Comment') or contains(@hint,'comentar') or contains(@hint,'Comentar') or contains(@hint,'comentario') or contains(@hint,'Comentario') or contains(@text,'comment') or contains(@text,'Comment') or contains(@text,'comentar') or contains(@text,'Comentar') or contains(@text,'comentario') or contains(@text,'Comentario'))]",
-              "text": "${commentText}",
-              "timeout": "15",
-              "typeAsHuman": false,
-              "typeSpeed": 1,
-              "disabled": false,
-              "nodeSleep": "0",
-              "nodeTimeout": "45",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
+            "options": { "xpath": "//*[(@class='android.widget.EditText' or @class='android.widget.AutoCompleteTextView' or @class='android.widget.MultiAutoCompleteTextView') and @focusable='true' and (contains(@content-desc,'comment') or contains(@content-desc,'Comment') or contains(@content-desc,'comentar') or contains(@content-desc,'Comentar') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario') or contains(@hint,'comment') or contains(@hint,'Comment') or contains(@hint,'comentar') or contains(@hint,'Comentar') or contains(@hint,'comentario') or contains(@hint,'Comentario'))]", "text": "${commentText}", "timeout": "15", "typeAsHuman": false, "typeSpeed": 1, "disabled": false, "nodeSleep": "0", "nodeTimeout": "45", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
             "successNode": "facebook_send_comment",
             "failNode": null
           },
@@ -320,24 +492,32 @@
         {
           "id": "facebook_send_comment",
           "type": "custom",
-          "position": { "x": 2130, "y": 200 },
+          "position": { "x": 1900, "y": 200 },
           "data": {
             "icon": "actionMouseMove",
             "action": "Touch",
+            "options": { "selectorBy": "selector", "touchType": "normal", "selector": "", "xpath": "//*[not(@enabled='false') and (@content-desc='Post comment' or @content-desc='Send comment' or @content-desc='Enviar comentario' or @content-desc='Publicar comentario' or @content-desc='Send' or @content-desc='Enviar' or @text='Post' or @text='Publicar' or @text='Enviar')]", "x": "", "y": "", "touchCount": "1", "delay": "", "timeout": "15", "disabled": false, "nodeSleep": "0", "nodeTimeout": "30", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
+            "successNode": "facebook_strict_delivery",
+            "failNode": null
+          },
+          "label": "Publicar una vez",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_strict_delivery",
+          "type": "custom",
+          "position": { "x": 2130, "y": 340 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
             "options": {
-              "selectorBy": "selector",
-              "touchType": "normal",
-              "selector": "",
-              "xpath": "//*[contains(@content-desc,'Post comment') or contains(@content-desc,'post comment') or contains(@content-desc,'Send') or contains(@content-desc,'Enviar') or contains(@content-desc,'Publicar') or @text='Post' or @text='Publicar' or @text='Enviar']",
-              "x": "",
-              "y": "",
-              "touchCount": "1",
-              "delay": "",
-              "timeout": "15",
+              "script": "const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)); const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const expected = simplify(this.variables.commentText); const attr = (tag, name) => { const key = name + '=\"'; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf('\"', begin); return end < 0 ? '' : tag.slice(begin, end); }; if (expected.length < 2) throw new Error('Comentario esperado invalido.'); for (let attempt = 0; attempt < 5; attempt++) { await wait(1200); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); const parsed = []; const stack = []; for (const token of xmlDump?.match(/<node[^>]*(?:[/])?>|<[/]node>/g) || []) { if (token === '</node>') { stack.pop(); continue; } const coordinates = attr(token, 'bounds').split(/[^0-9]+/).filter(Boolean).map(Number); const node = { id: parsed.length, className: attr(token, 'class'), packageName: attr(token, 'package'), text: simplify(attr(token, 'text')), description: simplify(attr(token, 'content-desc')), scrollable: attr(token, 'scrollable') === 'true', ancestors: stack.map((item) => item.id), left: coordinates[0] || 0, top: coordinates[1] || 0, right: coordinates[2] || 0, bottom: coordinates[3] || 0 }; parsed.push(node); if (!token.endsWith('/>')) stack.push(node); } const facebookNodes = parsed.filter((node) => node.packageName === 'com.facebook.katana'); const screenHeight = Math.max(...facebookNodes.map((node) => node.bottom), 1) - Math.min(...facebookNodes.map((node) => node.top), 0); const eligibleContainer = (node) => node && node.ancestors.length >= 1 && !node.scrollable && !/RecyclerView|ListView|ScrollView/.test(node.className) && node.bottom > node.top && (node.bottom - node.top) < screenHeight * 0.85; const composers = facebookNodes.filter((node) => /EditText|AutoCompleteTextView/.test(node.className) && node.text === ''); const comments = facebookNodes.filter((node) => node.className === 'android.widget.TextView' && (node.text === expected || node.description === expected)); const linked = comments.some((comment) => composers.some((composer) => comment.ancestors.some((id) => composer.ancestors.includes(id) && eligibleContainer(parsed[id])))); if (linked) return; } throw new Error('No se pudo verificar el comentario publicado; requiere reconciliacion manual.');",
               "disabled": false,
               "nodeSleep": "0",
-              "nodeTimeout": "30",
-              "timeoutNextNode": "successNode",
+              "nodeTimeout": "15",
+              "timeoutNextNode": "failNode",
               "breakpoint": false,
               "timeoutAdbReconnect": "30",
               "nodeLog": ""
@@ -345,7 +525,57 @@
             "successNode": "facebook_log",
             "failNode": null
           },
-          "label": "Publicar una vez",
+          "label": "Verificación estricta del comentario",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_confirm_delivery",
+          "type": "custom",
+          "position": { "x": 2130, "y": 60 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)); const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const expected = simplify(this.variables.commentText); const attr = (tag, name) => { const key = name + '=\"'; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf('\"', begin); return end < 0 ? '' : tag.slice(begin, end); }; if (expected.length < 2) throw new Error('Comentario esperado invalido.'); for (let attempt = 0; attempt < 5; attempt++) { await wait(1200); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); const parsed = []; const stack = []; for (const token of xmlDump?.match(/<node[^>]*(?:[/])?>|<[/]node>/g) || []) { if (token === '</node>') { stack.pop(); continue; } const node = { id: parsed.length, className: attr(token, 'class'), packageName: attr(token, 'package'), text: simplify(attr(token, 'text')), description: simplify(attr(token, 'content-desc')), ancestors: stack.map((item) => item.id) }; parsed.push(node); if (!token.endsWith('/>')) stack.push(node); } const facebookNodes = parsed.filter((node) => node.packageName === 'com.facebook.katana'); const composers = facebookNodes.filter((node) => /EditText|AutoCompleteTextView/.test(node.className) && !node.text.includes(expected) && !node.description.includes(expected)); const comments = facebookNodes.filter((node) => node.className === 'android.widget.TextView' && (node.text === expected || node.description === expected)); const linked = comments.some((comment) => composers.some((composer) => comment.ancestors.some((id) => { const ancestor = parsed[id]; return ancestor && ancestor.ancestors.length >= 1 && composer.ancestors.includes(id); }))); if (linked) return; } throw new Error('No se pudo verificar el comentario publicado; requiere reconciliacion manual.');",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "15",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_log",
+            "failNode": null
+          },
+          "label": "Confirmar comentario en el hilo",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "facebook_verify_comment",
+          "type": "custom",
+          "position": { "x": 2130, "y": 200 },
+          "data": {
+            "icon": "actionEval",
+            "action": "Javascript",
+            "options": {
+              "script": "const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)); const simplify = (value) => String(value || '').replace(/&amp;/g, '&').replace(/&quot;/g, ' ').replace(/&apos;/g, ' ').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim(); const expected = simplify(this.variables.commentText); const attr = (tag, name) => { const key = name + '=\"'; const start = tag.indexOf(key); if (start < 0) return ''; const begin = start + key.length; const end = tag.indexOf('\"', begin); return end < 0 ? '' : tag.slice(begin, end); }; if (expected.length < 2) throw new Error('Comentario esperado invalido.'); for (let attempt = 0; attempt < 5; attempt++) { await wait(1200); const { xmlDump } = await this.clientUiAutomator.dumpWindowHierarchy(); const nodes = (xmlDump?.match(/<node[^>]*>/g) || []).filter((tag) => attr(tag, 'package') === 'com.facebook.katana').map((tag) => ({ className: attr(tag, 'class'), text: simplify(attr(tag, 'text')), description: simplify(attr(tag, 'content-desc')) })); const editable = nodes.filter((node) => /EditText|AutoCompleteTextView/.test(node.className)); const compositorStillContainsText = editable.some((node) => node.text.includes(expected) || node.description.includes(expected)); const published = nodes.some((node) => !/EditText|AutoCompleteTextView/.test(node.className) && (node.text === expected || node.description === expected)); if (published && !compositorStillContainsText) return; } throw new Error('No se pudo verificar el comentario publicado; requiere reconciliacion manual.');",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "15",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "30",
+              "nodeLog": ""
+            },
+            "successNode": "facebook_log",
+            "failNode": null
+          },
+          "label": "Verificar comentario publicado",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -357,20 +587,11 @@
           "data": {
             "icon": "file",
             "action": "Log",
-            "options": {
-              "log": "Like conservado o aplicado y comentario aprobado publicado en Facebook.",
-              "disabled": false,
-              "nodeSleep": "1",
-              "nodeTimeout": "30",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
+            "options": { "log": "Publicación objetivo verificada, like conservado o aplicado y comentario confirmado en pantalla.", "disabled": false, "nodeSleep": "1", "nodeTimeout": "30", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
             "successNode": "facebook_home",
             "failNode": null
           },
-          "label": "Registrar resultado",
+          "label": "Registrar resultado verificado",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -382,15 +603,7 @@
           "data": {
             "icon": "actionPressHome",
             "action": "PressHome",
-            "options": {
-              "disabled": false,
-              "nodeSleep": "1",
-              "nodeTimeout": "30",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "30",
-              "nodeLog": ""
-            },
+            "options": { "disabled": false, "nodeSleep": "1", "nodeTimeout": "30", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "30", "nodeLog": "" },
             "successNode": "facebook_stop",
             "failNode": null
           },
@@ -403,13 +616,7 @@
           "id": "facebook_stop",
           "type": "custom",
           "position": { "x": 2820, "y": 200 },
-          "data": {
-            "icon": "actionStop",
-            "action": "Stop",
-            "options": {},
-            "successNode": null,
-            "failNode": null
-          },
+          "data": { "icon": "actionStop", "action": "Stop", "options": {}, "successNode": null, "failNode": null },
           "label": "Stop",
           "sourcePosition": "right",
           "targetPosition": "left",
@@ -417,162 +624,32 @@
         }
       ],
       "edges": [
-        {
-          "id": "edge-facebook-start-open-app",
-          "type": "custom",
-          "source": "facebook_start",
-          "target": "facebook_open_app",
-          "sourceHandle": "facebook_start",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "facebook_start", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_start target-facebook_open_app"
-        },
-        {
-          "id": "edge-facebook-open-app-open-url",
-          "type": "custom",
-          "source": "facebook_open_app",
-          "target": "facebook_open_url",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_open_app target-facebook_open_url"
-        },
-        {
-          "id": "edge-facebook-open-url-wait",
-          "type": "custom",
-          "source": "facebook_open_url",
-          "target": "facebook_wait",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_open_url target-facebook_wait"
-        },
-        {
-          "id": "edge-facebook-wait-like",
-          "type": "custom",
-          "source": "facebook_wait",
-          "target": "facebook_ensure_like",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_wait target-facebook_ensure_like"
-        },
-        {
-          "id": "edge-facebook-like-pause",
-          "type": "custom",
-          "source": "facebook_ensure_like",
-          "target": "facebook_like_pause",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_ensure_like target-facebook_like_pause"
-        },
-        {
-          "id": "edge-facebook-like-pause-open-comments",
-          "type": "custom",
-          "source": "facebook_like_pause",
-          "target": "facebook_open_comments",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_like_pause target-facebook_open_comments"
-        },
-        {
-          "id": "edge-facebook-open-comments-wait",
-          "type": "custom",
-          "source": "facebook_open_comments",
-          "target": "facebook_comments_wait",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_open_comments target-facebook_comments_wait"
-        },
-        {
-          "id": "edge-facebook-comments-wait-type",
-          "type": "custom",
-          "source": "facebook_comments_wait",
-          "target": "facebook_type_comment",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_comments_wait target-facebook_type_comment"
-        },
-        {
-          "id": "edge-facebook-type-send",
-          "type": "custom",
-          "source": "facebook_type_comment",
-          "target": "facebook_send_comment",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_type_comment target-facebook_send_comment"
-        },
-        {
-          "id": "edge-facebook-send-log",
-          "type": "custom",
-          "source": "facebook_send_comment",
-          "target": "facebook_log",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_send_comment target-facebook_log"
-        },
-        {
-          "id": "edge-facebook-log-home",
-          "type": "custom",
-          "source": "facebook_log",
-          "target": "facebook_home",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_log target-facebook_home"
-        },
-        {
-          "id": "edge-facebook-home-stop",
-          "type": "custom",
-          "source": "facebook_home",
-          "target": "facebook_stop",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": { "sourceHandle": "success", "targetHandle": "success" },
-          "label": "",
-          "style": { "stroke": "#62fcaf", "strokeWidth": 2 },
-          "animated": true,
-          "class": "source-facebook_home target-facebook_stop"
-        }
+        { "id": "edge-facebook-start-open-url", "type": "custom", "source": "facebook_start", "target": "facebook_open_url", "sourceHandle": "facebook_start", "targetHandle": "success", "data": { "sourceHandle": "facebook_start", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_start target-facebook_open_url" },
+        { "id": "edge-facebook-open-url-wait", "type": "custom", "source": "facebook_open_url", "target": "facebook_wait", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_open_url target-facebook_wait" },
+        { "id": "edge-facebook-wait-refresh-visible", "type": "custom", "source": "facebook_wait", "target": "facebook_refresh_visible_target", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_wait target-facebook_refresh_visible_target" },
+        { "id": "edge-facebook-refresh-visible-scroll", "type": "custom", "source": "facebook_refresh_visible_target", "target": "facebook_scroll_target", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_refresh_visible_target target-facebook_scroll_target" },
+        { "id": "edge-facebook-bind-visible-scroll", "type": "custom", "source": "facebook_bind_visible_target", "target": "facebook_scroll_target", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_bind_visible_target target-facebook_scroll_target" },
+        { "id": "edge-facebook-scroll-wait", "type": "custom", "source": "facebook_scroll_target", "target": "facebook_scroll_wait", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_scroll_target target-facebook_scroll_wait" },
+        { "id": "edge-facebook-scroll-wait-bind-controls", "type": "custom", "source": "facebook_scroll_wait", "target": "facebook_bind_scrolled_controls", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_scroll_wait target-facebook_bind_scrolled_controls" },
+        { "id": "edge-facebook-bind-controls-apply-like", "type": "custom", "source": "facebook_bind_scrolled_controls", "target": "facebook_apply_scrolled_like", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_bind_scrolled_controls target-facebook_apply_scrolled_like" },
+        { "id": "edge-facebook-apply-scrolled-like-pause", "type": "custom", "source": "facebook_apply_scrolled_like", "target": "facebook_like_pause", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_apply_scrolled_like target-facebook_like_pause" },
+        { "id": "edge-facebook-diagnose-selected-like", "type": "custom", "source": "facebook_diagnose_scrolled", "target": "facebook_verify_selected_like", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_diagnose_scrolled target-facebook_verify_selected_like" },
+        { "id": "edge-facebook-selected-like-pause", "type": "custom", "source": "facebook_verify_selected_like", "target": "facebook_like_pause", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_verify_selected_like target-facebook_like_pause" },
+        { "id": "edge-facebook-scrolled-action-pause", "type": "custom", "source": "facebook_target_action_after_scroll", "target": "facebook_like_pause", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_target_action_after_scroll target-facebook_like_pause" },
+        { "id": "edge-facebook-strict-target-pause", "type": "custom", "source": "facebook_strict_target_action", "target": "facebook_like_pause", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_strict_target_action target-facebook_like_pause" },
+        { "id": "edge-facebook-verify-like-pause", "type": "custom", "source": "facebook_verify_and_like", "target": "facebook_like_pause", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_verify_and_like target-facebook_like_pause" },
+        { "id": "edge-facebook-bind-verify", "type": "custom", "source": "facebook_bind_target", "target": "facebook_verify_target", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_bind_target target-facebook_verify_target" },
+        { "id": "edge-facebook-verify-pause", "type": "custom", "source": "facebook_verify_target", "target": "facebook_like_pause", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_verify_target target-facebook_like_pause" },
+        { "id": "edge-facebook-pause-comments", "type": "custom", "source": "facebook_like_pause", "target": "facebook_open_comments", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_like_pause target-facebook_open_comments" },
+        { "id": "edge-facebook-comments-wait", "type": "custom", "source": "facebook_open_comments", "target": "facebook_comments_wait", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_open_comments target-facebook_comments_wait" },
+        { "id": "edge-facebook-wait-type", "type": "custom", "source": "facebook_comments_wait", "target": "facebook_type_comment", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_comments_wait target-facebook_type_comment" },
+        { "id": "edge-facebook-type-send", "type": "custom", "source": "facebook_type_comment", "target": "facebook_send_comment", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_type_comment target-facebook_send_comment" },
+        { "id": "edge-facebook-send-strict-delivery", "type": "custom", "source": "facebook_send_comment", "target": "facebook_strict_delivery", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_send_comment target-facebook_strict_delivery" },
+        { "id": "edge-facebook-strict-delivery-log", "type": "custom", "source": "facebook_strict_delivery", "target": "facebook_log", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_strict_delivery target-facebook_log" },
+        { "id": "edge-facebook-confirm-log", "type": "custom", "source": "facebook_confirm_delivery", "target": "facebook_log", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_confirm_delivery target-facebook_log" },
+        { "id": "edge-facebook-verify-log", "type": "custom", "source": "facebook_verify_comment", "target": "facebook_log", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_verify_comment target-facebook_log" },
+        { "id": "edge-facebook-log-home", "type": "custom", "source": "facebook_log", "target": "facebook_home", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_log target-facebook_home" },
+        { "id": "edge-facebook-home-stop", "type": "custom", "source": "facebook_home", "target": "facebook_stop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_home target-facebook_stop" }
       ]
     }
   }

@@ -7,8 +7,14 @@ import {
   useEffect,
   useEffectEvent,
   useId,
+  useRef,
   useState,
 } from "react";
+
+import {
+  facebookIntentOptions,
+  facebookToneOptions,
+} from "@/lib/facebook-copy-options";
 
 type Device = {
   id: string;
@@ -18,6 +24,7 @@ type Device = {
   capabilities: null | {
     tiktok: boolean;
     facebook: boolean;
+    hardwareId: string;
     focusedPackage: string | null;
   };
 };
@@ -43,9 +50,18 @@ type Operation = {
   created_at: string;
 };
 
+type FacebookBrowserSnapshot = {
+  status: "closed" | "login_required" | "ready" | "extracting";
+  browserOpen: boolean;
+  loggedIn: boolean;
+  extracting: boolean;
+  lastError: string | null;
+};
+
 type Snapshot = {
   health: { ok: boolean; version: string | null };
   deepSeek: { configured: boolean; model: string };
+  facebookBrowser: FacebookBrowserSnapshot;
   setup: {
     requiredSlugs: string[];
     devices: Array<{
@@ -78,6 +94,8 @@ type FacebookAssignment = {
     | "failed"
     | "outcome_unknown";
   error: string | null;
+  round_index: number | null;
+  sequence_index: number | null;
   draft: Draft | null;
 };
 
@@ -102,12 +120,25 @@ type FacebookPost = {
     | "skipped";
   error: string | null;
   updated_at: string;
+  planned_device_ids: string[];
   assignments: FacebookAssignment[];
 };
 
 type FacebookBatch = {
   id: string;
   status: "active" | "completed" | "cancelled";
+  plan_version: "legacy" | "rotation_v1";
+  current_round: number;
+  total_rounds: number;
+  execution_status: "idle" | "running";
+  next_execution_at: string | null;
+  execution_started: boolean;
+  device_ids: string[];
+  progress: {
+    prepared_posts: number;
+    completed_assignments: number;
+    total_assignments: number;
+  };
   posts: FacebookPost[];
 };
 
@@ -212,12 +243,7 @@ const automationDefinitions: AutomationDefinition[] = [
   },
 ];
 
-const tones = [
-  ["casual", "Casual"],
-  ["amable", "Amable"],
-  ["curioso", "Curioso"],
-  ["entusiasta", "Entusiasta"],
-] as const;
+const tones = facebookToneOptions;
 
 async function api<T>(path: string, init?: RequestInit) {
   const response = await fetch(path, {
@@ -890,7 +916,7 @@ function allocationsFromAssignments(
     return [
       {
         id: "allocation-primary",
-        intent: "Opinar sobre un elemento concreto de la publicación",
+        intent: "Crítica Constructiva",
         tone: "casual",
         count: Math.max(1, defaultCount),
       },
@@ -920,9 +946,10 @@ function FacebookCurrentPost({
   post,
   position,
   total,
+  rotation,
+  rotationStarted,
   eligibleDevices,
-  selectedDevice,
-  ready,
+  facebookBrowser,
   deepSeekConfigured,
   busy,
   runAction,
@@ -930,17 +957,22 @@ function FacebookCurrentPost({
   post: FacebookPost;
   position: number;
   total: number;
+  rotation: boolean;
+  rotationStarted: boolean;
   eligibleDevices: Device[];
-  selectedDevice: string;
-  ready: boolean;
+  facebookBrowser: FacebookBrowserSnapshot;
   deepSeekConfigured: boolean;
   busy: string | null;
   runAction: RunAction;
 }) {
+  const intentOptionsId = useId();
   const assignedDeviceIds = post.assignments.map((assignment) => assignment.device_id);
-  const initialDeviceIds = assignedDeviceIds.length
-    ? assignedDeviceIds
-    : eligibleDevices.map((device) => device.id);
+  const hasDevicePlan = post.planned_device_ids.length > 0;
+  const initialDeviceIds = hasDevicePlan
+    ? post.planned_device_ids
+    : assignedDeviceIds.length
+      ? assignedDeviceIds
+      : eligibleDevices.map((device) => device.id);
   const [context, setContext] = useState(
     post.context || post.extracted_context || "",
   );
@@ -956,6 +988,16 @@ function FacebookCurrentPost({
   const [verifiedOutcomes, setVerifiedOutcomes] = useState<
     Record<string, "" | "sent" | "not_sent">
   >({});
+  const [minDelaySeconds, setMinDelaySeconds] = useState("15");
+  const [maxDelaySeconds, setMaxDelaySeconds] = useState("45");
+  const numericMinDelay = Number(minDelaySeconds);
+  const numericMaxDelay = Number(maxDelaySeconds);
+  const validTiming =
+    Number.isInteger(numericMinDelay) &&
+    Number.isInteger(numericMaxDelay) &&
+    numericMinDelay >= 1 &&
+    numericMaxDelay <= 600 &&
+    numericMaxDelay >= numericMinDelay;
   const allocatedCount = allocations.reduce(
     (totalCount, allocation) => totalCount + allocation.count,
     0,
@@ -966,6 +1008,10 @@ function FacebookCurrentPost({
   const draftsComplete =
     post.assignments.length > 0 &&
     post.assignments.every((assignment) => assignment.draft);
+  const missingDraftCount = post.assignments.filter(
+    (assignment) => !assignment.draft,
+  ).length;
+  const generationStarted = post.assignments.length > 0;
   const editable = ![
     "extracting",
     "generating",
@@ -975,11 +1021,21 @@ function FacebookCurrentPost({
     "completed",
     "outcome_unknown",
   ].includes(post.status) && !hasLockedAssignments;
+  const configurationEditable = editable && !generationStarted;
   const eligibleDeviceIds = new Set(eligibleDevices.map((item) => item.id));
   const invalidDeviceIds = deviceIds.filter((id) => !eligibleDeviceIds.has(id));
   const invalidAssignmentIds = post.assignments
+    .filter((assignment) => !["sent", "failed"].includes(assignment.status))
     .map((assignment) => assignment.device_id)
     .filter((id) => !eligibleDeviceIds.has(id));
+  const pendingExecutionCount = post.assignments.filter(
+    (assignment) => assignment.status === "approved",
+  ).length;
+  const reconcilableAssignments = post.assignments.filter((assignment) =>
+    post.status === "outcome_unknown"
+      ? assignment.status === "outcome_unknown"
+      : assignment.status === "failed" && Boolean(assignment.draft),
+  );
 
   function toggleDevice(deviceId: string) {
     setDeviceIds((current) => {
@@ -1023,18 +1079,29 @@ function FacebookCurrentPost({
     );
   }
 
+  async function changeFacebookBrowser(action: "open" | "close") {
+    await runAction(
+      `facebook-browser-${action}`,
+      () =>
+        api("/api/facebook/browser", {
+          method: "POST",
+          body: JSON.stringify({ action }),
+        }),
+      action === "open"
+        ? "Facebook está abierto. Completa el inicio de sesión en Edge."
+        : "El navegador se cerró; la sesión quedó guardada localmente.",
+    );
+  }
+
   async function extractContext() {
     await runAction(
       "facebook-extract-context",
       () =>
         api(`/api/facebook/posts/${post.id}/extract`, {
           method: "POST",
-          body: JSON.stringify({
-            deviceId: selectedDevice,
-            idempotencyKey: crypto.randomUUID(),
-          }),
+          body: JSON.stringify({}),
         }),
-      "Contexto accesible extraído. Revísalo y edítalo antes de generar.",
+      "Se obtuvo la descripción visible de la publicación. Revísala antes de generar.",
     );
   }
 
@@ -1055,7 +1122,7 @@ function FacebookCurrentPost({
             })),
           }),
         }),
-      `${deviceIds.length} comentarios independientes generados para revisión.`,
+      "Generación procesada. Los borradores correctos se conservarán si algún dispositivo queda pendiente.",
     );
   }
 
@@ -1082,6 +1149,10 @@ function FacebookCurrentPost({
       () =>
         api(`/api/facebook/posts/${post.id}/execute`, {
           method: "POST",
+          body: JSON.stringify({
+            minDelaySeconds: numericMinDelay,
+            maxDelaySeconds: numericMaxDelay,
+          }),
         }),
       "La publicación terminó y la cola avanzó a la siguiente URL.",
     );
@@ -1099,16 +1170,13 @@ function FacebookCurrentPost({
   }
 
   async function reconcileOutcomes() {
-    const unknownAssignments = post.assignments.filter(
-      (assignment) => assignment.status === "outcome_unknown",
-    );
     await runAction(
       "facebook-reconcile-post",
       () =>
         api(`/api/facebook/posts/${post.id}/reconcile`, {
           method: "POST",
           body: JSON.stringify({
-            outcomes: unknownAssignments.map((assignment) => ({
+            outcomes: reconcilableAssignments.map((assignment) => ({
               assignmentId: assignment.id,
               outcome: verifiedOutcomes[assignment.id],
             })),
@@ -1122,12 +1190,63 @@ function FacebookCurrentPost({
     <div className="facebook-batch-current">
       <div className="facebook-progress-card">
         <div>
-          <span>Publicación actual</span>
+          <span>{rotation ? "Publicación seleccionada" : "Publicación actual"}</span>
           <strong>{position} de {total}</strong>
         </div>
         <span className={`pill facebook-${post.status}`}>
           {facebookPostStatus(post.status)}
         </span>
+      </div>
+
+      <div className={`facebook-browser-bar ${facebookBrowser.status}`}>
+        <span className="facebook-browser-mark" aria-hidden="true">FB</span>
+        <div>
+          <strong>
+            {facebookBrowser.status === "ready"
+              ? "Sesión de Facebook lista"
+              : facebookBrowser.status === "extracting"
+                ? "Leyendo la publicación"
+                : facebookBrowser.status === "login_required"
+                  ? "Completa el inicio de sesión"
+                  : "Conecta una sesión de Facebook"}
+          </strong>
+          <small>
+            {facebookBrowser.status === "ready"
+              ? "El perfil local autenticado se reutilizará para abrir publicaciones."
+              : facebookBrowser.status === "login_required"
+                ? "Inicia sesión manualmente en la ventana de Edge; el panel lo detectará automáticamente."
+                : facebookBrowser.status === "extracting"
+                  ? "Edge está obteniendo únicamente el contenido de esta publicación."
+                  : "Las credenciales no se guardan en el panel; Edge conserva la sesión en su perfil local."}
+          </small>
+          {facebookBrowser.lastError && !facebookBrowser.browserOpen && (
+            <small className="facebook-browser-error">{facebookBrowser.lastError}</small>
+          )}
+        </div>
+        <div className="facebook-browser-actions">
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => changeFacebookBrowser("open")}
+            disabled={Boolean(busy) || facebookBrowser.extracting}
+          >
+            {busy === "facebook-browser-open"
+              ? "Abriendo Edge..."
+              : facebookBrowser.browserOpen
+                ? "Mostrar Facebook"
+                : "Abrir Facebook"}
+          </button>
+          {facebookBrowser.browserOpen && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => changeFacebookBrowser("close")}
+              disabled={Boolean(busy) || facebookBrowser.extracting}
+            >
+              {busy === "facebook-browser-close" ? "Cerrando..." : "Cerrar navegador"}
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="facebook-target-bar">
@@ -1139,9 +1258,16 @@ function FacebookCurrentPost({
           type="button"
           className="button secondary"
           onClick={extractContext}
-          disabled={Boolean(busy) || !ready || !selectedDevice || !editable}
+          disabled={
+            Boolean(busy) ||
+            !facebookBrowser.loggedIn ||
+            facebookBrowser.extracting ||
+            !configurationEditable
+          }
         >
-          {busy === "facebook-extract-context" ? "Leyendo pantalla..." : "Extraer contexto con ADB"}
+          {busy === "facebook-extract-context"
+            ? "Leyendo descripción..."
+            : "Obtener descripción"}
         </button>
       </div>
 
@@ -1150,8 +1276,8 @@ function FacebookCurrentPost({
           <div className="subheading">
             <span>01</span>
             <div>
-              <strong>Contexto editable</strong>
-              <small>Texto accesible detectado en Facebook; corrige cualquier ruido visual.</small>
+              <strong>Descripción editable</strong>
+              <small>Texto visible de la publicación leído desde la sesión local de Facebook.</small>
             </div>
           </div>
           <label className="field">
@@ -1163,7 +1289,7 @@ function FacebookCurrentPost({
               maxLength={1200}
               rows={7}
               placeholder="Extrae el contexto o descríbelo manualmente."
-              disabled={!editable}
+              disabled={!configurationEditable}
               required
             />
             <small className="field-counter">{context.length}/1200</small>
@@ -1175,7 +1301,13 @@ function FacebookCurrentPost({
             <span>02</span>
             <div>
               <strong>Dispositivos participantes</strong>
-              <small>Solo conectados, con Facebook y paquetes preparados.</small>
+              <small>
+                {hasDevicePlan
+                  ? rotation
+                    ? "Todos comentarán este enlace una vez, repartidos entre las rondas."
+                    : "Grupo fijado al crear la cola; cada dispositivo participa en un solo enlace."
+                  : "Solo conectados, con Facebook y paquetes preparados."}
+              </small>
             </div>
           </div>
           <div className="facebook-device-list">
@@ -1186,7 +1318,7 @@ function FacebookCurrentPost({
                     type="checkbox"
                     checked={deviceIds.includes(device.id)}
                     onChange={() => toggleDevice(device.id)}
-                    disabled={!editable}
+                    disabled={!configurationEditable || hasDevicePlan}
                   />
                   <span>
                     <strong>{device.model}</strong>
@@ -1205,10 +1337,10 @@ function FacebookCurrentPost({
           {invalidDeviceIds.length > 0 && (
             <div className="inline-error invalid-device-warning">
               <span>
-                {invalidDeviceIds.length} dispositivo(s) dejaron de estar listos. Retíralos o
-                vuelve a prepararlos antes de continuar.
+                {invalidDeviceIds.length} dispositivo(s) dejaron de estar listos. Esto no impide
+                generar o aprobar textos; deberán estar listos antes de ejecutar la rotación.
               </span>
-              {editable && (
+              {configurationEditable && !hasDevicePlan && (
                 <button type="button" className="text-button" onClick={removeInvalidDevices}>
                   Retirar no listos
                 </button>
@@ -1231,15 +1363,21 @@ function FacebookCurrentPost({
                 <label className="field">
                   <span>Intención {index + 1}</span>
                   <input
+                    list={intentOptionsId}
                     value={allocation.intent}
                     onChange={(event) =>
                       updateAllocation(allocation.id, { intent: event.target.value })
                     }
                     minLength={3}
                     maxLength={300}
-                    disabled={!editable}
+                    disabled={!configurationEditable}
                     required
                   />
+                  <small>
+                    {facebookIntentOptions.find(
+                      ([value]) => value === allocation.intent,
+                    )?.[1] || "Intención personalizada."}
+                  </small>
                 </label>
                 <label className="field">
                   <span>Tono</span>
@@ -1250,12 +1388,13 @@ function FacebookCurrentPost({
                         tone: event.target.value as FacebookAllocation["tone"],
                       })
                     }
-                    disabled={!editable}
+                    disabled={!configurationEditable}
                   >
                     {tones.map(([value, label]) => (
                       <option value={value} key={value}>{label}</option>
                     ))}
                   </select>
+                  <small>{tones.find(([value]) => value === allocation.tone)?.[2]}</small>
                 </label>
                 <label className="field">
                   <span>Cantidad</span>
@@ -1269,11 +1408,11 @@ function FacebookCurrentPost({
                         count: Number(event.target.value),
                       })
                     }
-                    disabled={!editable}
+                    disabled={!configurationEditable}
                     required
                   />
                 </label>
-                {allocations.length > 1 && editable && (
+                {allocations.length > 1 && configurationEditable && (
                   <button
                     type="button"
                     className="text-button danger-text"
@@ -1289,7 +1428,12 @@ function FacebookCurrentPost({
               </div>
             ))}
           </div>
-          {editable && (
+          <datalist id={intentOptionsId}>
+            {facebookIntentOptions.map(([value, description]) => (
+              <option value={value} key={value}>{description}</option>
+            ))}
+          </datalist>
+          {configurationEditable && (
             <button
               type="button"
               className="button secondary"
@@ -1298,8 +1442,8 @@ function FacebookCurrentPost({
                   ...current,
                   {
                     id: crypto.randomUUID(),
-                    intent: "Hacer una pregunta concreta sobre la publicación",
-                    tone: "curioso",
+                    intent: "Elogio o Apoyo",
+                    tone: "dulce-calido",
                     count: 1,
                   },
                 ])
@@ -1312,7 +1456,7 @@ function FacebookCurrentPost({
             <span>Distribuidos {allocatedCount} / {deviceIds.length}</span>
             <strong>{allocatedCount === deviceIds.length ? "Coincide" : "Ajusta cantidades"}</strong>
           </div>
-          {editable && (
+          {editable && !draftsComplete && (
             <button
               className="button ink full"
               disabled={
@@ -1320,14 +1464,13 @@ function FacebookCurrentPost({
                 !deepSeekConfigured ||
                 context.trim().length < 5 ||
                 !deviceIds.length ||
-                invalidDeviceIds.length > 0 ||
                 allocatedCount !== deviceIds.length
               }
             >
               {busy === "facebook-generate-batch"
-                ? `Generando ${deviceIds.length} comentarios...`
-                : post.assignments.length
-                  ? "Regenerar comentarios independientes"
+                ? `Generando ${missingDraftCount || deviceIds.length} comentario(s)...`
+                : generationStarted
+                  ? `Reintentar ${missingDraftCount} comentario(s) pendiente(s)`
                   : "Generar un comentario por dispositivo"}
             </button>
           )}
@@ -1394,7 +1537,7 @@ function FacebookCurrentPost({
                   <p className="inline-error">No se generó un borrador para este dispositivo.</p>
                 )}
                 {assignment.error && <p className="inline-error">{assignment.error}</p>}
-                {assignment.status === "outcome_unknown" && (
+                {reconcilableAssignments.some((item) => item.id === assignment.id) && (
                   <label className="field">
                     <span>Resultado observado en Facebook</span>
                     <select
@@ -1429,7 +1572,6 @@ function FacebookCurrentPost({
                 disabled={
                   Boolean(busy) ||
                   !draftsComplete ||
-                  invalidAssignmentIds.length > 0 ||
                   post.assignments.some(
                     (assignment) => (comments[assignment.id] || "").trim().length < 2,
                   )
@@ -1440,20 +1582,59 @@ function FacebookCurrentPost({
             </div>
           )}
 
-          {post.status === "approved" && (
+          {post.status === "approved" && !rotation && (
             <div className="facebook-execution-bar">
               <div>
-                <strong>Acción pública multidispositivo</strong>
-                <span>{post.assignments.length} dispositivos darán like y publicarán su comentario asignado.</span>
+                <strong>Ejecución escalonada</strong>
+                <span>
+                  {pendingExecutionCount} dispositivo(s) se ejecutarán uno por uno, con una pausa
+                  aleatoria antes del siguiente.
+                </span>
               </div>
-              <button
-                type="button"
-                className="button danger"
-                onClick={executeAll}
-                disabled={Boolean(busy) || invalidAssignmentIds.length > 0}
-              >
-                {busy === "facebook-execute-batch" ? "Ejecutando dispositivos..." : "Ejecutar todos automáticamente"}
-              </button>
+              <div className="facebook-execution-controls">
+                <div className="facebook-timing-grid">
+                  <label className="field">
+                    <span>Pausa mínima</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={600}
+                      step={1}
+                      value={minDelaySeconds}
+                      onChange={(event) => setMinDelaySeconds(event.target.value)}
+                      disabled={Boolean(busy)}
+                    />
+                    <small>segundos</small>
+                  </label>
+                  <label className="field">
+                    <span>Pausa máxima</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={600}
+                      step={1}
+                      value={maxDelaySeconds}
+                      onChange={(event) => setMaxDelaySeconds(event.target.value)}
+                      disabled={Boolean(busy)}
+                    />
+                    <small>segundos</small>
+                  </label>
+                </div>
+                <button
+                  type="button"
+                  className="button danger"
+                  onClick={executeAll}
+                  disabled={
+                    Boolean(busy) ||
+                    invalidAssignmentIds.length > 0 ||
+                    !validTiming
+                  }
+                >
+                  {busy === "facebook-execute-batch"
+                    ? "Ejecutando en secuencia..."
+                    : "Ejecutar con pausas aleatorias"}
+                </button>
+              </div>
               {invalidAssignmentIds.length > 0 && (
                 <div className="inline-error invalid-device-warning">
                   <span>
@@ -1468,7 +1649,7 @@ function FacebookCurrentPost({
             </div>
           )}
 
-          {post.status === "outcome_unknown" && (
+          {reconcilableAssignments.length > 0 && (
             <div className="facebook-reconciliation-bar">
               <div>
                 <strong>Verificación manual requerida</strong>
@@ -1480,9 +1661,9 @@ function FacebookCurrentPost({
                 onClick={reconcileOutcomes}
                 disabled={
                   Boolean(busy) ||
-                  post.assignments
-                    .filter((assignment) => assignment.status === "outcome_unknown")
-                    .some((assignment) => !verifiedOutcomes[assignment.id])
+                  reconcilableAssignments.some(
+                    (assignment) => !verifiedOutcomes[assignment.id],
+                  )
                 }
               >
                 {busy === "facebook-reconcile-post" ? "Guardando..." : "Guardar verificación"}
@@ -1495,9 +1676,18 @@ function FacebookCurrentPost({
       {post.error && <div className="facebook-post-error">{post.error}</div>}
       {post.status === "partial_failed" && (
         <div className="facebook-skip-bar">
-          <span>Corrige y regenera si aún no hubo envíos, o avanza dejando registrados los resultados.</span>
-          <button type="button" className="button secondary" onClick={skipPost} disabled={Boolean(busy)}>
-            Continuar con la siguiente URL
+          <span>
+            {rotationStarted
+              ? "La rotación ya publicó acciones; conserva esta cola y revisa sus resultados."
+              : "Corrige y regenera si aún no hubo envíos, o avanza dejando registrados los resultados."}
+          </span>
+          <button
+            type="button"
+            className="button secondary"
+            onClick={skipPost}
+            disabled={Boolean(busy) || rotationStarted}
+          >
+            {rotationStarted ? "La rotación ya comenzó" : "Continuar con la siguiente URL"}
           </button>
         </div>
       )}
@@ -1508,10 +1698,29 @@ function FacebookCurrentPost({
 function FacebookBatchWorkspace(props: WorkspaceProps) {
   const [urlsText, setUrlsText] = useState("");
   const [replacing, setReplacing] = useState(false);
+  const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
+  const [minDelaySeconds, setMinDelaySeconds] = useState("15");
+  const [maxDelaySeconds, setMaxDelaySeconds] = useState("45");
+  const [minRoundDelaySeconds, setMinRoundDelaySeconds] = useState("60");
+  const [maxRoundDelaySeconds, setMaxRoundDelaySeconds] = useState("120");
+  const [scheduledStepAt, setScheduledStepAt] = useState<string | null>(null);
+  const [timerNow, setTimerNow] = useState(() => Date.now());
+  const rotationExecutionPending = useRef(false);
+  useEffect(() => {
+    if (!scheduledStepAt) return;
+    const interval = window.setInterval(() => setTimerNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [scheduledStepAt]);
   const batch = props.snapshot?.facebookBatch ?? null;
-  const currentPost = batch?.posts.find(
+  const rotation = batch?.plan_version === "rotation_v1";
+  const legacyCurrentPost = batch?.posts.find(
     (post) => !["completed", "skipped"].includes(post.status),
   );
+  const currentPost = rotation
+    ? batch?.posts.find((post) => post.id === selectedPostId) ||
+      batch?.posts.find((post) => !["completed", "skipped"].includes(post.status)) ||
+      batch?.posts[0]
+    : legacyCurrentPost;
   const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
   const registered = new Set(
     props.snapshot?.automations.map(
@@ -1524,38 +1733,164 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
       .map((status) => status.device_id) ?? [],
   );
   const requiredSlugs = props.snapshot?.setup.requiredSlugs ?? [];
-  const eligibleDevices =
-    props.snapshot?.devices.filter(
-      (device) =>
-        device.state === "device" &&
-        Boolean(device.genFarmer) &&
-        Boolean(device.capabilities?.facebook) &&
-        prepared.has(device.id) &&
-        requiredSlugs.every((slug) => registered.has(`${device.id}\0${slug}`)),
-    ) ?? [];
+  const eligibleDevices = (() => {
+    const seenHardwareIds = new Set<string>();
+    return props.snapshot?.devices
+      .filter(
+        (device) =>
+          device.state === "device" &&
+          Boolean(device.genFarmer) &&
+          Boolean(device.capabilities?.facebook) &&
+          prepared.has(device.id) &&
+          requiredSlugs.every((slug) => registered.has(`${device.id}\0${slug}`)),
+      )
+      .sort(
+        (left, right) =>
+          (left.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) -
+            (right.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) ||
+          left.id.localeCompare(right.id),
+      )
+      .filter((device) => {
+        const hardwareId = device.capabilities?.hardwareId;
+        if (!hardwareId || seenHardwareIds.has(hardwareId)) return false;
+        seenHardwareIds.add(hardwareId);
+        return true;
+      }) ?? [];
+  })();
   const completed = batch?.posts.filter(
     (post) => post.status === "completed" || post.status === "skipped",
   ).length ?? 0;
+  const numericMinDelay = Number(minDelaySeconds);
+  const numericMaxDelay = Number(maxDelaySeconds);
+  const numericMinRoundDelay = Number(minRoundDelaySeconds);
+  const numericMaxRoundDelay = Number(maxRoundDelaySeconds);
+  const validRotationTiming =
+    Number.isInteger(numericMinDelay) &&
+    Number.isInteger(numericMaxDelay) &&
+    Number.isInteger(numericMinRoundDelay) &&
+    Number.isInteger(numericMaxRoundDelay) &&
+    numericMinDelay >= 1 &&
+    numericMaxDelay >= numericMinDelay &&
+    numericMaxDelay <= 600 &&
+    numericMinRoundDelay >= 1 &&
+    numericMaxRoundDelay >= numericMinRoundDelay &&
+    numericMaxRoundDelay <= 600;
+  const scheduledSeconds = scheduledStepAt
+    ? Math.max(0, Math.ceil((Date.parse(scheduledStepAt) - timerNow) / 1_000))
+    : null;
   const showQueueForm = !batch || replacing;
+  const queueUrls = Array.from(
+    new Set(
+      urlsText
+        .split(/\r?\n/)
+        .map((url) => url.trim())
+        .filter(Boolean),
+    ),
+  );
+  const devicePlanReady =
+    queueUrls.length > 0 &&
+    queueUrls.length <= 50 &&
+    eligibleDevices.length <= 100 &&
+    eligibleDevices.length > 0;
+  const plannedGroups = devicePlanReady
+    ? queueUrls.map((_, index) => {
+        const baseSize = Math.floor(eligibleDevices.length / queueUrls.length);
+        const extraDevices = eligibleDevices.length % queueUrls.length;
+        const start = index * baseSize + Math.min(index, extraDevices);
+        const size = baseSize + (index < extraDevices ? 1 : 0);
+        return eligibleDevices.slice(start, start + size);
+      })
+    : [];
+  const plannedRounds = devicePlanReady
+    ? queueUrls.map((_, roundIndex) =>
+        plannedGroups
+          .map((devices, groupIndex) => ({
+            linkIndex: (groupIndex + roundIndex) % queueUrls.length,
+            devices,
+          }))
+          .sort((left, right) => left.linkIndex - right.linkIndex),
+      )
+    : [];
+  const rotationPosts = batch?.posts.filter((post) => post.status !== "skipped") ?? [];
+  const rotationPrepared = Boolean(
+    rotation &&
+    batch &&
+    rotationPosts.length > 0 &&
+    rotationPosts.every(
+      (post) =>
+        post.assignments.length === batch.device_ids.length &&
+        post.assignments.every(
+          (assignment) =>
+            assignment.draft &&
+            ["approved", "sent", "failed"].includes(assignment.status),
+        ),
+    ),
+  );
+  const rotationHasPending = rotationPosts.some((post) =>
+    post.assignments.some((assignment) => assignment.status === "approved"),
+  );
 
   async function createBatch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const urls = urlsText
-      .split(/\r?\n/)
-      .map((url) => url.trim())
-      .filter(Boolean);
     await props.runAction(
       "facebook-create-batch",
       async () => {
         await api("/api/facebook/batches", {
           method: "POST",
-          body: JSON.stringify({ urls }),
+          body: JSON.stringify({
+            urls: queueUrls,
+            deviceIds: eligibleDevices.map((device) => device.id),
+          }),
         });
         setReplacing(false);
         setUrlsText("");
       },
-      `Cola creada con ${urls.length} publicaciones de Facebook.`,
+      `Rotación creada: ${eligibleDevices.length} dispositivos comentarán cada una de las ${queueUrls.length} publicaciones.`,
     );
+  }
+
+  async function executeRotation() {
+    if (!batch || rotationExecutionPending.current) return;
+    rotationExecutionPending.current = true;
+    try {
+      setScheduledStepAt(batch.next_execution_at);
+      await props.runAction(
+        "facebook-execute-rotation",
+        async () => {
+          let current = batch;
+          while (current.status === "active" && current.current_round < current.total_rounds) {
+            setScheduledStepAt(current.next_execution_at);
+            const waitMilliseconds = current.next_execution_at
+              ? Math.max(0, Date.parse(current.next_execution_at) - Date.now())
+              : 0;
+            if (waitMilliseconds) {
+              await new Promise<void>((resolve) =>
+                window.setTimeout(resolve, waitMilliseconds),
+              );
+            }
+            setScheduledStepAt(null);
+            const result = await api<{ batch: FacebookBatch }>(
+              `/api/facebook/batches/${batch.id}/execute`,
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  minDelaySeconds: numericMinDelay,
+                  maxDelaySeconds: numericMaxDelay,
+                  minRoundDelaySeconds: numericMinRoundDelay,
+                  maxRoundDelaySeconds: numericMaxRoundDelay,
+                }),
+              },
+            );
+            current = result.batch;
+          }
+          return current;
+        },
+        "La rotación terminó con cada comentario verificado antes de avanzar de ronda.",
+      );
+    } finally {
+      rotationExecutionPending.current = false;
+      setScheduledStepAt(null);
+    }
   }
 
   return (
@@ -1563,15 +1898,39 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
       <div className="facebook-batch-workspace">
         <header className="facebook-batch-header">
           <div>
-            <p className="eyebrow">Cola progresiva</p>
-            <h3>Una publicación a la vez, varios dispositivos por etapa.</h3>
-            <p>Extrae, revisa, distribuye, aprueba y ejecuta antes de avanzar a la siguiente URL.</p>
+            <p className="eyebrow">{rotation ? "Rotación por rondas" : "Cola progresiva"}</p>
+            <h3>
+              {rotation
+                ? "Cada dispositivo recorre todos los enlaces."
+                : "Todos los dispositivos, repartidos entre los enlaces."}
+            </h3>
+            <p>
+              {rotation
+                ? "Los enlaces avanzan en paralelo; dentro de cada enlace los dispositivos actúan uno por uno antes de rotar."
+                : "Cada dispositivo comenta una sola publicación y las ejecuciones se separan con pausas aleatorias configurables."}
+            </p>
           </div>
           {batch && (
             <div className="facebook-batch-meter">
-              <span>Progreso</span>
-              <strong>{completed} / {batch.posts.length}</strong>
-              <div><span style={{ width: `${batch.posts.length ? (completed / batch.posts.length) * 100 : 0}%` }} /></div>
+              <span>{rotation ? "Acciones" : "Progreso"}</span>
+              <strong>
+                {rotation
+                  ? `${batch.progress.completed_assignments} / ${batch.progress.total_assignments}`
+                  : `${completed} / ${batch.posts.length}`}
+              </strong>
+              <div>
+                <span
+                  style={{
+                    width: `${rotation
+                      ? batch.progress.total_assignments
+                        ? (batch.progress.completed_assignments / batch.progress.total_assignments) * 100
+                        : 0
+                      : batch.posts.length
+                        ? (completed / batch.posts.length) * 100
+                        : 0}%`,
+                  }}
+                />
+              </div>
             </div>
           )}
         </header>
@@ -1595,6 +1954,78 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                 required
               />
             </label>
+            <section className="facebook-batch-device-plan">
+              <div className="subheading">
+                <span>GF</span>
+                <div>
+                  <strong>Grupos iniciales de dispositivos</strong>
+                  <small>
+                    Cada ronda usa todos los dispositivos sin repetirlos y luego desplaza los grupos.
+                  </small>
+                </div>
+              </div>
+              <div className="facebook-device-list">
+                {eligibleDevices.length ? (
+                  eligibleDevices.map((device) => (
+                    <label key={device.id} className="facebook-device-option">
+                      <input type="checkbox" checked readOnly />
+                      <span>
+                        <strong>{device.model}</strong>
+                        <small>{device.id}</small>
+                      </span>
+                    </label>
+                  ))
+                ) : (
+                  <p className="inline-error">No hay dispositivos Facebook listos.</p>
+                )}
+              </div>
+              <div className="facebook-device-total">
+                <span>Dispositivos disponibles</span>
+                <strong>{eligibleDevices.length}</strong>
+              </div>
+            </section>
+            {queueUrls.length > 0 && (
+              <section className="facebook-plan-preview">
+                <div className="subheading">
+                  <span>01</span>
+                  <div>
+                    <strong>Vista previa de la rotación</strong>
+                    <small>El reparto conserva el orden de GenFarmer y cubre cada combinación.</small>
+                  </div>
+                </div>
+                {devicePlanReady ? (
+                  <div className="facebook-round-preview-list">
+                    {plannedRounds.slice(0, 3).map((round, roundIndex) => (
+                      <section className="facebook-round-preview" key={roundIndex}>
+                        <strong>Ronda {roundIndex + 1}</strong>
+                        <div className="facebook-plan-grid">
+                          {round.map(({ devices, linkIndex }) => (
+                            <article key={`${roundIndex}-${linkIndex}`}>
+                              <span>Enlace {linkIndex + 1}</span>
+                              <strong>{devices.length} dispositivo(s)</strong>
+                              <small>{devices.map((device) => device.id).join(", ")}</small>
+                            </article>
+                          ))}
+                        </div>
+                      </section>
+                    ))}
+                    {plannedRounds.length > 3 && (
+                      <small className="facebook-round-overflow">
+                        Se crearán {plannedRounds.length} rondas en total.
+                      </small>
+                    )}
+                  </div>
+                ) : (
+                  <p className="inline-error">
+                    {queueUrls.length > 50
+                      ? "La cola admite hasta 50 enlaces."
+                      : eligibleDevices.length > 100
+                        ? "La cola admite hasta 100 dispositivos por lote."
+                        : "Se necesita al menos un dispositivo Facebook listo."}
+                  </p>
+                )}
+              </section>
+            )}
             <div className="facebook-queue-actions">
               {batch?.status === "active" && (
                 <button type="button" className="button secondary" onClick={() => setReplacing(false)}>
@@ -1603,40 +2034,134 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
               )}
               <button
                 className="button primary"
-                disabled={Boolean(props.busy) || !urlsText.trim()}
+                disabled={Boolean(props.busy) || !devicePlanReady}
               >
-                {props.busy === "facebook-create-batch" ? "Creando cola..." : "Iniciar cola de Facebook"}
+                {props.busy === "facebook-create-batch" ? "Creando rotación..." : "Crear rotación de Facebook"}
               </button>
             </div>
           </form>
-        ) : currentPost ? (
+        ) : batch?.status !== "completed" && currentPost ? (
           <>
             <div className="facebook-queue-strip">
               <div className="facebook-queue-items" role="list" aria-label="Estado de la cola">
-                {batch.posts.map((post) => (
-                  <span
-                    key={post.id}
-                    className={`facebook-queue-item ${post.id === currentPost.id ? "current" : ""} ${post.status}`}
-                    role="listitem"
-                    aria-current={post.id === currentPost.id ? "step" : undefined}
-                    aria-label={`Publicación ${post.position + 1}: ${facebookPostStatus(post.status)}`}
-                  >
-                    {post.position + 1}
-                  </span>
-                ))}
+                {batch.posts.map((post) =>
+                  rotation ? (
+                    <button
+                      type="button"
+                      key={post.id}
+                      className={`facebook-queue-item ${post.id === currentPost.id ? "current" : ""} ${post.status}`}
+                      role="listitem"
+                      aria-current={post.id === currentPost.id ? "step" : undefined}
+                      aria-label={`Publicación ${post.position + 1}: ${facebookPostStatus(post.status)}`}
+                      title={`${post.planned_device_ids.length} dispositivo(s) en ${batch.total_rounds} rondas`}
+                      onClick={() => setSelectedPostId(post.id)}
+                      disabled={Boolean(props.busy)}
+                    >
+                      {post.position + 1}
+                    </button>
+                  ) : (
+                    <span
+                      key={post.id}
+                      className={`facebook-queue-item ${post.id === currentPost.id ? "current" : ""} ${post.status}`}
+                      role="listitem"
+                      aria-current={post.id === currentPost.id ? "step" : undefined}
+                      aria-label={`Publicación ${post.position + 1}: ${facebookPostStatus(post.status)}`}
+                      title={`${post.planned_device_ids.length} dispositivo(s) asignado(s)`}
+                    >
+                      {post.position + 1}
+                    </span>
+                  ),
+                )}
               </div>
-              <button type="button" className="text-button" onClick={() => setReplacing(true)}>
+              <button
+                type="button"
+                className="text-button"
+                onClick={() => setReplacing(true)}
+                disabled={rotation && batch.execution_started}
+                title={rotation && batch.execution_started ? "Una rotación con acciones públicas no puede reemplazarse." : undefined}
+              >
                 Reemplazar cola
               </button>
             </div>
+            {rotation && (
+              <div className="facebook-execution-bar facebook-rotation-execution">
+                <div>
+                  <strong>
+                    {batch.execution_status === "running"
+                      ? `Ejecutando ronda ${Math.min(batch.current_round + 1, batch.total_rounds)} de ${batch.total_rounds}`
+                      : `Rotación ${batch.current_round} de ${batch.total_rounds} rondas completadas`}
+                  </strong>
+                  <span>
+                    Cada petición ejecuta como máximo un dispositivo por enlace. Solo se programa
+                    el siguiente paso cuando el comentario aparece en Facebook; resultados
+                    inciertos o fallidos bloquean la ronda.
+                    {scheduledSeconds !== null && ` Próximo paso en ${scheduledSeconds} s.`}
+                  </span>
+                </div>
+                <div className="facebook-execution-controls">
+                  <div className="facebook-timing-grid facebook-rotation-timing-grid">
+                    <label className="field">
+                      <span>Entre dispositivos mín.</span>
+                      <input type="number" min={1} max={600} value={minDelaySeconds} onChange={(event) => setMinDelaySeconds(event.target.value)} disabled={Boolean(props.busy) || batch.execution_status === "running"} />
+                      <small>segundos</small>
+                    </label>
+                    <label className="field">
+                      <span>Entre dispositivos máx.</span>
+                      <input type="number" min={1} max={600} value={maxDelaySeconds} onChange={(event) => setMaxDelaySeconds(event.target.value)} disabled={Boolean(props.busy) || batch.execution_status === "running"} />
+                      <small>segundos</small>
+                    </label>
+                    <label className="field">
+                      <span>Entre rondas mín.</span>
+                      <input type="number" min={1} max={600} value={minRoundDelaySeconds} onChange={(event) => setMinRoundDelaySeconds(event.target.value)} disabled={Boolean(props.busy) || batch.execution_status === "running"} />
+                      <small>segundos</small>
+                    </label>
+                    <label className="field">
+                      <span>Entre rondas máx.</span>
+                      <input type="number" min={1} max={600} value={maxRoundDelaySeconds} onChange={(event) => setMaxRoundDelaySeconds(event.target.value)} disabled={Boolean(props.busy) || batch.execution_status === "running"} />
+                      <small>segundos</small>
+                    </label>
+                  </div>
+                  <button
+                    type="button"
+                    className="button danger"
+                    onClick={executeRotation}
+                    disabled={
+                      Boolean(props.busy) ||
+                      batch.execution_status === "running" ||
+                      !rotationPrepared ||
+                      !rotationHasPending ||
+                      !validRotationTiming
+                    }
+                  >
+                    {props.busy === "facebook-execute-rotation"
+                      ? "Ejecutando y verificando..."
+                      : batch.current_round
+                        ? "Reanudar rotación"
+                        : "Ejecutar rotación verificada"}
+                  </button>
+                  {!rotationPrepared && (
+                    <small className="inline-error">
+                      Falta generar y aprobar un comentario por dispositivo en cada publicación.
+                    </small>
+                  )}
+                </div>
+              </div>
+            )}
             <FacebookCurrentPost
               key={`${currentPost.id}-${currentPost.updated_at}`}
               post={currentPost}
               position={currentPost.position + 1}
               total={batch.posts.length}
+              rotation={rotation}
+              rotationStarted={batch.execution_started}
               eligibleDevices={eligibleDevices}
-              selectedDevice={props.selectedDevice}
-              ready={props.ready}
+              facebookBrowser={props.snapshot?.facebookBrowser ?? {
+                status: "closed",
+                browserOpen: false,
+                loggedIn: false,
+                extracting: false,
+                lastError: null,
+              }}
               deepSeekConfigured={Boolean(props.snapshot?.deepSeek.configured)}
               busy={props.busy}
               runAction={props.runAction}
@@ -1645,7 +2170,11 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
         ) : (
           <div className="facebook-batch-complete">
             <strong>Cola completada</strong>
-            <span>Las {batch?.posts.length || 0} publicaciones fueron procesadas u omitidas.</span>
+            <span>
+              {rotation
+                ? `Se cerraron ${batch?.current_round || 0} de ${batch?.total_rounds || 0} rondas; las publicaciones omitidas quedaron fuera del conteo de acciones.`
+                : `Las ${batch?.posts.length || 0} publicaciones fueron procesadas u omitidas.`}
+            </span>
             <button type="button" className="button primary" onClick={() => setReplacing(true)}>
               Crear una nueva cola
             </button>
@@ -1950,6 +2479,7 @@ export function ControlPanel() {
       await loadSnapshot();
       setNotice({ type: "success", text: successMessage });
     } catch (error) {
+      await loadSnapshot().catch(() => undefined);
       setNotice({
         type: "error",
         text: error instanceof Error ? error.message : "Ocurrió un error.",
