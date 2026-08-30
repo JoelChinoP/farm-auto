@@ -6,14 +6,16 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { appConfig } from "@/lib/config";
+import { DATABASE_VERSION, migrateVersion7To8 } from "@/lib/db-migration";
 import { AppError } from "@/lib/errors";
 
-type RegistryRow = {
-  slug: string;
+export type DeviceProfileRow = {
+  hardware_id: string;
   device_id: string;
-  app_id: string;
-  task_id: string;
-  package_hash: string;
+  alias: string;
+  physical_order: number;
+  system_port: number;
+  created_at: string;
   updated_at: string;
 };
 
@@ -43,9 +45,9 @@ export type OperationRow = {
   id: string;
   kind: string;
   idempotency_key: string;
+  request_fingerprint: string;
   device_id: string;
-  status: "starting" | "running" | "succeeded" | "failed";
-  run_id: string | null;
+  status: "starting" | "running" | "succeeded" | "failed" | "cancelled";
   result_json: string | null;
   error: string | null;
   created_at: string;
@@ -56,6 +58,7 @@ export type DevicePreparationRow = {
   device_id: string;
   status: "running" | "ready" | "not_ready";
   problem: string | null;
+  setup_revision: number;
   updated_at: string;
 };
 
@@ -136,16 +139,6 @@ function createDatabase() {
   database.pragma("foreign_keys = ON");
   database.pragma("busy_timeout = 5000");
   database.exec(`
-    CREATE TABLE IF NOT EXISTS automation_registry (
-      slug TEXT NOT NULL,
-      device_id TEXT NOT NULL,
-      app_id TEXT NOT NULL,
-      task_id TEXT NOT NULL,
-      package_hash TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (slug, device_id)
-    );
-
     CREATE TABLE IF NOT EXISTS message_drafts (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -166,9 +159,9 @@ function createDatabase() {
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
       idempotency_key TEXT NOT NULL UNIQUE,
+      request_fingerprint TEXT NOT NULL DEFAULT '',
       device_id TEXT NOT NULL,
       status TEXT NOT NULL,
-      run_id TEXT,
       result_json TEXT,
       error TEXT,
       created_at TEXT NOT NULL,
@@ -185,6 +178,7 @@ function createDatabase() {
       device_id TEXT PRIMARY KEY,
       status TEXT NOT NULL,
       problem TEXT,
+      setup_revision INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
 
@@ -249,10 +243,21 @@ function createDatabase() {
   `);
   const migrate = database.transaction(() => {
     let version = database.pragma("user_version", { simple: true }) as number;
-    if (version > 7) {
+    if (version > DATABASE_VERSION) {
       throw new Error(`La base de datos usa una versión futura (${version}).`);
     }
     if (version < 1) {
+      database.exec(`
+        CREATE TABLE IF NOT EXISTS automation_registry (
+          slug TEXT NOT NULL,
+          device_id TEXT NOT NULL,
+          app_id TEXT NOT NULL,
+          task_id TEXT NOT NULL,
+          package_hash TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (slug, device_id)
+        );
+      `);
       const draftColumns = database.pragma("table_info(message_drafts)") as Array<{
         name: string;
       }>;
@@ -442,9 +447,21 @@ function createDatabase() {
           );
       `);
       database.pragma("user_version = 7");
+      version = 7;
+    }
+    if (version < 8) {
+      migrateVersion7To8(database);
     }
   });
   migrate.immediate();
+  const operationColumns = database.pragma("table_info(operations)") as Array<{
+    name: string;
+  }>;
+  if (!operationColumns.some((column) => column.name === "request_fingerprint")) {
+    database.exec(
+      "ALTER TABLE operations ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''",
+    );
+  }
   database
     .prepare(
       `UPDATE operations
@@ -607,18 +624,111 @@ function now() {
   return new Date().toISOString();
 }
 
-export function getRegistry(slug: string, deviceId: string) {
+export function listDeviceProfiles() {
   return db
-    .prepare(
-      "SELECT * FROM automation_registry WHERE slug = ? AND device_id = ?",
-    )
-    .get(slug, deviceId) as RegistryRow | undefined;
+    .prepare("SELECT * FROM device_profiles ORDER BY physical_order")
+    .all() as DeviceProfileRow[];
 }
 
-export function listRegistry() {
+export function getDeviceProfile(deviceId: string) {
   return db
-    .prepare("SELECT * FROM automation_registry ORDER BY slug, device_id")
-    .all() as RegistryRow[];
+    .prepare("SELECT * FROM device_profiles WHERE device_id = ?")
+    .get(deviceId) as DeviceProfileRow | undefined;
+}
+
+export function getDeviceProfileByHardwareId(hardwareId: string) {
+  return db
+    .prepare("SELECT * FROM device_profiles WHERE hardware_id = ?")
+    .get(hardwareId) as DeviceProfileRow | undefined;
+}
+
+export function upsertDeviceProfiles(
+  profiles: Array<
+    Pick<
+      DeviceProfileRow,
+      "hardware_id" | "device_id" | "alias" | "physical_order" | "system_port"
+    >
+  >,
+) {
+  const save = db.transaction(() => {
+    const timestamp = now();
+    const statement = db.prepare(`
+      INSERT INTO device_profiles
+        (hardware_id, device_id, alias, physical_order, system_port, created_at, updated_at)
+      VALUES
+        (@hardware_id, @device_id, @alias, @physical_order, @system_port, @created_at, @updated_at)
+      ON CONFLICT(hardware_id) DO UPDATE SET
+        device_id = excluded.device_id,
+        alias = excluded.alias,
+        physical_order = excluded.physical_order,
+        system_port = excluded.system_port,
+        updated_at = excluded.updated_at
+    `);
+    for (const profile of profiles) {
+      const existing = db
+        .prepare("SELECT * FROM device_profiles WHERE hardware_id = ?")
+        .get(profile.hardware_id) as DeviceProfileRow | undefined;
+      if (
+        existing &&
+        (existing.device_id !== profile.device_id ||
+          existing.system_port !== profile.system_port) &&
+        db
+          .prepare("SELECT 1 FROM device_locks WHERE device_id IN (?, ?) LIMIT 1")
+          .get(existing.device_id, profile.device_id)
+      ) {
+        throw new AppError(
+          "No se puede cambiar el transporte o systemPort de un dispositivo en uso.",
+          409,
+          "DEVICE_BUSY",
+        );
+      }
+      if (
+        existing &&
+        existing.device_id !== profile.device_id &&
+        db
+          .prepare(
+            `SELECT 1
+             FROM facebook_batches AS batch, json_each(batch.device_ids_json) AS device
+             WHERE batch.status = 'active' AND device.value = ?
+             LIMIT 1`,
+          )
+          .get(existing.device_id)
+      ) {
+        throw new AppError(
+          "No se puede cambiar el transporte de un dispositivo asignado a una cola activa.",
+          409,
+          "BATCH_BUSY",
+        );
+      }
+      statement.run({ ...profile, created_at: timestamp, updated_at: timestamp });
+      if (
+        existing &&
+        (existing.device_id !== profile.device_id ||
+          existing.system_port !== profile.system_port)
+      ) {
+        db.prepare(
+          `UPDATE device_preparation
+           SET status = 'not_ready',
+               problem = 'El transporte o systemPort del perfil cambió; repite la preparación Appium.',
+               setup_revision = 0,
+               updated_at = ?
+           WHERE device_id IN (?, ?)`,
+        ).run(timestamp, existing.device_id, profile.device_id);
+      }
+    }
+  });
+  try {
+    save.immediate();
+  } catch (error) {
+    if (error instanceof AppError) throw error;
+    throw new AppError(
+      "Los perfiles contienen identificadores, órdenes o puertos duplicados.",
+      409,
+      "DEVICE_PROFILE_CONFLICT",
+      { cause: error instanceof Error ? error.message : String(error) },
+    );
+  }
+  return listDeviceProfiles();
 }
 
 export function listDevicePreparation() {
@@ -637,35 +747,25 @@ export function setDevicePreparation(
   deviceId: string,
   status: DevicePreparationRow["status"],
   problem: string | null,
+  setupRevision = 0,
 ) {
   const row: DevicePreparationRow = {
     device_id: deviceId,
     status,
     problem,
+    setup_revision: setupRevision,
     updated_at: now(),
   };
   db.prepare(
-    `INSERT INTO device_preparation (device_id, status, problem, updated_at)
-     VALUES (@device_id, @status, @problem, @updated_at)
+    `INSERT INTO device_preparation (device_id, status, problem, setup_revision, updated_at)
+     VALUES (@device_id, @status, @problem, @setup_revision, @updated_at)
      ON CONFLICT(device_id) DO UPDATE SET
-       status = excluded.status,
-       problem = excluded.problem,
-       updated_at = excluded.updated_at`,
+        status = excluded.status,
+        problem = excluded.problem,
+        setup_revision = excluded.setup_revision,
+        updated_at = excluded.updated_at`,
   ).run(row);
   return row;
-}
-
-export function upsertRegistry(input: Omit<RegistryRow, "updated_at">) {
-  db.prepare(
-    `INSERT INTO automation_registry
-       (slug, device_id, app_id, task_id, package_hash, updated_at)
-     VALUES (@slug, @device_id, @app_id, @task_id, @package_hash, @updated_at)
-     ON CONFLICT(slug, device_id) DO UPDATE SET
-       app_id = excluded.app_id,
-       task_id = excluded.task_id,
-       package_hash = excluded.package_hash,
-       updated_at = excluded.updated_at`,
-  ).run({ ...input, updated_at: now() });
 }
 
 export function createDraft(input: {
@@ -762,6 +862,7 @@ export function setDraftOutcome(
 export function createOperation(
   kind: string,
   idempotencyKey: string,
+  requestFingerprint: string,
   deviceId: string,
 ) {
   const timestamp = now();
@@ -769,9 +870,9 @@ export function createOperation(
     id: randomUUID(),
     kind,
     idempotency_key: idempotencyKey,
+    request_fingerprint: requestFingerprint,
     device_id: deviceId,
     status: "starting",
-    run_id: null,
     result_json: null,
     error: null,
     created_at: timestamp,
@@ -780,8 +881,8 @@ export function createOperation(
   const result = db
     .prepare(
       `INSERT OR IGNORE INTO operations
-       (id, kind, idempotency_key, device_id, status, run_id, result_json, error, created_at, updated_at)
-       VALUES (@id, @kind, @idempotency_key, @device_id, @status, @run_id, @result_json, @error, @created_at, @updated_at)`,
+       (id, kind, idempotency_key, request_fingerprint, device_id, status, result_json, error, created_at, updated_at)
+       VALUES (@id, @kind, @idempotency_key, @request_fingerprint, @device_id, @status, @result_json, @error, @created_at, @updated_at)`,
     )
     .run(operation);
   if (result.changes === 1) return { operation, created: true };
@@ -791,9 +892,29 @@ export function createOperation(
   return { operation: existing, created: false };
 }
 
+export function getOperationByIdempotencyKey(idempotencyKey: string) {
+  return db
+    .prepare("SELECT * FROM operations WHERE idempotency_key = ?")
+    .get(idempotencyKey) as OperationRow | undefined;
+}
+
+export function completeOperation(id: string, result: unknown) {
+  const updated = db
+    .prepare(
+      `UPDATE operations
+       SET status = 'succeeded', result_json = ?, error = NULL, updated_at = ?
+       WHERE id = ? AND status = 'running'`,
+    )
+    .run(JSON.stringify(result), now(), id);
+  return {
+    completed: updated.changes === 1,
+    operation: getOperation(id)!,
+  };
+}
+
 export function updateOperation(
   id: string,
-  values: Partial<Pick<OperationRow, "status" | "run_id" | "result_json" | "error">>,
+  values: Partial<Pick<OperationRow, "status" | "result_json" | "error">>,
 ) {
   const current = db.prepare("SELECT * FROM operations WHERE id = ?").get(id) as
     | OperationRow
@@ -801,7 +922,7 @@ export function updateOperation(
   if (!current) throw new AppError("Operación no encontrada.", 404, "NOT_FOUND");
   const updated = { ...current, ...values, updated_at: now() };
   db.prepare(
-    `UPDATE operations SET status = @status, run_id = @run_id,
+    `UPDATE operations SET status = @status,
        result_json = @result_json, error = @error, updated_at = @updated_at
      WHERE id = @id`,
   ).run(updated);

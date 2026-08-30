@@ -1,8 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  serverExternalPackages: ["playwright-core"],
+  serverExternalPackages: ["playwright-core", "webdriverio"],
   outputFileTracingExcludes: {
     "/*": ["./data/**/*"],
     middleware: ["./data/**/*"],

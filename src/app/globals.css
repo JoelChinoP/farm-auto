@@ -708,7 +708,7 @@ select:focus {
   accent-color: #789d17;
 }
 
-.genfarmer-index {
+.profile-index {
   color: #516814;
   font-family: var(--font-geist-mono), monospace;
   font-size: 10px;
@@ -3221,6 +3221,19 @@ html {
   padding: 18px;
   border-radius: 14px;
   background: #f7f6f0;
+}
+
+.profile-form {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.profile-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
 .setup-device-list {

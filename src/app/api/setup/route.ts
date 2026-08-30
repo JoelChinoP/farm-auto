@@ -7,8 +7,8 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const input = setupSchema.parse(await readJson(request));
-    const automations = await setupAutomations(input.deviceId);
-    return Response.json({ success: true, data: { automations } });
+    const setup = await setupAutomations(input.deviceId);
+    return Response.json({ success: true, data: { setup } });
   } catch (error) {
     return errorResponse(error);
   }

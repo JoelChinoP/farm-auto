@@ -46,7 +46,6 @@ import {
   runFacebookRound,
 } from "@/lib/facebook-rotation";
 import type { FacebookRoundAssignmentStatus } from "@/lib/facebook-rotation";
-import { getDevices } from "@/lib/genfarmer";
 import {
   approveMessage,
   generateDraft,
@@ -77,10 +76,7 @@ function wait(milliseconds: number) {
 async function assertFacebookDevicesReady(deviceIds: string[]) {
   for (const deviceId of deviceIds) assertDevicePrepared(deviceId);
 
-  const [genFarmerDevices, adbDevices] = await Promise.all([
-    getDevices(),
-    listAdbDevices(),
-  ]);
+  const adbDevices = await listAdbDevices();
   const connected = new Set(
     adbDevices
       .filter((device) => device.state === "device")
@@ -92,13 +88,6 @@ async function assertFacebookDevicesReady(deviceIds: string[]) {
         `El dispositivo ${deviceId} no está conectado o autorizado por ADB.`,
         409,
         "DEVICE_NOT_CONNECTED",
-      );
-    }
-    if (!genFarmerDevices.some((device) => device.currentDeviceId === deviceId)) {
-      throw new AppError(
-        `GenFarmer no reconoce el dispositivo ${deviceId}.`,
-        409,
-        "DEVICE_NOT_IN_GENFARMER",
       );
     }
   }

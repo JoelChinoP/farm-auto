@@ -7,6 +7,36 @@ const idempotencyKey = z.string().uuid();
 
 export const setupSchema = z.object({ deviceId });
 
+export const deviceProfilesSchema = z
+  .object({
+    profiles: z
+      .array(
+        z
+          .object({
+            hardwareId: z.string().trim().min(1).max(240),
+            deviceId,
+            alias: z.string().trim().min(1).max(120),
+            physicalOrder: z.number().int().min(0),
+            systemPort: z.number().int().min(8200).max(8299),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(100),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    for (const field of ["hardwareId", "deviceId", "physicalOrder", "systemPort"] as const) {
+      if (new Set(input.profiles.map((profile) => profile[field])).size !== input.profiles.length) {
+        context.addIssue({
+          code: "custom",
+          path: ["profiles"],
+          message: `El campo ${field} debe ser único.`,
+        });
+      }
+    }
+  });
+
 export const deviceActionSchema = z.object({
   deviceId,
   idempotencyKey,

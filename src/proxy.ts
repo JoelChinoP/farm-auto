@@ -9,7 +9,7 @@ export function proxy(request: NextRequest) {
 
   const origin = request.headers.get("origin");
   const fetchSite = request.headers.get("sec-fetch-site");
-  const panelClient = request.headers.get("x-genfarmer-client");
+  const panelClient = request.headers.get("x-control-panel-client");
   const requestHost = request.headers.get("host") || request.nextUrl.host;
   const hostname = requestHost.startsWith("[")
     ? requestHost.slice(0, requestHost.indexOf("]") + 1)

@@ -20,7 +20,13 @@ type Device = {
   id: string;
   state: string;
   model: string;
-  genFarmer?: { serialNo: string; name?: string; index?: number };
+  profile: null | {
+    hardware_id: string;
+    device_id: string;
+    alias: string;
+    physical_order: number;
+    system_port: number;
+  };
   capabilities: null | {
     tiktok: boolean;
     facebook: boolean;
@@ -43,9 +49,8 @@ type Draft = {
 type Operation = {
   id: string;
   kind: string;
-  status: "starting" | "running" | "succeeded" | "failed";
+  status: "starting" | "running" | "succeeded" | "failed" | "cancelled";
   device_id: string;
-  run_id: string | null;
   error: string | null;
   created_at: string;
 };
@@ -63,16 +68,16 @@ type Snapshot = {
   deepSeek: { configured: boolean; model: string };
   facebookBrowser: FacebookBrowserSnapshot;
   setup: {
-    requiredSlugs: string[];
+    revision: number;
     devices: Array<{
       device_id: string;
       status: "running" | "ready" | "not_ready";
       problem: string | null;
+      setup_revision: number;
       updated_at: string;
     }>;
   };
   devices: Device[];
-  automations: Array<{ slug: string; device_id: string }>;
   drafts: Draft[];
   operations: Operation[];
   facebookBatch: FacebookBatch | null;
@@ -174,7 +179,6 @@ type AutomationDefinition = {
   group: string;
   title: string;
   description: string;
-  file: string;
   accent: "system" | "neutral" | "facebook" | "live" | "tiktok";
 };
 
@@ -202,7 +206,6 @@ const automationDefinitions: AutomationDefinition[] = [
     group: "Sistema",
     title: "Pantalla de inicio",
     description: "Cierra el contexto actual y deja Android en un estado conocido.",
-    file: "device-home.genfarm",
     accent: "system",
   },
   {
@@ -211,7 +214,6 @@ const automationDefinitions: AutomationDefinition[] = [
     group: "Navegación",
     title: "Abrir contenido",
     description: "Abre un enlace sin dar like, comentar ni enviar nada.",
-    file: "open-social-content.genfarm",
     accent: "neutral",
   },
   {
@@ -220,7 +222,6 @@ const automationDefinitions: AutomationDefinition[] = [
     group: "Facebook",
     title: "Like y comentario",
     description: "Borrador, aprobación y publicación exclusiva para Facebook.",
-    file: "facebook-post-like-comment.genfarm",
     accent: "facebook",
   },
   {
@@ -229,7 +230,6 @@ const automationDefinitions: AutomationDefinition[] = [
     group: "TikTok Live",
     title: "Tap tap controlado",
     description: "Rondas y coordenadas propias para una transmisión en vivo.",
-    file: "tiktok-live-tap-tap.genfarm",
     accent: "live",
   },
   {
@@ -238,7 +238,6 @@ const automationDefinitions: AutomationDefinition[] = [
     group: "TikTok",
     title: "Like y comentario",
     description: "Borrador, aprobación y publicación exclusiva para TikTok.",
-    file: "tiktok-post-like-comment.genfarm",
     accent: "tiktok",
   },
 ];
@@ -250,7 +249,7 @@ async function api<T>(path: string, init?: RequestInit) {
     ...init,
     headers: {
       "Content-Type": "application/json",
-      "X-GenFarmer-Client": "control-panel",
+      "X-Control-Panel-Client": "control-panel",
       ...init?.headers,
     },
   });
@@ -282,6 +281,7 @@ function friendlyStatus(status: Operation["status"] | Draft["status"]) {
       running: "Ejecutando",
       succeeded: "Completada",
       failed: "Falló",
+      cancelled: "Cancelada",
       draft: "Borrador",
       approved: "Aprobado",
       outcome_unknown: "Verificación manual",
@@ -350,7 +350,7 @@ function WorkspaceShell({
             </span>
           )}
           <HelpTip label={`Detalles técnicos de ${definition.title}`}>
-            <li>Paquete: {definition.file}</li>
+            <li>Flujo TypeScript ejecutado mediante Appium.</li>
             <li>El estado depende del dispositivo seleccionado.</li>
           </HelpTip>
         </div>
@@ -477,7 +477,7 @@ function HomeWorkspace(props: WorkspaceProps) {
           </p>
           <div className="requirement-row">
             <Requirement ok={Boolean(props.selectedDevice)}>Dispositivo seleccionado</Requirement>
-            <Requirement ok={props.ready}>Paquete preparado</Requirement>
+            <Requirement ok={props.ready}>Preparación Appium</Requirement>
           </div>
           <button
             type="button"
@@ -584,7 +584,7 @@ function OpenContentWorkspace(props: WorkspaceProps) {
             />
           </label>
           <div className="requirement-row">
-            <Requirement ok={props.ready}>Paquete preparado</Requirement>
+            <Requirement ok={props.ready}>Preparación Appium</Requirement>
             <Requirement ok={installed}>{platform} instalado</Requirement>
           </div>
           <button
@@ -1306,7 +1306,7 @@ function FacebookCurrentPost({
                   ? rotation
                     ? "Todos comentarán este enlace una vez, repartidos entre las rondas."
                     : "Grupo fijado al crear la cola; cada dispositivo participa en un solo enlace."
-                  : "Solo conectados, con Facebook y paquetes preparados."}
+                  : "Solo conectados, con Facebook y preparación Appium vigente."}
               </small>
             </div>
           </div>
@@ -1722,32 +1722,29 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
       batch?.posts[0]
     : legacyCurrentPost;
   const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  const registered = new Set(
-    props.snapshot?.automations.map(
-      (automation) => `${automation.device_id}\0${automation.slug}`,
-    ) ?? [],
-  );
   const prepared = new Set(
     props.snapshot?.setup.devices
-      .filter((status) => status.status === "ready")
+      .filter(
+        (status) =>
+          status.status === "ready" &&
+          status.setup_revision === props.snapshot?.setup.revision,
+      )
       .map((status) => status.device_id) ?? [],
   );
-  const requiredSlugs = props.snapshot?.setup.requiredSlugs ?? [];
   const eligibleDevices = (() => {
     const seenHardwareIds = new Set<string>();
     return props.snapshot?.devices
       .filter(
         (device) =>
           device.state === "device" &&
-          Boolean(device.genFarmer) &&
+          Boolean(device.profile) &&
           Boolean(device.capabilities?.facebook) &&
-          prepared.has(device.id) &&
-          requiredSlugs.every((slug) => registered.has(`${device.id}\0${slug}`)),
+          prepared.has(device.id),
       )
       .sort(
         (left, right) =>
-          (left.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) -
-            (right.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) ||
+          (left.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) -
+            (right.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) ||
           left.id.localeCompare(right.id),
       )
       .filter((device) => {
@@ -1956,7 +1953,7 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
             </label>
             <section className="facebook-batch-device-plan">
               <div className="subheading">
-                <span>GF</span>
+                <span>ADB</span>
                 <div>
                   <strong>Grupos iniciales de dispositivos</strong>
                   <small>
@@ -1990,7 +1987,7 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                   <span>01</span>
                   <div>
                     <strong>Vista previa de la rotación</strong>
-                    <small>El reparto conserva el orden de GenFarmer y cubre cada combinación.</small>
+                    <small>El reparto conserva el orden físico y cubre cada combinación.</small>
                   </div>
                 </div>
                 {devicePlanReady ? (
@@ -2307,7 +2304,7 @@ function TikTokLiveWorkspace(props: WorkspaceProps) {
             <small>{tapRounds || 0} rondas × 2 toques</small>
           </div>
           <div className="requirement-row">
-            <Requirement ok={props.ready}>Paquete preparado</Requirement>
+            <Requirement ok={props.ready}>Preparación Appium</Requirement>
             <Requirement ok={installed}>TikTok instalado</Requirement>
           </div>
           <button
@@ -2333,6 +2330,10 @@ export function ControlPanel() {
   const [activeAutomation, setActiveAutomation] =
     useState<AutomationSlug>("open-social-content");
   const [busy, setBusy] = useState<string | null>(null);
+  const [stoppingOperation, setStoppingOperation] = useState<string | null>(null);
+  const [profileAlias, setProfileAlias] = useState("");
+  const [profileOrder, setProfileOrder] = useState("");
+  const [profilePort, setProfilePort] = useState("");
   const [notice, setNotice] = useState<{
     type: "success" | "error";
     text: string;
@@ -2381,34 +2382,17 @@ export function ControlPanel() {
   }, []);
 
   const device = snapshot?.devices.find((item) => item.id === selectedDevice);
-  const requiredAutomations = snapshot?.setup.requiredSlugs ?? [];
-  const registeredSlugs = new Set(
-    snapshot?.automations
-      .filter((item) => item.device_id === selectedDevice)
-      .map((item) => item.slug) ?? [],
-  );
-  const setupCount = requiredAutomations.filter((slug) => registeredSlugs.has(slug)).length;
-  const isReady =
-    requiredAutomations.length > 0 &&
-    requiredAutomations.every((slug) => registeredSlugs.has(slug));
-  const orderedDevices = [...(snapshot?.devices ?? [])].sort(
-    (left, right) =>
-      (left.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) -
-        (right.genFarmer?.index ?? Number.MAX_SAFE_INTEGER) ||
-      left.model.localeCompare(right.model, "es") ||
-      left.id.localeCompare(right.id),
-  );
+  const orderedDevices = snapshot?.devices ?? [];
   const normalizedSetupQuery = setupQuery.trim().toLocaleLowerCase("es");
   const visibleSetupDevices = orderedDevices.filter((item) => {
     if (!normalizedSetupQuery) return true;
     return [
       item.id,
       item.model,
-      item.genFarmer?.serialNo,
-      item.genFarmer?.name,
-      item.genFarmer?.index === undefined
+      item.profile?.alias,
+      item.profile?.physical_order === undefined
         ? undefined
-        : `gf #${item.genFarmer.index} ${item.genFarmer.index}`,
+        : `#${item.profile.physical_order} ${item.profile.physical_order}`,
     ].some((value) => value?.toLocaleLowerCase("es").includes(normalizedSetupQuery));
   });
 
@@ -2418,39 +2402,24 @@ export function ControlPanel() {
     if (item.state !== "device") {
       return { status: "not_ready", problem: `ADB informa estado ${item.state}.` };
     }
-    if (!item.genFarmer) {
-      return { status: "not_ready", problem: "GenFarmer no reconoce este serial ADB." };
-    }
-    if (!requiredAutomations.length) {
-      return { status: "pending", problem: "Cargando el manifiesto de preparación." };
-    }
-
-    const deviceSlugs = new Set(
-      snapshot?.automations
-        .filter((automation) => automation.device_id === item.id)
-        .map((automation) => automation.slug) ?? [],
-    );
-    const missing = requiredAutomations.filter((slug) => !deviceSlugs.has(slug));
-    if (missing.length) {
-      return {
-        status: "not_ready",
-        problem: `Faltan ${missing.length} de ${requiredAutomations.length} paquetes.`,
-      };
+    if (!item.profile) {
+      return { status: "not_ready", problem: "Falta incorporar el perfil local." };
     }
     if (current) return current;
     const persisted = snapshot?.setup.devices.find((status) => status.device_id === item.id);
     if (persisted) {
       return {
-        status: persisted.status,
+        status:
+          persisted.status === "ready" &&
+          persisted.setup_revision !== snapshot?.setup.revision
+            ? "not_ready"
+            : persisted.status,
         problem: persisted.problem?.includes("task_runs.user_id")
           ? "La preparación anterior quedó obsoleta; vuelve a preparar este dispositivo."
           : persisted.problem,
       };
     }
-    return {
-      status: "not_ready",
-      problem: "Paquetes registrados; falta verificar la ejecución de Home.",
-    };
+    return { status: "not_ready", problem: "Falta validar este perfil con Appium." };
   }
 
   const activePreparationReady = device
@@ -2465,10 +2434,8 @@ export function ControlPanel() {
     );
   }
 
-  function automationReady(slug: AutomationSlug) {
-    if (!activePreparationReady) return false;
-    if (slug === "device-home") return registeredSlugs.has(slug);
-    return registeredSlugs.has(slug) && registeredSlugs.has("device-home");
+  function automationReady() {
+    return activePreparationReady;
   }
 
   const runAction: RunAction = async (name, action, successMessage) => {
@@ -2509,7 +2476,7 @@ export function ControlPanel() {
         ...current,
         [item.id]: {
           status: "running",
-          problem: `Preparando ${requiredAutomations.length} paquetes.`,
+          problem: "Validando sesión Appium, jerarquía y Home.",
         },
       }));
       try {
@@ -2551,19 +2518,67 @@ export function ControlPanel() {
     setBusy(null);
   }
 
-  async function stopRun(runId: string) {
-    await runAction(
-      `stop-${runId}`,
-      () => api(`/api/runs/${runId}`, { method: "DELETE" }),
-      "Ejecución detenida.",
+  async function stopOperation(operationId: string) {
+    setStoppingOperation(operationId);
+    setNotice(null);
+    try {
+      await api(`/api/operations/${operationId}`, { method: "DELETE" });
+      await loadSnapshot();
+      setNotice({ type: "success", text: "Operación cancelada." });
+    } catch (error) {
+      await loadSnapshot().catch(() => undefined);
+      setNotice({
+        type: "error",
+        text: error instanceof Error ? error.message : "No se pudo cancelar.",
+      });
+    } finally {
+      setStoppingOperation(null);
+    }
+  }
+
+  async function saveActiveProfile(event: FormEvent) {
+    event.preventDefault();
+    if (!device) return;
+    const hardwareId = device.profile?.hardware_id || device.capabilities?.hardwareId;
+    if (!hardwareId) {
+      setNotice({ type: "error", text: "ADB no pudo obtener la identidad física." });
+      return;
+    }
+    const physicalOrder = Number(
+      profileOrder || String(device.profile?.physical_order ?? ""),
     );
+    const systemPort = Number(
+      profilePort || String(device.profile?.system_port ?? ""),
+    );
+    await runAction(
+      "profile",
+      () =>
+        api("/api/device-profiles", {
+          method: "POST",
+          body: JSON.stringify({
+            profiles: [
+              {
+                hardwareId,
+                deviceId: device.id,
+                alias: profileAlias.trim() || device.profile?.alias || device.model,
+                physicalOrder,
+                systemPort,
+              },
+            ],
+          }),
+        }),
+      "Perfil guardado. Vuelve a preparar el dispositivo si cambió.",
+    );
+    setProfileAlias("");
+    setProfileOrder("");
+    setProfilePort("");
   }
 
   return (
     <main className="shell">
       <header className="topbar">
         <div className="brand">
-          <span className="brand-mark">GF</span>
+          <span className="brand-mark">AP</span>
           <div>
             <strong>Control local</strong>
             <span>Automatizaciones con revisión humana</span>
@@ -2601,8 +2616,8 @@ export function ControlPanel() {
           <span className={`status-dot ${snapshot?.health.ok ? "online" : ""}`} />
           {snapshot
             ? snapshot.health.ok
-              ? snapshot.health.version || "GenFarmer conectado"
-              : "GenFarmer sin conexión"
+              ? `Appium ${snapshot.health.version || "conectado"}`
+              : "Appium sin conexión"
             : "Comprobando conexión"}
         </div>
       </header>
@@ -2651,9 +2666,9 @@ export function ControlPanel() {
               {orderedDevices.length ? (
                 orderedDevices.map((item) => (
                   <option value={item.id} key={item.id}>
-                    {item.genFarmer?.index === undefined
-                      ? "GF s/n"
-                      : `GF #${item.genFarmer.index}`} · {item.model} · {item.id}
+                    {item.profile
+                      ? `#${item.profile.physical_order} · ${item.profile.alias}`
+                      : "Pendiente de incorporar"} · {item.id}
                   </option>
                 ))
               ) : (
@@ -2663,19 +2678,17 @@ export function ControlPanel() {
           </label>
           <div className="device-facts compact-facts">
             <div>
-              <span>GenFarmer</span>
+              <span>Perfil</span>
               <strong>
-                {device?.genFarmer
-                  ? `GF #${device.genFarmer.index ?? "s/n"}`
-                  : "No detectado"}
+                {device?.profile
+                  ? `#${device.profile.physical_order} · ${device.profile.alias}`
+                  : "Sin incorporar"}
               </strong>
             </div>
             <div>
               <span>Preparación</span>
               <strong>
-                {isReady
-                  ? "Lista para ejecutar"
-                  : `${setupCount} de ${requiredAutomations.length} paquetes`}
+                {activePreparationReady ? "Lista para ejecutar" : "Validación pendiente"}
               </strong>
             </div>
             <div>
@@ -2722,7 +2735,7 @@ export function ControlPanel() {
         <div className="automation-layout">
           <nav className="automation-nav" aria-label="Automatizaciones disponibles">
             {automationDefinitions.map((definition) => {
-              const ready = automationReady(definition.slug);
+              const ready = automationReady();
               const available = appAvailable(definition, device);
               const availability = !ready
                 ? "Sin preparar"
@@ -2761,7 +2774,7 @@ export function ControlPanel() {
                 active: activeAutomation === definition.slug,
                 definition,
                 selectedDevice,
-                ready: automationReady(definition.slug),
+                ready: automationReady(),
                 device,
                 snapshot,
                 busy,
@@ -2807,12 +2820,12 @@ export function ControlPanel() {
         <div className="preparation-grid">
           <div className="setup-picker">
             <label className="field">
-              <span>Buscar por número GF, modelo o serial</span>
+              <span>Buscar por orden, alias, modelo o serial</span>
               <input
                 type="search"
                 value={setupQuery}
                 onChange={(event) => setSetupQuery(event.target.value)}
-                placeholder="Ej. GF #7 o 988c..."
+                placeholder="Ej. #7, Sala norte o 988c..."
               />
             </label>
             <div className="setup-picker-actions">
@@ -2847,18 +2860,16 @@ export function ControlPanel() {
                         type="checkbox"
                         checked={setupDeviceIds.includes(item.id)}
                         onChange={() => toggleSetupDevice(item.id)}
-                        disabled={busy === "setup"}
+                        disabled={busy === "setup" || !item.profile}
                       />
-                      <span className="genfarmer-index">
-                        {item.genFarmer?.index === undefined
-                          ? "GF s/n"
-                          : `GF #${item.genFarmer.index}`}
+                      <span className="profile-index">
+                        {item.profile ? `#${item.profile.physical_order}` : "Nuevo"}
                       </span>
                       <span className="setup-device-copy">
-                        <strong>{item.genFarmer?.name || item.model}</strong>
+                        <strong>{item.profile?.alias || item.model}</strong>
                         <small>{item.id}</small>
                         <small className="preparation-problem">
-                          {result.problem || `${requiredAutomations.length} paquetes y Home verificados.`}
+                          {result.problem || "Sesión Appium, jerarquía y Home verificados."}
                         </small>
                       </span>
                       <span
@@ -2887,6 +2898,49 @@ export function ControlPanel() {
             </div>
           </div>
           <aside className="setup-summary" aria-live="polite">
+            <form className="profile-form" onSubmit={saveActiveProfile}>
+              <strong>Perfil del dispositivo activo</strong>
+              <label className="field">
+                <span>Alias</span>
+                <input
+                  value={profileAlias}
+                  onChange={(event) => setProfileAlias(event.target.value)}
+                  placeholder={device?.profile?.alias || device?.model || "Equipo"}
+                />
+              </label>
+              <div className="profile-fields">
+                <label className="field">
+                  <span>Orden físico</span>
+                  <input
+                    type="number"
+                    min="0"
+                    value={profileOrder}
+                    onChange={(event) => setProfileOrder(event.target.value)}
+                    placeholder={String(device?.profile?.physical_order ?? "")}
+                    required={!device?.profile}
+                  />
+                </label>
+                <label className="field">
+                  <span>systemPort</span>
+                  <input
+                    type="number"
+                    min="8200"
+                    max="8299"
+                    value={profilePort}
+                    onChange={(event) => setProfilePort(event.target.value)}
+                    placeholder={String(device?.profile?.system_port ?? "")}
+                    required={!device?.profile}
+                  />
+                </label>
+              </div>
+              <button
+                type="submit"
+                className="button secondary"
+                disabled={Boolean(busy) || !device}
+              >
+                {device?.profile ? "Actualizar perfil" : "Incorporar dispositivo"}
+              </button>
+            </form>
             <div>
               <span>Selección actual</span>
               <strong>
@@ -2903,8 +2957,8 @@ export function ControlPanel() {
             <details className="inline-details">
               <summary>Qué verifica la preparación</summary>
               <ul>
-                <li>Conexión ADB y reconocimiento por GenFarmer.</li>
-                <li>Paquetes requeridos y una prueba de inicio.</li>
+                <li>Perfil local, conexión ADB y salud Appium.</li>
+                <li>Sesión UiAutomator2, jerarquía accesible y Home.</li>
               </ul>
             </details>
             <button
@@ -2947,14 +3001,14 @@ export function ControlPanel() {
                 <span className={`pill ${operation.status}`}>
                   {friendlyStatus(operation.status)}
                 </span>
-                {operation.status === "running" && operation.run_id && (
+                {["starting", "running"].includes(operation.status) && (
                   <button
                     type="button"
                     className="text-button danger-text"
-                    onClick={() => stopRun(operation.run_id!)}
-                    disabled={Boolean(busy)}
+                    onClick={() => stopOperation(operation.id)}
+                    disabled={stoppingOperation === operation.id}
                   >
-                    Detener
+                    {stoppingOperation === operation.id ? "Deteniendo..." : "Detener"}
                   </button>
                 )}
               </article>

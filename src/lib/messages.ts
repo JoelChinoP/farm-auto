@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import OpenAI from "openai";
 
 import { appConfig } from "@/lib/config";
+import { isAutomationRetrySafe } from "@/lib/automation-errors";
 import {
   approveDraft,
   createDraft,
@@ -37,19 +38,6 @@ type DraftInput = {
   tone: string;
   variation?: string;
 };
-
-const retryablePreflightCodes = new Set([
-  "TIKTOK_NOT_INSTALLED",
-  "FACEBOOK_NOT_INSTALLED",
-  "SETUP_REQUIRED",
-  "DEVICE_NOT_CONNECTED",
-  "DEVICE_NOT_IN_GENFARMER",
-  "DEVICE_BUSY",
-  "DEVICE_OUTCOME_UNKNOWN",
-  "FACEBOOK_TARGET_NOT_VERIFIED",
-  "ADB_ERROR",
-  "IDEMPOTENT_OPERATION_FAILED",
-]);
 
 const globalGeneration = globalThis as typeof globalThis & {
   deepSeekClient?: OpenAI;
@@ -312,14 +300,14 @@ export async function sendApprovedMessage(
         .slice(0, 12),
     );
 
-  const facebookTargetMarker = draft.platform === "facebook"
-    ? buildFacebookTargetMarker(draft.context)
-    : null;
-  if (draft.platform === "facebook" && !facebookTargetMarker) {
+  const targetMarker = buildFacebookTargetMarker(draft.context);
+  if (!targetMarker) {
     throw new AppError(
-      "No hay una descripción suficientemente específica para verificar la publicación objetivo.",
+      `No hay una descripción suficientemente específica para verificar la publicación de ${draft.platform === "tiktok" ? "TikTok" : "Facebook"}.`,
       409,
-      "FACEBOOK_TARGET_UNVERIFIABLE",
+      draft.platform === "tiktok"
+        ? "TIKTOK_TARGET_UNVERIFIABLE"
+        : "FACEBOOK_TARGET_UNVERIFIABLE",
     );
   }
 
@@ -331,22 +319,20 @@ export async function sendApprovedMessage(
           idempotencyKey,
           url: normalizedUrl,
           commentText: draft.text,
+          targetMarker,
         })
       : await likeAndCommentFacebookPost({
           deviceId,
           idempotencyKey,
           url: normalizedUrl,
           commentText: draft.text,
-          targetMarker: facebookTargetMarker!,
+          targetMarker,
         });
     setDraftOutcome(id, "sent");
     return result;
   } catch (error) {
-    const code = error instanceof AppError ? error.code : "";
     // Once reserved, only errors proven to be preflight-safe may be retried.
-    const status = retryablePreflightCodes.has(code)
-      ? "approved"
-      : "outcome_unknown";
+    const status = isAutomationRetrySafe(error) ? "approved" : "outcome_unknown";
     setDraftOutcome(
       id,
       status,

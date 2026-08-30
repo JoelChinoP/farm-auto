@@ -1,5 +1,5 @@
 {
-  "name": "genfarmer-control-panel",
+  "name": "farm-automation-control-panel",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -7,11 +7,18 @@
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
+    "appium:server": "appium server --address 127.0.0.1 --port 4723 --use-drivers=uiautomator2",
+    "appium:doctor": "appium driver doctor uiautomator2",
     "lint": "eslint",
+    "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/**/*.test.ts",
-    "check": "npm run lint && npm test && npm run build"
+    "test:e2e:appium": "node --test --test-concurrency=1 --experimental-strip-types e2e/appium/smoke/**/*.test.ts",
+    "test:e2e:appium:destructive": "node --test --test-concurrency=1 --experimental-strip-types e2e/appium/destructive/**/*.test.ts",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
+    "appium": "3.7.0",
+    "appium-uiautomator2-driver": "8.5.0",
     "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
     "next": "16.3.3",
@@ -19,6 +26,7 @@
     "playwright-core": "^1.62.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",
+    "webdriverio": "9.31.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {

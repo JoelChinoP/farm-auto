@@ -1,24 +1,12 @@
 import "server-only";
 
 import { execFile } from "node:child_process";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { appConfig } from "@/lib/config";
 import { AppError } from "@/lib/errors";
 
 const execFileAsync = promisify(execFile);
-const defaultAdbPath = join(
-  homedir(),
-  ".genfarmer",
-  "image-search",
-  "static",
-  "adb",
-  "windows",
-  "adb.exe",
-);
-
 export type AdbDevice = {
   id: string;
   state: string;
@@ -27,7 +15,7 @@ export type AdbDevice = {
 };
 
 function adbPath() {
-  return appConfig.adbPath || defaultAdbPath;
+  return appConfig.adbPath || "adb";
 }
 
 async function adb(args: string[], timeout = 15_000) {
@@ -102,6 +90,35 @@ export async function isPackageInstalledUnchecked(
 export async function getFocusedPackage(deviceId: string) {
   await assertConnected(deviceId);
   return focusedPackageUnchecked(deviceId);
+}
+
+export async function getHomePackage(deviceId: string) {
+  await assertConnected(deviceId);
+  const output = await adb([
+    "-s",
+    deviceId,
+    "shell",
+    "cmd",
+    "package",
+    "resolve-activity",
+    "--brief",
+    "-a",
+    "android.intent.action.MAIN",
+    "-c",
+    "android.intent.category.HOME",
+  ]);
+  const component = output
+    .split(/\r?\n/)
+    .findLast((line) => /^[a-zA-Z0-9._]+\//.test(line.trim()));
+  const packageName = component?.trim().split("/", 1)[0];
+  if (!packageName) {
+    throw new AppError(
+      "ADB no pudo resolver la aplicación de inicio del dispositivo.",
+      502,
+      "HOME_PACKAGE_UNKNOWN",
+    );
+  }
+  return packageName;
 }
 
 async function focusedPackageUnchecked(deviceId: string) {

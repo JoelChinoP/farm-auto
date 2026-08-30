@@ -13,8 +13,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Control local · GenFarmer",
-  description: "Panel local con revisión humana para automatizaciones GenFarmer.",
+  title: "Control local · Appium",
+  description: "Panel local con revisión humana para automatizaciones Android.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
