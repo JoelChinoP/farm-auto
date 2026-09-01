@@ -185,20 +185,11 @@ export const facebookExecuteSchema = z
     }
   });
 
-export const facebookBatchExecuteSchema = facebookExecuteSchema
-  .safeExtend({
-    minRoundDelaySeconds: z.number().int().min(1).max(600),
-    maxRoundDelaySeconds: z.number().int().min(1).max(600),
+export const facebookBatchExecuteSchema = z
+  .object({
+    maxDelayMinutes: z.number().int().min(0).max(1_440),
   })
-  .superRefine((input, context) => {
-    if (input.maxRoundDelaySeconds < input.minRoundDelaySeconds) {
-      context.addIssue({
-        code: "custom",
-        path: ["maxRoundDelaySeconds"],
-        message: "El tiempo máximo entre rondas debe ser igual o mayor que el mínimo.",
-      });
-    }
-  });
+  .strict();
 
 export const facebookReconcileSchema = z
   .object({

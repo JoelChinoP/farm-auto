@@ -27,6 +27,11 @@ import {
   buildFacebookPostDescription,
   buildFacebookTargetMarker,
 } from "../src/lib/facebook-context.ts";
+import {
+  configuredFacebookDevices,
+  configuredFacebookDeviceIds,
+  isConfiguredFacebookDevice,
+} from "../src/lib/facebook-devices.ts";
 
 test("accepts TikTok and Facebook HTTPS links", () => {
   assert.equal(
@@ -295,7 +300,7 @@ test("blocks a Facebook round for retries or uncertain outcomes", () => {
   assert.throws(() => getFacebookRoundDisposition([]));
 });
 
-test("validates the random delay range for Facebook comments", () => {
+test("validates Facebook timing with one maximum wait per device", () => {
   assert.equal(
     facebookExecuteSchema.safeParse({ minDelaySeconds: 15, maxDelaySeconds: 45 })
       .success,
@@ -312,23 +317,33 @@ test("validates the random delay range for Facebook comments", () => {
     false,
   );
   assert.equal(
-    facebookBatchExecuteSchema.safeParse({
-      minDelaySeconds: 15,
-      maxDelaySeconds: 45,
-      minRoundDelaySeconds: 60,
-      maxRoundDelaySeconds: 120,
-    }).success,
+    facebookBatchExecuteSchema.safeParse({ maxDelayMinutes: 60 }).success,
     true,
+  );
+  assert.equal(
+    facebookBatchExecuteSchema.safeParse({ maxDelayMinutes: 0 }).success,
+    true,
+  );
+  assert.equal(
+    facebookBatchExecuteSchema.safeParse({ maxDelayMinutes: -1 }).success,
+    false,
   );
   assert.equal(
     facebookBatchExecuteSchema.safeParse({
       minDelaySeconds: 15,
       maxDelaySeconds: 45,
-      minRoundDelaySeconds: 120,
-      maxRoundDelaySeconds: 60,
     }).success,
     false,
   );
+});
+
+test("uses the JSON list of Facebook-tested devices", () => {
+  assert.equal(configuredFacebookDeviceIds.length, 12);
+  assert.equal(new Set(configuredFacebookDeviceIds).size, configuredFacebookDeviceIds.length);
+  assert.equal(new Set(configuredFacebookDevices.map((device) => device.systemPort)).size, 12);
+  assert.equal(new Set(configuredFacebookDevices.map((device) => device.physicalOrder)).size, 12);
+  assert.equal(isConfiguredFacebookDevice("988e94414444565339"), true);
+  assert.equal(isConfiguredFacebookDevice("device-not-configured"), false);
 });
 
 test("requires an exact, unique Facebook device allocation", () => {

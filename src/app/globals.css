@@ -1680,6 +1680,45 @@ select:focus {
   max-height: 190px;
 }
 
+.facebook-ready-device-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  max-height: 175px;
+  overflow-y: auto;
+}
+
+.facebook-ready-device {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: var(--module-soft);
+}
+
+.facebook-ready-device.not-ready {
+  border: 1px dashed var(--line);
+  background: #faf9f4;
+}
+
+.facebook-ready-device strong,
+.facebook-rotation-device strong {
+  overflow: hidden;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.facebook-ready-device small,
+.facebook-rotation-device small {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .facebook-plan-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1993,6 +2032,20 @@ button.facebook-queue-item:disabled {
   grid-column: 1 / -1;
 }
 
+.facebook-fixed-device-summary {
+  gap: 5px;
+  background: var(--module-soft);
+}
+
+.facebook-fixed-device-summary strong {
+  font-size: 12px;
+}
+
+.facebook-fixed-device-summary small {
+  color: var(--muted);
+  font-size: 9px;
+}
+
 .facebook-device-list {
   display: grid;
   gap: 7px;
@@ -2145,7 +2198,43 @@ button.facebook-queue-item:disabled {
 }
 
 .facebook-rotation-execution .facebook-execution-controls {
-  min-width: min(100%, 460px);
+  min-width: min(100%, 240px);
+}
+
+.facebook-rotation-devices {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--module-accent) 20%, var(--line));
+  border-radius: 12px;
+  background: var(--module-soft);
+}
+
+.facebook-rotation-device-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.facebook-rotation-device {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid rgb(40 103 199 / 15%);
+  border-radius: 10px;
+  background: var(--white);
+}
+
+.facebook-rotation-device > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.facebook-rotation-timing-grid {
+  grid-template-columns: 1fr;
 }
 
 .facebook-timing-grid {
@@ -3599,6 +3688,20 @@ html {
   }
 
   .setup-summary .button {
+    width: 100%;
+  }
+
+  .facebook-ready-device-list,
+  .facebook-rotation-device-list {
+    grid-template-columns: 1fr;
+  }
+
+  .facebook-rotation-device {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .facebook-rotation-device .text-button {
+    grid-column: 1 / -1;
     width: 100%;
   }
 

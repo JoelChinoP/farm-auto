@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const DATABASE_VERSION = 10;
+export const DATABASE_VERSION = 11;
 
 export function migrateVersion7To8(database: Database.Database) {
   const activeOperation = database
@@ -107,5 +107,25 @@ export function migrateVersion9To10(database: Database.Database) {
     DELETE FROM device_preparation;
 
     PRAGMA user_version = 10;
+  `);
+}
+
+export function migrateVersion10To11(database: Database.Database) {
+  const columns = database.pragma("table_info(facebook_rotation_slots)") as Array<{
+    name: string;
+  }>;
+  if (!columns.some((column) => column.name === "scheduled_at")) {
+    database.exec("ALTER TABLE facebook_rotation_slots ADD COLUMN scheduled_at TEXT");
+  }
+  if (!columns.some((column) => column.name === "opened_at")) {
+    database.exec("ALTER TABLE facebook_rotation_slots ADD COLUMN opened_at TEXT");
+  }
+  if (!columns.some((column) => column.name === "open_error")) {
+    database.exec("ALTER TABLE facebook_rotation_slots ADD COLUMN open_error TEXT");
+  }
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS facebook_rotation_slots_scheduled
+      ON facebook_rotation_slots(batch_id, round_index, scheduled_at);
+    PRAGMA user_version = 11;
   `);
 }

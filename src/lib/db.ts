@@ -11,6 +11,7 @@ import {
   migrateVersion7To8,
   migrateVersion8To9,
   migrateVersion9To10,
+  migrateVersion10To11,
 } from "@/lib/db-migration";
 import { AppError } from "@/lib/errors";
 
@@ -131,6 +132,9 @@ export type FacebookRotationSlotRow = {
   device_id: string;
   round_index: number;
   sequence_index: number;
+  scheduled_at: string | null;
+  opened_at: string | null;
+  open_error: string | null;
 };
 
 const globalDatabase = globalThis as typeof globalThis & {
@@ -263,6 +267,9 @@ function createDatabase() {
       device_id TEXT NOT NULL,
       round_index INTEGER NOT NULL CHECK (round_index >= 0),
       sequence_index INTEGER NOT NULL CHECK (sequence_index >= 0),
+      scheduled_at TEXT,
+      opened_at TEXT,
+      open_error TEXT,
       PRIMARY KEY (post_id, device_id),
       UNIQUE (batch_id, round_index, device_id),
       UNIQUE (post_id, round_index, sequence_index)
@@ -499,6 +506,10 @@ function createDatabase() {
     }
     if (version < 10) {
       migrateVersion9To10(database);
+      version = 10;
+    }
+    if (version < 11) {
+      migrateVersion10To11(database);
     }
   });
   migrate.immediate();
@@ -1093,8 +1104,8 @@ export function createFacebookBatch(
     });
     const insertSlot = db.prepare(
       `INSERT INTO facebook_rotation_slots
-       (batch_id, post_id, device_id, round_index, sequence_index)
-       VALUES (?, ?, ?, ?, ?)`,
+        (batch_id, post_id, device_id, round_index, sequence_index, scheduled_at, opened_at, open_error)
+        VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)`,
     );
     rotationSlots.forEach((slot) => {
       const postId = postIds[slot.postPosition];
@@ -1179,6 +1190,49 @@ export function listFacebookRotationSlots(batchId: string, roundIndex?: number) 
        ORDER BY post_id, sequence_index`,
     )
     .all(batchId, roundIndex) as FacebookRotationSlotRow[];
+}
+
+export function setFacebookRotationSlotScheduledAt(
+  batchId: string,
+  postId: string,
+  deviceId: string,
+  roundIndex: number,
+  value: string | null,
+) {
+  const result = db
+    .prepare(
+      `UPDATE facebook_rotation_slots SET scheduled_at = ?
+       WHERE batch_id = ? AND post_id = ? AND device_id = ? AND round_index = ?`,
+    )
+    .run(value, batchId, postId, deviceId, roundIndex);
+  if (result.changes !== 1) {
+    throw new AppError("No se encontró la programación del dispositivo.", 404, "NOT_FOUND");
+  }
+}
+
+export function setFacebookRotationSlotOpenState(
+  batchId: string,
+  postId: string,
+  deviceId: string,
+  roundIndex: number,
+  values: { openedAt: string | null; error: string | null },
+) {
+  const result = db
+    .prepare(
+      `UPDATE facebook_rotation_slots SET opened_at = ?, open_error = ?
+       WHERE batch_id = ? AND post_id = ? AND device_id = ? AND round_index = ?`,
+    )
+    .run(
+      values.openedAt,
+      values.error,
+      batchId,
+      postId,
+      deviceId,
+      roundIndex,
+    );
+  if (result.changes !== 1) {
+    throw new AppError("No se encontró el dispositivo de la rotación.", 404, "NOT_FOUND");
+  }
 }
 
 export function claimFacebookBatchExecution(id: string) {

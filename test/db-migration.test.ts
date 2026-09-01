@@ -9,6 +9,7 @@ import {
   migrateVersion7To8,
   migrateVersion8To9,
   migrateVersion9To10,
+  migrateVersion10To11,
 } from "../src/lib/db-migration.ts";
 
 test("migrates a version 7 copy without losing history or locks", async () => {
@@ -228,5 +229,28 @@ test("clears operational history while preserving device profiles", () => {
       0,
     );
   }
+  database.close();
+});
+
+test("adds per-device Facebook opening and scheduling fields", () => {
+  const database = new Database(":memory:");
+  database.exec(`
+    CREATE TABLE facebook_rotation_slots (
+      batch_id TEXT, post_id TEXT, device_id TEXT,
+      round_index INTEGER, sequence_index INTEGER
+    );
+    INSERT INTO facebook_rotation_slots VALUES ('batch-1', 'post-1', 'device-1', 0, 0);
+    PRAGMA user_version = 10;
+  `);
+
+  database.transaction(() => migrateVersion10To11(database)).immediate();
+
+  assert.equal(database.pragma("user_version", { simple: true }), 11);
+  const slot = database
+    .prepare(
+      "SELECT scheduled_at, opened_at, open_error FROM facebook_rotation_slots",
+    )
+    .get() as { scheduled_at: string | null; opened_at: string | null; open_error: string | null };
+  assert.deepEqual(slot, { scheduled_at: null, opened_at: null, open_error: null });
   database.close();
 });

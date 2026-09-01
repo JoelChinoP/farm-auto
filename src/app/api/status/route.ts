@@ -10,6 +10,7 @@ import {
 } from "@/lib/db";
 import { getFacebookBatchSnapshot } from "@/lib/facebook-batch-service";
 import { getFacebookBrowserStatus } from "@/lib/facebook-browser";
+import { syncConfiguredFacebookDeviceProfiles } from "@/lib/facebook-device-configuration";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +30,7 @@ export async function GET() {
           : null,
     })),
   );
+  syncConfiguredFacebookDeviceProfiles(adbWithCapabilities);
   const adbById = new Map(adbWithCapabilities.map((device) => [device.id, device]));
   const profiles = listDeviceProfiles();
   const profiledDevices = profiles.map((profile) => {

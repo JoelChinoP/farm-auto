@@ -3,9 +3,11 @@ import "server-only";
 import { randomInt } from "node:crypto";
 
 import {
+  closeFacebook,
   getDeviceHardwareId,
   isPackageInstalledUnchecked,
   listAdbDevices,
+  openFacebookUrl,
 } from "@/lib/adb";
 import {
   assertDevicePrepared,
@@ -27,6 +29,8 @@ import {
   releaseFacebookBatchExecution,
   replaceFacebookAssignments,
   setFacebookBatchNextExecutionAt,
+  setFacebookRotationSlotOpenState,
+  setFacebookRotationSlotScheduledAt,
   setDraftOutcome,
   transitionFacebookPost,
   updateFacebookAssignment,
@@ -45,9 +49,9 @@ import {
 import {
   buildFacebookRotationPlan,
   getFacebookRoundDisposition,
-  runFacebookRound,
 } from "@/lib/facebook-rotation";
 import type { FacebookRoundAssignmentStatus } from "@/lib/facebook-rotation";
+import { isConfiguredFacebookDevice } from "@/lib/facebook-devices";
 import {
   generateDrafts,
   sendMessage,
@@ -84,6 +88,16 @@ function wait(milliseconds: number) {
 }
 
 async function assertFacebookDevicesReady(deviceIds: string[]) {
+  const unsupported = deviceIds.find(
+    (deviceId) => !isConfiguredFacebookDevice(deviceId),
+  );
+  if (unsupported) {
+    throw new AppError(
+      `El dispositivo ${unsupported} no está incluido en la configuración de Facebook.`,
+      409,
+      "FACEBOOK_DEVICE_NOT_CONFIGURED",
+    );
+  }
   for (const deviceId of deviceIds) assertDevicePrepared(deviceId);
 
   const adbDevices = await listAdbDevices();
@@ -152,6 +166,7 @@ export function getFacebookBatchSnapshot() {
         ...assignment,
         round_index: slot?.round_index ?? null,
         sequence_index: slot?.sequence_index ?? null,
+        scheduled_at: slot?.scheduled_at ?? null,
         draft: assignment.draft_id ? getDraft(assignment.draft_id) ?? null : null,
       };
     }).sort(
@@ -173,6 +188,11 @@ export function getFacebookBatchSnapshot() {
   const activeAssignments = posts
     .filter((post) => activePostIds.has(post.id))
     .flatMap((post) => post.assignments);
+  const postsById = new Map(posts.map((post) => [post.id, post]));
+  const activeSlots = rotation
+    ? rotationSlots.filter((slot) => slot.round_index === batch.current_round)
+    : [];
+  const slotsByDevice = new Map(activeSlots.map((slot) => [slot.device_id, slot]));
   return {
     id: batch.id,
     status: batch.status,
@@ -187,6 +207,25 @@ export function getFacebookBatchSnapshot() {
     created_at: batch.created_at,
     updated_at: batch.updated_at,
     device_ids: storedDeviceIds,
+    devices: rotation
+      ? storedDeviceIds.flatMap((deviceId) => {
+          const slot = slotsByDevice.get(deviceId);
+          const post = slot ? postsById.get(slot.post_id) : null;
+          if (!slot || !post) return [];
+          const assignment = post.assignments.find(
+            (item) => item.device_id === deviceId,
+          );
+          return [{
+            device_id: deviceId,
+            post_id: post.id,
+            post_url: post.url,
+            assignment_status: assignment?.status ?? null,
+            scheduled_at: slot.scheduled_at,
+            opened_at: slot.opened_at,
+            open_error: slot.open_error,
+          }];
+        })
+      : [],
     progress: {
       prepared_posts: posts.filter(
         (post) =>
@@ -269,11 +308,84 @@ export async function startFacebookBatch(values: string[], deviceIds: string[]) 
     );
   }
   await assertFacebookDevicesReady(deviceIds);
-  createFacebookBatch(
+  const batch = createFacebookBatch(
     urls,
     deviceIds,
     buildFacebookRotationPlan(deviceGroups),
   );
+  await Promise.all(
+    listFacebookRotationSlots(batch.id, 0).map(async (slot) => {
+      const post = getFacebookPost(slot.post_id);
+      if (!post) return;
+      try {
+        await openFacebookUrl(slot.device_id, post.url);
+        setFacebookRotationSlotOpenState(
+          batch.id,
+          slot.post_id,
+          slot.device_id,
+          slot.round_index,
+          { openedAt: new Date().toISOString(), error: null },
+        );
+      } catch (error) {
+        setFacebookRotationSlotOpenState(
+          batch.id,
+          slot.post_id,
+          slot.device_id,
+          slot.round_index,
+          {
+            openedAt: null,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
+    }),
+  );
+  return getFacebookBatchSnapshot();
+}
+
+export async function reopenFacebookBatchDevice(batchId: string, deviceId: string) {
+  const batch = getFacebookBatch(batchId);
+  if (!batch || batch.status !== "active" || batch.plan_version !== "rotation_v1") {
+    throw new AppError("La rotación ya no está activa.", 409, "BATCH_NOT_ACTIVE");
+  }
+  if (batch.execution_status === "running") {
+    throw new AppError(
+      "Espera a que termine el paso de rotación antes de reabrir Facebook.",
+      409,
+      "BATCH_EXECUTION_BUSY",
+    );
+  }
+  const slot = listFacebookRotationSlots(batchId, batch.current_round).find(
+    (item) => item.device_id === deviceId,
+  );
+  const post = slot ? getFacebookPost(slot.post_id) : null;
+  if (!slot || !post || post.status === "skipped") {
+    throw new AppError("Este dispositivo no tiene una publicación activa.", 404, "NOT_FOUND");
+  }
+  assertDevicePrepared(deviceId);
+  try {
+    await closeFacebook(deviceId);
+    await openFacebookUrl(deviceId, post.url);
+    setFacebookRotationSlotOpenState(
+      batchId,
+      slot.post_id,
+      deviceId,
+      slot.round_index,
+      { openedAt: new Date().toISOString(), error: null },
+    );
+  } catch (error) {
+    setFacebookRotationSlotOpenState(
+      batchId,
+      slot.post_id,
+      deviceId,
+      slot.round_index,
+      {
+        openedAt: null,
+        error: error instanceof Error ? error.message : String(error),
+      },
+    );
+    throw error;
+  }
   return getFacebookBatchSnapshot();
 }
 
@@ -758,14 +870,23 @@ function assertRotationPrepared(
   }
 }
 
+function scheduledAt(maxDelayMinutes: number) {
+  const delaySeconds = randomInt(0, maxDelayMinutes * 60 + 1);
+  return new Date(Date.now() + delaySeconds * 1_000).toISOString();
+}
+
+function syncFacebookBatchNextExecution(batchId: string, roundIndex: number) {
+  const next = listFacebookRotationSlots(batchId, roundIndex)
+    .map((slot) => slot.scheduled_at)
+    .filter((value): value is string => Boolean(value))
+    .sort()[0] ?? null;
+  setFacebookBatchNextExecutionAt(batchId, next);
+  return next;
+}
+
 export async function executeFacebookBatch(
   batchId: string,
-  timing: {
-    minDelaySeconds: number;
-    maxDelaySeconds: number;
-    minRoundDelaySeconds: number;
-    maxRoundDelaySeconds: number;
-  },
+  timing: { maxDelayMinutes: number },
 ) {
   const initialBatch = getFacebookBatch(batchId);
   if (!initialBatch) throw new AppError("Cola no encontrada.", 404, "NOT_FOUND");
@@ -841,13 +962,6 @@ export async function executeFacebookBatch(
 
     let batch = getFacebookBatch(batchId)!;
     if (batch.current_round >= posts.length) return releaseAndSnapshot();
-    const scheduledTime = batch.next_execution_at
-      ? Date.parse(batch.next_execution_at)
-      : Number.NaN;
-    if (Number.isFinite(scheduledTime) && scheduledTime > Date.now()) {
-      return releaseAndSnapshot();
-    }
-    setFacebookBatchNextExecutionAt(batchId, null);
     {
       const roundIndex = batch.current_round;
       assertRotationExecutionClaim(batchId, roundIndex);
@@ -900,42 +1014,90 @@ export async function executeFacebookBatch(
         );
       }
 
-      const executable = roundItems.filter(
-        ({ assignment }) => assignment.status === "approved",
+      const dispositionBeforeRun = getFacebookRoundDisposition(
+        roundItems.map(
+          ({ assignment }) => assignment.status as FacebookRoundAssignmentStatus,
+        ),
       );
+      if (dispositionBeforeRun === "failed") {
+        setFacebookBatchNextExecutionAt(batchId, null);
+        throw new AppError(
+          "La ronda tiene comentarios fallidos que requieren revisión antes de continuar.",
+          409,
+          "FACEBOOK_ROUND_INCOMPLETE",
+        );
+      }
+
+      const slotsByPair = new Map(
+        listFacebookRotationSlots(batchId, roundIndex).map((slot) => [
+          `${slot.post_id}\0${slot.device_id}`,
+          slot,
+        ]),
+      );
+      for (const { slot, assignment } of roundItems) {
+        const currentSlot = slotsByPair.get(`${slot.post_id}\0${slot.device_id}`);
+        if (assignment.status !== "approved" || currentSlot?.scheduled_at) continue;
+        setFacebookRotationSlotScheduledAt(
+          batchId,
+          slot.post_id,
+          slot.device_id,
+          roundIndex,
+          scheduledAt(timing.maxDelayMinutes),
+        );
+      }
+
+      const dueSlotsByPair = new Map(
+        listFacebookRotationSlots(batchId, roundIndex).map((slot) => [
+          `${slot.post_id}\0${slot.device_id}`,
+          slot,
+        ]),
+      );
+      const dueByPost = new Map<string, typeof roundItems[number]>();
+      for (const item of roundItems) {
+        const slot = dueSlotsByPair.get(
+          `${item.slot.post_id}\0${item.slot.device_id}`,
+        );
+        if (
+          item.assignment.status !== "approved" ||
+          !slot?.scheduled_at ||
+          Date.parse(slot.scheduled_at) > Date.now() ||
+          dueByPost.has(item.post.id)
+        ) {
+          continue;
+        }
+        dueByPost.set(item.post.id, { ...item, slot });
+      }
+      const executable = [...dueByPost.values()];
+      if (!executable.length) {
+        syncFacebookBatchNextExecution(batchId, roundIndex);
+        return releaseAndSnapshot();
+      }
+
       controller.signal.throwIfAborted();
       await Promise.all(
         executable.map(({ assignment }) =>
           ensureAutomationDeviceReady(assignment.device_id),
         ),
       );
-      for (const post of activePosts) {
-        if (roundItems.some((item) => item.post.id === post.id)) {
-          updateFacebookPost(post.id, { status: "running", error: null });
-        }
+      for (const { post } of executable) {
+        updateFacebookPost(post.id, { status: "running", error: null });
       }
 
-      const lanes = activePosts.map((post) =>
-        roundItems
-          .filter(
-            (item) =>
-              item.post.id === post.id && item.assignment.status === "approved",
-          )
-          .sort((left, right) => left.slot.sequence_index - right.slot.sequence_index)
-          .slice(0, 1),
-      );
-      const attemptedAssignmentIds = new Set(
-        lanes.flat().map(({ assignment }) => assignment.id),
-      );
-      await runFacebookRound(
-        lanes,
-        async ({ post, assignment }) => {
+      await Promise.all(
+        executable.map(async ({ slot, post, assignment }) => {
           controller.signal.throwIfAborted();
           const current = listFacebookAssignments(post.id).find(
             (item) => item.id === assignment.id,
           );
           if (!current || current.status !== "approved" || !current.draft_id) return;
           assertRotationExecutionClaim(batchId, roundIndex, post.id);
+          setFacebookRotationSlotScheduledAt(
+            batchId,
+            slot.post_id,
+            slot.device_id,
+            roundIndex,
+            null,
+          );
           updateFacebookAssignment(current.id, { status: "running", error: null });
           try {
             await sendMessage(
@@ -947,19 +1109,23 @@ export async function executeFacebookBatch(
             controller.signal.throwIfAborted();
             updateFacebookAssignment(current.id, { status: "sent", error: null });
           } catch (error) {
-            updateFacebookAssignment(
-              current.id,
-              assignmentOutcomeAfterSendError(current.draft_id, error),
-            );
+            const outcome = assignmentOutcomeAfterSendError(current.draft_id, error);
+            updateFacebookAssignment(current.id, outcome);
+            if (outcome.status === "approved") {
+              setFacebookRotationSlotScheduledAt(
+                batchId,
+                slot.post_id,
+                slot.device_id,
+                roundIndex,
+                scheduledAt(timing.maxDelayMinutes),
+              );
+            }
           }
-        },
-        async () => {},
+        }),
       );
 
-      for (const post of activePosts) {
-        if (roundItems.some((item) => item.post.id === post.id)) {
-          updateRotationPostStatus(post);
-        }
+      for (const { post } of executable) {
+        updateRotationPostStatus(post);
       }
       const finalByPair = new Map<string, FacebookAssignmentRow>();
       for (const post of activePosts) {
@@ -983,6 +1149,7 @@ export async function executeFacebookBatch(
         ),
       );
       if (disposition === "outcome_unknown") {
+        setFacebookBatchNextExecutionAt(batchId, null);
         const unknown = finalRoundAssignments.filter(
           (assignment) => assignment.status === "outcome_unknown",
         ).length;
@@ -992,38 +1159,15 @@ export async function executeFacebookBatch(
           "FACEBOOK_OUTCOME_UNKNOWN",
         );
       }
-      const attemptedRetryable = finalRoundAssignments.filter(
-        (assignment) =>
-          attemptedAssignmentIds.has(assignment.id) && assignment.status === "approved",
-      ).length;
-      if (attemptedRetryable) {
-        throw new AppError(
-          `${attemptedRetryable} dispositivos no iniciaron la acción; reintenta este mismo paso.`,
-          409,
-          "FACEBOOK_EXECUTION_RETRYABLE",
-        );
-      }
       if (disposition === "retryable") {
-        const pending = finalRoundAssignments.filter(
-          (assignment) => assignment.status === "approved",
-        ).length;
-        const delaySeconds = randomInt(
-          timing.minDelaySeconds,
-          timing.maxDelaySeconds + 1,
-        );
-        setFacebookBatchNextExecutionAt(
-          batchId,
-          new Date(Date.now() + delaySeconds * 1_000).toISOString(),
-        );
-        if (!pending) {
-          throw new AppError("La ronda no pudo programar su siguiente paso.", 500, "INVALID_ROTATION_PLAN");
-        }
+        syncFacebookBatchNextExecution(batchId, roundIndex);
         return releaseAndSnapshot();
       }
       const failed = finalRoundAssignments.filter(
         (assignment) => assignment.status === "failed",
       ).length;
       if (failed) {
+        setFacebookBatchNextExecutionAt(batchId, null);
         throw new AppError(
           `${failed} comentarios no fueron enviados. Verifica y corrige la ronda antes de continuar.`,
           409,
@@ -1037,14 +1181,7 @@ export async function executeFacebookBatch(
         roundIndex === posts.length - 1,
       );
       if (batch.current_round < posts.length) {
-        const roundDelaySeconds = randomInt(
-          timing.minRoundDelaySeconds,
-          timing.maxRoundDelaySeconds + 1,
-        );
-        setFacebookBatchNextExecutionAt(
-          batchId,
-          new Date(Date.now() + roundDelaySeconds * 1_000).toISOString(),
-        );
+        setFacebookBatchNextExecutionAt(batchId, null);
         return releaseAndSnapshot();
       }
     }

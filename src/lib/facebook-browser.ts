@@ -248,7 +248,7 @@ async function dismissOptionalDialogs(page: Page) {
     const button = page.getByRole("button", { name }).first();
     if (await button.isVisible().catch(() => false)) {
       await button.click({ timeout: 3_000 }).catch(() => undefined);
-      await page.waitForTimeout(400);
+      await page.waitForTimeout(250);
     }
   }
 }
@@ -322,14 +322,14 @@ async function expandPostText(page: Page, scope: Locator) {
 async function readPostDescription(page: Page) {
   const scope = await findPostScope(page);
   let previous = "";
+  await scope
+    .locator(messageSelector)
+    .first()
+    .waitFor({ state: "attached", timeout: 5_000 })
+    .catch(() => undefined);
 
   for (let attempt = 0; attempt < 5; attempt++) {
     await expandPostText(page, scope);
-    await scope
-      .locator(messageSelector)
-      .first()
-      .waitFor({ state: "attached", timeout: 10_000 })
-      .catch(() => undefined);
     const messages = await scope.locator(messageSelector).allInnerTexts();
     const metadata = await page
       .locator('meta[property="og:description"], meta[name="description"]')
@@ -348,7 +348,7 @@ async function readPostDescription(page: Page) {
       return description;
     }
     previous = description;
-    await page.waitForTimeout(500);
+    await page.waitForTimeout(250);
   }
 
   if (collapsedDescription.test(previous)) {
@@ -363,15 +363,11 @@ async function readPostDescription(page: Page) {
 
 export async function getAuthenticatedFacebookDescription(url: string) {
   const normalizedUrl = normalizeContentUrl("facebook", url);
-  const status = await getFacebookBrowserStatus();
-  if (!status.browserOpen || !state.context) {
-    throw new AppError(
-      "Abre Facebook en el navegador e inicia sesión antes de extraer.",
-      409,
-      "FACEBOOK_BROWSER_SESSION_REQUIRED",
-    );
-  }
-  if (!status.loggedIn) {
+  const context = state.context ?? await ensureBrowserContext("background");
+  if (!(await isLoggedIn(context))) {
+    await closeCurrentContext();
+    const loginContext = await ensureBrowserContext("login");
+    await showFacebookLogin(loginContext, normalizedUrl);
     throw new AppError(
       "Completa el inicio de sesión en la ventana de Facebook.",
       409,
@@ -392,7 +388,7 @@ export async function getAuthenticatedFacebookDescription(url: string) {
   let page: Page | null = null;
   try {
     controller.signal.throwIfAborted();
-    page = await state.context.newPage();
+    page = await context.newPage();
     state.extractingPage = page;
     controller.signal.throwIfAborted();
     await page.goto(normalizedUrl, {
@@ -402,7 +398,7 @@ export async function getAuthenticatedFacebookDescription(url: string) {
     await page
       .waitForLoadState("domcontentloaded", { timeout: 10_000 })
       .catch(() => undefined);
-    await page.waitForTimeout(700);
+    await page.waitForTimeout(350);
     controller.signal.throwIfAborted();
     try {
       normalizeContentUrl("facebook", page.url());
@@ -418,7 +414,7 @@ export async function getAuthenticatedFacebookDescription(url: string) {
     if (
       pathname.startsWith("/login") ||
       pathname.startsWith("/checkpoint") ||
-      !(await isLoggedIn(state.context))
+      !(await isLoggedIn(context))
     ) {
       await page.close().catch(() => undefined);
       page = null;
