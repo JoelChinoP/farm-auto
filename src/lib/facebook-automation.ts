@@ -1,7 +1,6 @@
 import {
   activateAndOpenUrl,
   clickBounds,
-  swipeUp,
   wait,
   waitForForegroundPackage,
 } from "./android-actions.ts";
@@ -21,10 +20,15 @@ export const FACEBOOK_PACKAGE = "com.facebook.katana";
 
 function orderedMarkerMatch(nodes: AndroidNode[], marker: string) {
   const expected = normalizeAccessibleText(marker);
-  return Boolean(
-    expected &&
-      nodes.some((node) => ` ${nodeLabel(node)} `.includes(` ${expected} `)),
-  );
+  const visible = nodes.map(nodeLabel).filter(Boolean).join(" ");
+  if (!expected) return false;
+  if (` ${visible} `.includes(` ${expected} `)) return true;
+
+  // Older markers omitted one-letter Spanish connector words such as "a".
+  const legacyPattern = expected
+    .split(" ")
+    .join(" (?:[a-z0-9] )?");
+  return new RegExp(` ${legacyPattern} `).test(` ${visible} `);
 }
 
 function isScrollable(node: AndroidNode) {
@@ -66,9 +70,9 @@ function isCommentControl(node: AndroidNode) {
   );
 }
 
-function eligibleContainer(node: AndroidNode, screenHeight: number) {
+function eligibleContainer(node: AndroidNode) {
   if (!node.bounds || !node.parent || isScrollable(node)) return false;
-  return node.bounds.bottom - node.bounds.top < screenHeight * 0.9;
+  return true;
 }
 
 function sameBounds(left: Bounds | null, right: Bounds) {
@@ -90,26 +94,25 @@ function preferredControls(
   return clickable.length ? clickable : controls;
 }
 
-function facebookPostCandidates(xml: string) {
+function facebookPostCandidates(xml: string, targetMarker?: string) {
   const all = flattenAndroidNodes(parseAndroidHierarchy(xml)).filter(
     (node) =>
       node.attributes.package === FACEBOOK_PACKAGE &&
       node.attributes.displayed !== "false",
   );
-  const screenHeight = Math.max(...all.map((node) => node.bounds?.bottom ?? 0), 1);
   const candidates = all.flatMap((container) => {
-    if (
-      !eligibleContainer(container, screenHeight) ||
-      !container.parent ||
-      !isScrollable(container.parent)
-    ) {
-      return [];
-    }
+    if (!eligibleContainer(container) || !container.parent) return [];
     const nodes = subtreeNodes(container).filter(
       (node) =>
         node.attributes.package === FACEBOOK_PACKAGE &&
         node.attributes.displayed !== "false",
     );
+    if (
+      !isScrollable(container.parent) &&
+      (!targetMarker || !orderedMarkerMatch(nodes, targetMarker))
+    ) {
+      return [];
+    }
     const likes = preferredControls(nodes, isLike);
     const comments = preferredControls(nodes, isCommentControl);
     return likes.length === 1 && comments.length === 1
@@ -195,7 +198,7 @@ export function locateFacebookTarget(xml: string, targetMarker: string) {
     throw new Error("Marcador objetivo inválido.");
   }
   const unique = new Map(
-    [...facebookPostCandidates(xml)].filter(([, candidate]) =>
+    [...facebookPostCandidates(xml, marker)].filter(([, candidate]) =>
       orderedMarkerMatch(candidate.nodes, marker),
     ),
   );
@@ -507,12 +510,14 @@ export async function runFacebookPost(
   input: { url: string; commentText: string; targetMarker: string },
   signal: AbortSignal,
   checkpoint: (effect: "like" | "comment") => void,
+  openUrl: (url: string) => Promise<void>,
 ) {
   let target: ReturnType<typeof locateFacebookTarget> | null = null;
   for (let navigationAttempt = 0; navigationAttempt < 3 && !target; navigationAttempt++) {
-    await activateAndOpenUrl(driver, FACEBOOK_PACKAGE, input.url, true);
+    signal.throwIfAborted();
+    await openUrl(input.url);
     await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (let attempt = 0; attempt < 4; attempt++) {
       signal.throwIfAborted();
       try {
         target = locateFacebookTarget(
@@ -521,8 +526,8 @@ export async function runFacebookPost(
         );
         break;
       } catch {
-        if (attempt === 2) break;
-        await swipeUp(driver);
+        if (attempt === 3) break;
+        // A vertical gesture can advance to a different Reel or post.
         await wait(750, signal);
       }
     }

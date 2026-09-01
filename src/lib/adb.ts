@@ -5,6 +5,10 @@ import { promisify } from "node:util";
 
 import { appConfig } from "@/lib/config";
 import { AppError } from "@/lib/errors";
+import {
+  facebookCloseAdbCommand,
+  facebookLaunchAdbCommands,
+} from "@/lib/facebook-adb";
 
 const execFileAsync = promisify(execFile);
 export type AdbDevice = {
@@ -85,6 +89,18 @@ export async function isPackageInstalledUnchecked(
     packageName,
   ]);
   return output.split(/\r?\n/).includes(`package:${packageName}`);
+}
+
+export async function openFacebookUrl(deviceId: string, url: string) {
+  await assertConnected(deviceId);
+  for (const command of facebookLaunchAdbCommands(deviceId, url)) {
+    await adb(command);
+  }
+}
+
+export async function closeFacebook(deviceId: string) {
+  await assertConnected(deviceId);
+  await adb(facebookCloseAdbCommand(deviceId));
 }
 
 export async function getFocusedPackage(deviceId: string) {

@@ -4,9 +4,11 @@ import { createHash, randomUUID } from "node:crypto";
 
 import {
   assertConnected,
+  closeFacebook,
   getDeviceHardwareId,
   getHomePackage,
   isPackageInstalled,
+  openFacebookUrl,
 } from "@/lib/adb";
 import { isAutomationRetrySafe } from "@/lib/automation-errors";
 export { isAutomationRetrySafe } from "@/lib/automation-errors";
@@ -529,7 +531,11 @@ export function openSocialContent(input: {
       const homePackage = await getHomePackage(input.deviceId);
       return withAndroidSession(operationId, profile, async (driver, signal) => {
         await goHomeInSession(driver, homePackage, signal);
-        await activateAndOpenUrl(driver, packageName, input.url);
+        if (input.platform === "facebook") {
+          await openFacebookUrl(input.deviceId, input.url);
+        } else {
+          await activateAndOpenUrl(driver, packageName, input.url);
+        }
         const focusedPackage = await waitForForegroundPackage(
           driver,
           packageName,
@@ -658,15 +664,23 @@ export async function likeAndCommentFacebookPost(input: {
       }
       try {
         await runWithCleanup(operationId, profile, (driver, signal) =>
-          runFacebookPost(driver, input, signal, (effect) => {
-            operationCheckpoints.set(operationId, effect);
-          }),
+          runFacebookPost(
+            driver,
+            input,
+            signal,
+            (effect) => {
+              operationCheckpoints.set(operationId, effect);
+            },
+            (url) => openFacebookUrl(input.deviceId, url),
+          ),
         );
       } catch (error) {
         throw outcomeUnknown(
           error,
           operationCheckpoints.get(operationId) ?? null,
         );
+      } finally {
+        await closeFacebook(input.deviceId);
       }
       return { operationId, platform: "facebook" as const };
     },

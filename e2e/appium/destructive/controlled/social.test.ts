@@ -1,12 +1,29 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import { pressHome } from "../../../../src/lib/android-actions.ts";
 import { withAndroidSession } from "../../../../src/lib/appium.ts";
+import {
+  facebookCloseAdbCommand,
+  facebookLaunchAdbCommands,
+} from "../../../../src/lib/facebook-adb.ts";
 import { runFacebookPost } from "../../../../src/lib/facebook-automation.ts";
 import { runTikTokLive, runTikTokPost } from "../../../../src/lib/tiktok-automation.ts";
 
 const enabled = process.env.RUN_APPIUM_DESTRUCTIVE === "1";
+const execFileAsync = promisify(execFile);
+
+async function runAdb(command: string[]) {
+  await execFileAsync(process.env.ADB_PATH || "adb", command, { windowsHide: true });
+}
+
+async function openFacebookForE2E(deviceId: string, url: string) {
+  for (const command of facebookLaunchAdbCommands(deviceId, url)) {
+    await runAdb(command);
+  }
+}
 const profile = () => {
   const deviceId = process.env.APPIUM_DEVICE_ID;
   assert.ok(deviceId, "Falta APPIUM_DEVICE_ID.");
@@ -65,17 +82,27 @@ test("publishes one controlled Facebook comment", { skip: !enabled }, async () =
   ]) {
     assert.ok(process.env[variable], `Falta ${variable}.`);
   }
-  await withAndroidSession(`destructive-facebook-${Date.now()}`, profile(), async (driver, signal) => {
-    await runFacebookPost(
-      driver,
-      {
-        url: process.env.APPIUM_FACEBOOK_POST_URL!,
-        commentText: process.env.APPIUM_FACEBOOK_COMMENT!,
-        targetMarker: process.env.APPIUM_FACEBOOK_TARGET_MARKER!,
+  const facebookProfile = profile();
+  try {
+    await withAndroidSession(
+      `destructive-facebook-${Date.now()}`,
+      facebookProfile,
+      async (driver, signal) => {
+        await runFacebookPost(
+          driver,
+          {
+            url: process.env.APPIUM_FACEBOOK_POST_URL!,
+            commentText: process.env.APPIUM_FACEBOOK_COMMENT!,
+            targetMarker: process.env.APPIUM_FACEBOOK_TARGET_MARKER!,
+          },
+          signal,
+          () => undefined,
+          (url) => openFacebookForE2E(facebookProfile.device_id, url),
+        );
+        await pressHome(driver);
       },
-      signal,
-      () => undefined,
     );
-    await pressHome(driver);
-  });
+  } finally {
+    await runAdb(facebookCloseAdbCommand(facebookProfile.device_id));
+  }
 });

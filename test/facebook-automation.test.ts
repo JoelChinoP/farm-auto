@@ -454,6 +454,91 @@ test("fails closed for ambiguous controls or different posts", () => {
   );
 });
 
+test("matches a marker split across Facebook text nodes in a full-screen post", () => {
+  const splitMarker = "cultivo sostenible para toda la comunidad";
+  const fullScreenPost = post(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.TextView",
+      text: "Cultivo sostenible para",
+      bounds: "[40,300][1040,450]",
+    }) +
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.TextView",
+        text: "toda la comunidad",
+        bounds: "[40,450][1040,600]",
+      }) +
+      like() +
+      comment,
+    "[0,0][1080,1920]",
+  );
+
+  assert.deepEqual(locateFacebookTarget(screen(fullScreenPost), splitMarker), {
+    containerBounds: { left: 0, top: 0, right: 1080, bottom: 1920 },
+    likeBounds: { left: 80, top: 900, right: 300, bottom: 1000 },
+    commentBounds: { left: 360, top: 900, right: 620, bottom: 1000 },
+    alreadyLiked: false,
+  });
+});
+
+test("matches a legacy marker in a Facebook full-screen viewer", () => {
+  const viewerLike = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.Button",
+    "content-desc":
+      "Botón &quot;Me gusta&quot;. Toca dos veces y mantén presionado para reaccionar al comentario.",
+    clickable: "true",
+    bounds: "[36,1944][216,2076]",
+  });
+  const viewerComment = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.Button",
+    "content-desc": "Comentar",
+    clickable: "true",
+    bounds: "[216,1944][410,2076]",
+  });
+  const viewer = `<hierarchy>${node(
+    {
+      package: "com.facebook.katana",
+      class: "android.widget.FrameLayout",
+      bounds: "[0,0][1080,2076]",
+    },
+    node(
+      {
+        package: "com.facebook.katana",
+        class: "android.widget.FrameLayout",
+        bounds: "[0,1219][1080,2076]",
+      },
+      post(
+        leaf({
+          package: "com.facebook.katana",
+          class: "android.widget.TextView",
+          text: "Un saludo a toda la clase obrera",
+          bounds: "[40,1711][1040,1944]",
+        }) +
+          viewerLike +
+          viewerComment,
+        "[0,1219][1080,2076]",
+      ),
+    ),
+  )}</hierarchy>`;
+
+  assert.deepEqual(
+    locateFacebookTarget(viewer, "un saludo toda la clase obrera"),
+    {
+      containerBounds: { left: 0, top: 1219, right: 1080, bottom: 2076 },
+      likeBounds: { left: 36, top: 1944, right: 216, bottom: 2076 },
+      commentBounds: { left: 216, top: 1944, right: 410, bottom: 2076 },
+      alreadyLiked: false,
+    },
+  );
+  assert.throws(
+    () => locateFacebookTarget(viewer, "un saludo para toda la clase obrera"),
+    /único contenedor/,
+  );
+});
+
 test("verifies exact visible comment and empty composer in the same thread", () => {
   const expected = "Este cultivo se ve excelente";
   const composer = leaf({

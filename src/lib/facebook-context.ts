@@ -24,12 +24,15 @@ export function buildFacebookTargetMarker(value: string) {
   const normalized = (headline || relevant)
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
-  const words = normalized
-    .split(" ")
-    .filter((word) => word.length > 1)
-    .slice(0, 6);
+  const words: string[] = [];
+  let meaningfulWords = 0;
+  for (const word of normalized.split(" ").filter(Boolean)) {
+    words.push(word);
+    if (word.length > 1) meaningfulWords++;
+    if (meaningfulWords === 6) break;
+  }
   const marker = words.join(" ").slice(0, 80).trim();
-  return words.length >= 3 && marker.length >= 12 ? marker : null;
+  return meaningfulWords >= 3 && marker.length >= 12 ? marker : null;
 }
 
 function uniqueUseful(values: string[]) {

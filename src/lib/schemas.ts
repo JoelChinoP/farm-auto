@@ -257,6 +257,9 @@ export function normalizeContentUrl(
     );
   }
 
+  if (platform === "facebook" && hostname.endsWith("facebook.com")) {
+    url.hostname = "www.facebook.com";
+  }
   url.hash = "";
   return url.toString();
 }

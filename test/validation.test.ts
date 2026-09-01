@@ -37,6 +37,10 @@ test("accepts TikTok and Facebook HTTPS links", () => {
     normalizeContentUrl("facebook", "https://fb.watch/example/"),
     "https://fb.watch/example/",
   );
+  assert.equal(
+    normalizeContentUrl("facebook", "https://m.facebook.com/share/v/example/"),
+    "https://www.facebook.com/share/v/example/",
+  );
 });
 
 test("rejects mismatched, insecure, and unrelated links", () => {
@@ -408,7 +412,11 @@ test("builds a normalized marker for fail-closed Facebook targeting", () => {
     buildFacebookTargetMarker(
       "Fredy Apaza Zarate, candidato · Ver más\n🔥 GRAN MITIN Y APERTURA DE CAMPAÑA",
     ),
-    "gran mitin apertura de campana",
+    "gran mitin y apertura de campana",
+  );
+  assert.equal(
+    buildFacebookTargetMarker("¡Un saludo a toda la clase obrera!"),
+    "un saludo a toda la clase obrera",
   );
   assert.equal(buildFacebookTargetMarker("Muy bien"), null);
 });
