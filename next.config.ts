@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 process.env.FARM_AUTO_RUNTIME_ID ||= randomUUID();
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["webdriverio"],
+  serverExternalPackages: ["playwright-core", "webdriverio"],
   outputFileTracingExcludes: {
     "/*": ["./data/**/*"],
     middleware: ["./data/**/*"],

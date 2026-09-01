@@ -55,9 +55,19 @@ type Operation = {
   created_at: string;
 };
 
+type FacebookBrowserSnapshot = {
+  status: "closed" | "login_required" | "ready" | "extracting";
+  browserOpen: boolean;
+  loggedIn: boolean;
+  extracting: boolean;
+  mode: "background" | "login" | null;
+  lastError: string | null;
+};
+
 type Snapshot = {
   health: { ok: boolean; version: string | null };
   deepSeek: { configured: boolean; model: string };
+  facebookBrowser: FacebookBrowserSnapshot;
   setup: {
     revision: number;
     devices: Array<{
@@ -940,6 +950,7 @@ function FacebookCurrentPost({
   rotation,
   rotationStarted,
   eligibleDevices,
+  facebookBrowser,
   deepSeekConfigured,
   busy,
   runAction,
@@ -950,6 +961,7 @@ function FacebookCurrentPost({
   rotation: boolean;
   rotationStarted: boolean;
   eligibleDevices: Device[];
+  facebookBrowser: FacebookBrowserSnapshot;
   deepSeekConfigured: boolean;
   busy: string | null;
   runAction: RunAction;
@@ -1068,6 +1080,20 @@ function FacebookCurrentPost({
     );
   }
 
+  async function changeFacebookBrowser(action: "open" | "close") {
+    await runAction(
+      `facebook-browser-${action}`,
+      () =>
+        api("/api/facebook/browser", {
+          method: "POST",
+          body: JSON.stringify({ action }),
+        }),
+      action === "open"
+        ? "Facebook está abierto. Completa el inicio de sesión en Edge."
+        : "El navegador se cerró; la sesión quedó guardada localmente.",
+    );
+  }
+
   async function extractContext() {
     await runAction(
       "facebook-extract-context",
@@ -1173,9 +1199,62 @@ function FacebookCurrentPost({
         </span>
       </div>
 
+      <div className={`facebook-browser-bar ${facebookBrowser.status}`}>
+        <span className="facebook-browser-mark" aria-hidden="true">FB</span>
+        <div>
+          <strong>
+            {facebookBrowser.status === "ready"
+              ? "Sesión de Facebook lista"
+              : facebookBrowser.status === "extracting"
+                ? "Leyendo la publicación"
+                : facebookBrowser.status === "login_required"
+                  ? "Completa el inicio de sesión"
+                  : "Conecta una sesión de Facebook"}
+          </strong>
+          <small>
+            {facebookBrowser.status === "ready"
+              ? "Playwright se ejecuta en segundo plano con el perfil local autenticado."
+              : facebookBrowser.status === "login_required"
+                ? "Edge solo permanece visible para iniciar o renovar la sesión; después se cerrará automáticamente."
+                : facebookBrowser.status === "extracting"
+                  ? "Playwright está expandiendo y leyendo la publicación en segundo plano."
+                  : "Playwright probará el perfil en segundo plano y abrirá Edge solo si necesita login."}
+          </small>
+          {facebookBrowser.lastError && !facebookBrowser.browserOpen && (
+            <small className="facebook-browser-error">{facebookBrowser.lastError}</small>
+          )}
+        </div>
+        <div className="facebook-browser-actions">
+          <button
+            type="button"
+            className="button secondary"
+            onClick={() => changeFacebookBrowser("open")}
+            disabled={Boolean(busy) || facebookBrowser.extracting}
+          >
+            {busy === "facebook-browser-open"
+              ? "Comprobando sesión..."
+              : facebookBrowser.status === "login_required"
+                ? "Mostrar login"
+                : facebookBrowser.status === "ready"
+                  ? "Comprobar sesión"
+                  : "Preparar Facebook"}
+          </button>
+          {facebookBrowser.browserOpen && (
+            <button
+              type="button"
+              className="text-button"
+              onClick={() => changeFacebookBrowser("close")}
+              disabled={Boolean(busy) || facebookBrowser.extracting}
+            >
+              {busy === "facebook-browser-close" ? "Cerrando..." : "Cerrar navegador"}
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="facebook-target-bar">
         <div>
-          <span>Appium leerá la publicación desde un dispositivo del lote</span>
+          <span>Playwright leerá esta URL desde la sesión local de Edge</span>
           <a href={post.url} target="_blank" rel="noreferrer">{post.url}</a>
         </div>
         <button
@@ -1184,7 +1263,8 @@ function FacebookCurrentPost({
           onClick={extractContext}
           disabled={
             Boolean(busy) ||
-            !hasDevicePlan ||
+            !facebookBrowser.loggedIn ||
+            facebookBrowser.extracting ||
             !configurationEditable
           }
         >
@@ -1200,7 +1280,7 @@ function FacebookCurrentPost({
             <span>01</span>
             <div>
               <strong>Descripción editable</strong>
-              <small>Texto visible leído desde la aplicación móvil de Facebook mediante Appium.</small>
+              <small>Texto completo leído desde la sesión local de Facebook mediante Playwright.</small>
             </div>
           </div>
           <label className="field">
@@ -2075,6 +2155,14 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
               rotation={rotation}
               rotationStarted={batch.execution_started}
               eligibleDevices={eligibleDevices}
+              facebookBrowser={props.snapshot?.facebookBrowser ?? {
+                status: "closed",
+                browserOpen: false,
+                loggedIn: false,
+                extracting: false,
+                mode: null,
+                lastError: null,
+              }}
               deepSeekConfigured={Boolean(props.snapshot?.deepSeek.configured)}
               busy={props.busy}
               runAction={props.runAction}

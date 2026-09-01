@@ -1858,6 +1858,71 @@ button.facebook-queue-item:disabled {
   color: #8f2d1d;
 }
 
+.facebook-browser-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 13px;
+  align-items: center;
+  padding: 14px;
+  border: 1px solid #d5cfc2;
+  border-radius: 12px;
+  background: #f8f6ef;
+}
+
+.facebook-browser-bar.ready {
+  border-color: #a9c86c;
+  background: #f0f7dd;
+}
+
+.facebook-browser-bar.login_required {
+  border-color: #e1bb68;
+  background: #fff6dc;
+}
+
+.facebook-browser-bar.extracting {
+  border-color: #9cb9e7;
+  background: #eef4ff;
+}
+
+.facebook-browser-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-radius: 10px;
+  background: #1877f2;
+  color: white;
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  font-weight: 850;
+}
+
+.facebook-browser-bar > div:not(.facebook-browser-actions) {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.facebook-browser-bar strong {
+  font-size: 11px;
+}
+
+.facebook-browser-bar small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.facebook-browser-bar .facebook-browser-error {
+  color: #8f2d1d;
+}
+
+.facebook-browser-actions {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+}
+
 .facebook-target-bar {
   align-items: flex-end;
   padding: 14px;
@@ -2717,6 +2782,7 @@ select:focus-visible {
   }
 
   .facebook-batch-header,
+  .facebook-browser-actions,
   .facebook-target-bar,
   .facebook-approval-bar,
   .facebook-execution-bar,
@@ -2724,6 +2790,20 @@ select:focus-visible {
   .facebook-skip-bar {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .facebook-browser-bar {
+    grid-template-columns: auto minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .facebook-browser-actions {
+    width: 100%;
+    grid-column: 1 / -1;
+  }
+
+  .facebook-browser-actions .button {
+    width: 100%;
   }
 
   .facebook-batch-meter,

@@ -34,24 +34,34 @@ function isScrollable(node: AndroidNode) {
   );
 }
 
+function accessibleLabels(node: AndroidNode) {
+  return [...new Set(
+    [node.attributes.text, node.attributes["content-desc"], node.attributes.hint]
+      .map((value) => normalizeAccessibleText(value ?? ""))
+      .filter(Boolean),
+  )];
+}
+
 function isLike(node: AndroidNode) {
-  const label = nodeLabel(node);
   return Boolean(
-    node.bounds &&
+      node.bounds &&
       node.attributes.enabled !== "false" &&
-      /^(?:(?:boton|button) )?(?:me gusta|ya no me gusta|like|liked|unlike)(?:$| (?:boton|button)$| toca )/.test(
-        label,
+      accessibleLabels(node).some((label) =>
+        /^(?:(?:boton|button) )?(?:me gusta|ya no me gusta|like|liked|unlike)(?:$| (?:boton|button)$| (?:presionado|pressed)(?:$| )| toca )/.test(
+          label,
+        ),
       ),
   );
 }
 
 function isCommentControl(node: AndroidNode) {
-  const label = nodeLabel(node);
   return Boolean(
     node.bounds &&
       node.attributes.enabled !== "false" &&
-      /^(?:(?:boton|button) )?(?:comentar|comentario|comment)(?:$| (?:boton|button)$)/.test(
-        label,
+      accessibleLabels(node).some((label) =>
+        /^(?:(?:boton|button) )?(?:comentar|comentario|comment)(?:$| (?:boton|button)$)/.test(
+          label,
+        ),
       ),
   );
 }
@@ -121,6 +131,64 @@ function facebookPostCandidates(xml: string) {
   );
 }
 
+const collapsedDescription =
+  /(?:…|\.\.\.)\s*(?:(?:ver|see)\s+)?(?:más|mas|more)\s*$/iu;
+
+function isFacebookHomeHierarchy(xml: string) {
+  const labels = flattenAndroidNodes(parseAndroidHierarchy(xml))
+    .filter(
+      (node) =>
+        node.attributes.package === FACEBOOK_PACKAGE &&
+        node.attributes.displayed !== "false",
+    )
+    .flatMap(accessibleLabels);
+  return (
+    labels.some((label) => /^(?:historias|stories)$/.test(label)) &&
+    labels.some((label) => /^(?:crear historia|create story)$/.test(label))
+  );
+}
+
+function locateFacebookExpansion(xml: string) {
+  const candidates = facebookPostCandidates(xml);
+  if (candidates.size !== 1) return null;
+  const target = [...candidates.values()][0];
+  const actionTop = Math.min(target.like.bounds!.top, target.comment.bounds!.top);
+  const controls = target.nodes.filter((node) => {
+    if (
+      !node.bounds ||
+      node.bounds.top < target.container.bounds!.top ||
+      node.bounds.bottom > actionTop ||
+      node.attributes.clickable !== "true" ||
+      node.attributes.enabled === "false"
+    ) {
+      return false;
+    }
+    const labels = accessibleLabels(node);
+    if (labels.some((label) => /^(?:ver mas|see more)$/.test(label))) {
+      return true;
+    }
+    if (!labels.some((label) => /^(?:mas|more)$/.test(label))) return false;
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (
+        [ancestor.attributes.text, ancestor.attributes["content-desc"]].some(
+          (value) => collapsedDescription.test((value ?? "").trim()),
+        )
+      ) {
+        return true;
+      }
+      if (ancestor === target.container) break;
+    }
+    return false;
+  });
+  const unique = new Map(
+    controls.map((node) => [node.attributes.bounds, node.bounds!]),
+  );
+  if (unique.size > 1) {
+    throw new Error("Facebook expuso varios controles para expandir la publicación.");
+  }
+  return unique.size === 1 ? [...unique.values()][0] : null;
+}
+
 export function locateFacebookTarget(xml: string, targetMarker: string) {
   const marker = normalizeAccessibleText(targetMarker);
   if (marker.length < 12 || marker.split(" ").length < 3) {
@@ -142,7 +210,9 @@ export function locateFacebookTarget(xml: string, targetMarker: string) {
     alreadyLiked:
       target.like.attributes.selected === "true" ||
       target.like.attributes.checked === "true" ||
-      /(^| )(unlike|liked|ya no me gusta)( |$)/.test(nodeLabel(target.like)),
+      /(^| )(unlike|liked|ya no me gusta)( |$)|(?:me gusta|like) (?:presionado|pressed)( |$)/.test(
+        nodeLabel(target.like),
+      ),
   };
 }
 
@@ -164,6 +234,11 @@ export function extractFacebookDescriptionFromHierarchy(xml: string) {
       "Facebook requiere iniciar sesión en la aplicación móvil.",
       409,
       "FACEBOOK_LOGIN_REQUIRED",
+    );
+  }
+  if (isFacebookHomeHierarchy(xml)) {
+    throw new Error(
+      "Facebook abrió Inicio en lugar de la publicación solicitada.",
     );
   }
   const videoDescriptions = new Set(
@@ -197,19 +272,26 @@ export function extractFacebookDescriptionFromHierarchy(xml: string) {
   const values = target.nodes
     .flatMap((node) => {
       const className = node.attributes.class ?? "";
+      const text = (node.attributes.text ?? "").replace(/\s+/g, " ").trim();
+      const contentDescription = (node.attributes["content-desc"] ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const mirroredViewGroup =
+        /ViewGroup$/.test(className) &&
+        text.length >= 5 &&
+        text === contentDescription;
       if (
         !node.bounds ||
         node.bounds.top < target.container.bounds!.top ||
         node.bounds.bottom > actionTop ||
-        !/(?:TextView|android\.view\.View)$/.test(className) ||
+        (!/(?:TextView|android\.view\.View)$/.test(className) &&
+          !mirroredViewGroup) ||
         /(?:Button|EditText|ImageView)/.test(className) ||
-        node.attributes.clickable === "true"
+        (node.attributes.clickable === "true" && !mirroredViewGroup)
       ) {
         return [];
       }
-      const value = (node.attributes.text || node.attributes["content-desc"] || "")
-        .replace(/\s+/g, " ")
-        .trim();
+      const value = text || contentDescription;
       const normalized = normalizeAccessibleText(value);
       if (
         value.length < 5 ||
@@ -230,6 +312,9 @@ export function extractFacebookDescriptionFromHierarchy(xml: string) {
   if (description.length < 5) {
     throw new Error("Facebook no expuso una descripción visible de la publicación.");
   }
+  if (collapsedDescription.test(description)) {
+    throw new Error("Facebook no expuso el contenido completo de la publicación.");
+  }
   return description;
 }
 
@@ -242,23 +327,46 @@ export async function readFacebookPostDescription(
   if (["web.facebook.com", "m.facebook.com"].includes(targetUrl.hostname)) {
     targetUrl.hostname = "www.facebook.com";
   }
-  await activateAndOpenUrl(driver, FACEBOOK_PACKAGE, targetUrl.toString(), true);
-  await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
-  let previous: string | null = null;
   let lastError: unknown;
-  for (let attempt = 0; attempt < 10; attempt++) {
-    await wait(attempt ? 750 : 1_000, signal);
-    try {
-      const description = extractFacebookDescriptionFromHierarchy(
-        await driver.getPageSource(),
+  for (let navigationAttempt = 0; navigationAttempt < 3; navigationAttempt++) {
+    for (let openAttempt = 0; openAttempt < 2; openAttempt++) {
+      await activateAndOpenUrl(
+        driver,
+        FACEBOOK_PACKAGE,
+        targetUrl.toString(),
+        openAttempt === 0,
       );
-      if (description === previous) return description;
-      previous = description;
-    } catch (error) {
-      if (error instanceof AppError && error.code === "FACEBOOK_LOGIN_REQUIRED") {
-        throw error;
+      await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
+      let previous: string | null = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        await wait(attempt ? 750 : 1_000, signal);
+        const hierarchy = await driver.getPageSource();
+        if (isFacebookHomeHierarchy(hierarchy)) {
+          lastError = new Error(
+            "Facebook abrió Inicio en lugar de la publicación solicitada.",
+          );
+          break;
+        }
+        try {
+          const expansion = locateFacebookExpansion(hierarchy);
+          if (expansion) {
+            await clickBounds(driver, expansion);
+            previous = null;
+            continue;
+          }
+          const description = extractFacebookDescriptionFromHierarchy(hierarchy);
+          if (description === previous) return description;
+          previous = description;
+        } catch (error) {
+          if (
+            error instanceof AppError &&
+            error.code === "FACEBOOK_LOGIN_REQUIRED"
+          ) {
+            throw error;
+          }
+          lastError = error;
+        }
       }
-      lastError = error;
     }
   }
   throw new AppError(
@@ -281,60 +389,104 @@ function locateThread(
       node.attributes.package === FACEBOOK_PACKAGE &&
       node.attributes.displayed !== "false",
   );
-  const candidates = all.flatMap((container) => {
-    if (!sameBounds(container.bounds, targetBounds)) return [];
-    const nodes = subtreeNodes(container).filter(
-      (node) =>
-        node.attributes.package === FACEBOOK_PACKAGE &&
-        node.attributes.displayed !== "false",
-    );
-    if (!container.parent || isScrollable(container) || !orderedMarkerMatch(nodes, targetMarker)) {
-      return [];
+  const targetContainers = all.filter((container) => {
+    if (
+      !sameBounds(container.bounds, targetBounds) ||
+      !container.parent ||
+      isScrollable(container)
+    ) {
+      return false;
     }
-    const composers = nodes.filter(
-      (node) =>
-        node.bounds &&
+    return orderedMarkerMatch(subtreeNodes(container), targetMarker);
+  });
+  const smallestTargets = targetContainers.filter(
+    (container) =>
+      !targetContainers.some(
+        (other) => other !== container && other.parent === container,
+      ),
+  );
+  const modalCloseControls = all.filter(
+    (node) =>
+      node.bounds &&
+      node.attributes.clickable === "true" &&
+      accessibleLabels(node).includes("cerrar"),
+  );
+  if (
+    smallestTargets.length > 1 ||
+    (smallestTargets.length === 0 && modalCloseControls.length !== 1)
+  ) {
+    throw new Error("No se identificó un único hilo objetivo.");
+  }
+  const container = smallestTargets[0] ?? null;
+  const targetNodes = container
+    ? subtreeNodes(container).filter(
+        (node) =>
+          node.attributes.package === FACEBOOK_PACKAGE &&
+          node.attributes.displayed !== "false",
+      )
+    : [];
+  const isComposer = (node: AndroidNode) =>
+    Boolean(
+      node.bounds &&
         /EditText|AutoCompleteTextView/.test(node.attributes.class ?? "") &&
         node.attributes.focusable !== "false" &&
-        /(comment|coment|escribe|write)/.test(nodeLabel(node)),
+        accessibleLabels(node).some((label) =>
+          /(comment|coment|escribe|write)/.test(label),
+        ),
     );
-    if (composers.length !== 1) return [];
-    const sends = nodes.filter((node) => {
-      const labels = [
-        node.attributes.text,
-        node.attributes["content-desc"],
-      ].map((value) => normalizeAccessibleText(value ?? ""));
-      return Boolean(
+  const internalComposers = targetNodes.filter(isComposer);
+  const targetIds = new Set(targetNodes.map((node) => node.id));
+  const isOutsideScrollableContent = (node: AndroidNode) => {
+    for (let ancestor = node.parent; ancestor; ancestor = ancestor.parent) {
+      if (isScrollable(ancestor)) return false;
+    }
+    return true;
+  };
+  const composers = internalComposers.length
+    ? internalComposers
+    : all.filter(
+        (node) =>
+          !targetIds.has(node.id) &&
+          isComposer(node) &&
+          isOutsideScrollableContent(node),
+      );
+  if (composers.length !== 1) {
+    throw new Error("No se identificó un único hilo objetivo.");
+  }
+  const composer = composers[0];
+  const findSends = (nodes: AndroidNode[]) =>
+    nodes.filter((node) =>
+      Boolean(
         node.bounds &&
           node.attributes.enabled !== "false" &&
-          labels.some((label) =>
+          accessibleLabels(node).some((label) =>
             /^(post comment|send comment|enviar comentario|publicar comentario|send|enviar|post|publicar)$/.test(
               label,
             ),
           ),
-      );
-    });
-    const published = expected
-      ? nodes.filter(
-          (node) =>
-            node.attributes.class === "android.widget.TextView" &&
-            normalizeAccessibleText(node.attributes.text || node.attributes["content-desc"] || "") ===
-              expected,
-        )
-      : [];
-    return [{ container, composer: composers[0], sends, published }];
-  });
-  const smallest = candidates.filter(
-    (candidate) =>
-      !candidates.some(
-        (other) => other !== candidate && other.container.parent === candidate.container,
+      ),
+    );
+  let sends: AndroidNode[] = [];
+  for (let scope = composer.parent; scope; scope = scope.parent) {
+    sends = findSends(subtreeNodes(scope));
+    if (sends.length) break;
+  }
+  if (!sends.length) sends = findSends(all);
+  const publishedCandidates = expected
+    ? all.filter(
+        (node) =>
+          !/EditText|AutoCompleteTextView/.test(node.attributes.class ?? "") &&
+          accessibleLabels(node).includes(expected),
+      )
+    : [];
+  const published = publishedCandidates.filter(
+    (node) =>
+      !subtreeNodes(node).some(
+        (descendant) =>
+          descendant !== node && publishedCandidates.includes(descendant),
       ),
   );
-  const unique = new Map(
-    smallest.map((candidate) => [candidate.composer.attributes.bounds, candidate]),
-  );
-  if (unique.size !== 1) throw new Error("No se identificó un único hilo objetivo.");
-  return [...unique.values()][0];
+  return { container: container ?? composer.parent!, composer, sends, published };
 }
 
 export function verifyFacebookDelivery(
@@ -356,19 +508,23 @@ export async function runFacebookPost(
   signal: AbortSignal,
   checkpoint: (effect: "like" | "comment") => void,
 ) {
-  await activateAndOpenUrl(driver, FACEBOOK_PACKAGE, input.url, true);
-  await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
-
   let target: ReturnType<typeof locateFacebookTarget> | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    signal.throwIfAborted();
-    try {
-      target = locateFacebookTarget(await driver.getPageSource(), input.targetMarker);
-      break;
-    } catch {
-      if (attempt === 2) break;
-      await swipeUp(driver);
-      await wait(750, signal);
+  for (let navigationAttempt = 0; navigationAttempt < 3 && !target; navigationAttempt++) {
+    await activateAndOpenUrl(driver, FACEBOOK_PACKAGE, input.url, true);
+    await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
+    for (let attempt = 0; attempt < 3; attempt++) {
+      signal.throwIfAborted();
+      try {
+        target = locateFacebookTarget(
+          await driver.getPageSource(),
+          input.targetMarker,
+        );
+        break;
+      } catch {
+        if (attempt === 2) break;
+        await swipeUp(driver);
+        await wait(750, signal);
+      }
     }
   }
   if (!target) {
@@ -425,16 +581,12 @@ export async function runFacebookPost(
     );
   }
   const composer = await driver.$(`//*[@bounds='${thread.composer.attributes.bounds}']`);
-  await composer.setValue(input.commentText);
-  if ((await composer.getValue()).trim() !== input.commentText) {
-    throw new AppError(
-      "Facebook no conservó el comentario aprobado en el compositor.",
-      502,
-      "COMMENT_NOT_READY",
-    );
-  }
+  await composer.clearValue();
+  await composer.click();
+  await driver.execute("mobile: type", { text: input.commentText });
 
   let readyThread: ReturnType<typeof locateThread> | null = null;
+  let commentReady = false;
   for (let attempt = 0; attempt < 5; attempt++) {
     await wait(250, signal);
     try {
@@ -451,6 +603,9 @@ export async function runFacebookPost(
           "COMMENT_ALREADY_PRESENT",
         );
       }
+      commentReady =
+        (updated.composer.attributes.text ?? "").trim() === input.commentText;
+      if (!commentReady) continue;
       if (updated.sends.length === 1) {
         readyThread = updated;
         break;
@@ -460,6 +615,13 @@ export async function runFacebookPost(
     }
   }
   if (!readyThread) {
+    if (!commentReady) {
+      throw new AppError(
+        "Facebook no conservó el comentario aprobado en el compositor.",
+        502,
+        "COMMENT_NOT_READY",
+      );
+    }
     throw new AppError(
       "Facebook no expuso un único botón de envío asociado al objetivo.",
       409,

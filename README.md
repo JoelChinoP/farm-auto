@@ -8,6 +8,7 @@ Requisitos del sistema:
 - Dispositivos con depuración USB autorizada.
 - `ADB_PATH` configurado o `adb.exe` disponible en `PATH`.
 - `APPIUM_HOME` sin definir.
+- Microsoft Edge instalado para la sesión persistente de Facebook.
 
 Instalación y diagnóstico:
 
@@ -35,7 +36,7 @@ Crea `.env` a partir de `.env.example`. Las variables del proceso Windows tienen
 
 Los dispositivos se incorporan desde el panel con identidad física, alias, orden y un `systemPort` único entre `8200` y `8299`. La preparación valida ADB, salud Appium, sesión UiAutomator2, jerarquía accesible y Home.
 
-La extracción de contexto de Facebook abre la publicación en la aplicación Android mediante Appium, lee su jerarquía accesible y vuelve a Home sin intentar efectos públicos.
+La extracción de contexto de Facebook usa Playwright con un perfil persistente de Edge. Playwright se ejecuta en modo headless para comprobar la sesión y leer publicaciones; Edge solo aparece cuando Facebook requiere iniciar o renovar sesión y se cierra automáticamente al detectar el login. Playwright expande `Ver más` y obtiene únicamente el texto de la publicación; Appium sigue reservado para likes y comentarios móviles. El perfil se guarda fuera del repositorio en `%LOCALAPPDATA%\farm-auto\facebook-browser-profile` por defecto; `FACEBOOK_BROWSER_PROFILE_PATH` permite cambiarlo.
 
 ## Verificación
 

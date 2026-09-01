@@ -9,14 +9,16 @@ import {
   listOperations,
 } from "@/lib/db";
 import { getFacebookBatchSnapshot } from "@/lib/facebook-batch-service";
+import { getFacebookBrowserStatus } from "@/lib/facebook-browser";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const [health, adbDevices] = await Promise.all([
+  const [health, adbDevices, facebookBrowser] = await Promise.all([
     getAppiumHealth(),
     listAdbDevices().catch(() => []),
+    getFacebookBrowserStatus(),
   ]);
   const adbWithCapabilities = await Promise.all(
     adbDevices.map(async (device) => ({
@@ -54,6 +56,7 @@ export async function GET() {
         configured: Boolean(appConfig.deepSeekApiKey),
         model: appConfig.deepSeekModel,
       },
+      facebookBrowser,
       setup: {
         revision: SETUP_REVISION,
         devices: listDevicePreparation(),

@@ -43,7 +43,6 @@ import {
 import { AppError } from "@/lib/errors";
 import {
   FACEBOOK_PACKAGE,
-  readFacebookPostDescription,
   runFacebookPost,
 } from "@/lib/facebook-automation";
 import {
@@ -627,40 +626,6 @@ export async function likeAndCommentTikTokPost(input: {
         );
       }
       return { operationId, platform: "tiktok" as const };
-    },
-  );
-}
-
-export function extractFacebookPostContext(input: {
-  deviceId: string;
-  idempotencyKey: string;
-  url: string;
-}) {
-  return executeOperation(
-    "facebook-context-extract",
-    input.idempotencyKey,
-    input.deviceId,
-    { url: input.url },
-    async (operationId, profile) => {
-      assertDevicePrepared(input.deviceId);
-      await assertProfileIdentity(profile);
-      if (!(await isPackageInstalled(input.deviceId, FACEBOOK_PACKAGE))) {
-        throw new AppError(
-          "Facebook no está instalado en el dispositivo seleccionado.",
-          409,
-          "FACEBOOK_NOT_INSTALLED",
-        );
-      }
-      const description = await runWithCleanup(
-        operationId,
-        profile,
-        (driver, signal) => readFacebookPostDescription(driver, input.url, signal),
-      );
-      return {
-        operationId,
-        description,
-        platform: "facebook" as const,
-      };
     },
   );
 }

@@ -7,10 +7,6 @@ import {
   waitForForegroundPackage,
 } from "../../../../src/lib/android-actions.ts";
 import { withAndroidSession } from "../../../../src/lib/appium.ts";
-import {
-  FACEBOOK_PACKAGE,
-  readFacebookPostDescription,
-} from "../../../../src/lib/facebook-automation.ts";
 
 const enabled = process.env.RUN_APPIUM_E2E === "1";
 
@@ -83,47 +79,6 @@ test(
               packageName,
             );
             await pressHome(driver);
-          },
-        );
-      });
-    }
-  },
-);
-
-test(
-  "extracts Facebook context without publishing an effect",
-  { skip: !enabled || !process.env.APPIUM_FACEBOOK_CONTEXT_URL },
-  async (context) => {
-    const url = process.env.APPIUM_FACEBOOK_CONTEXT_URL!;
-    for (const target of readTargets()) {
-      await context.test(target.deviceId, async () => {
-        await withAndroidSession(
-          `facebook-context-${target.deviceId}-${Date.now()}`,
-          {
-            device_id: target.deviceId,
-            alias: target.deviceId,
-            system_port: target.systemPort,
-          },
-          async (driver, signal) => {
-            try {
-              const description = await readFacebookPostDescription(
-                driver,
-                url,
-                signal,
-              );
-              assert.match(description, /\S{5}/);
-              assert.ok(description.length <= 1_200);
-            } finally {
-              for (let attempt = 0; attempt < 3; attempt++) {
-                await pressHome(driver);
-                await new Promise((resolve) => setTimeout(resolve, 400));
-                if ((await driver.getCurrentPackage()) !== FACEBOOK_PACKAGE) break;
-              }
-            }
-            assert.notEqual(
-              await driver.getCurrentPackage(),
-              FACEBOOK_PACKAGE,
-            );
           },
         );
       });

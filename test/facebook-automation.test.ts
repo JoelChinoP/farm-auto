@@ -95,6 +95,215 @@ test("extracts the visible Facebook description without action controls", () => 
     ),
     "Descripción disponible por accesibilidad",
   );
+
+  const collapsed =
+    "¿De verdad usar inteligencia artificial para hacer trabajos universitarios es “hacer trampa”? 🤔… más";
+  assert.throws(
+    () =>
+      extractFacebookDescriptionFromHierarchy(
+        screen(
+          post(
+            node(
+              {
+                package: "com.facebook.katana",
+                class: "android.view.ViewGroup",
+                text: collapsed,
+                "content-desc": collapsed,
+                clickable: "true",
+                bounds: "[40,300][1040,600]",
+              },
+              leaf({
+                package: "com.facebook.katana",
+                class: "android.widget.Button",
+                text: "más",
+                clickable: "true",
+                bounds: "[850,520][1040,600]",
+              }),
+            ) +
+              like() +
+              comment,
+          ),
+        ),
+      ),
+    /contenido completo/,
+  );
+
+  assert.throws(
+    () =>
+      extractFacebookDescriptionFromHierarchy(
+        screen(
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.view.ViewGroup",
+            "content-desc": "Historias",
+            bounds: "[0,0][1080,200]",
+          }) +
+            leaf({
+              package: "com.facebook.katana",
+              class: "android.widget.Button",
+              "content-desc": "Crear historia",
+              bounds: "[20,20][200,180]",
+            }) +
+            post(marker + like() + comment),
+        ),
+      ),
+    /abrió Inicio/,
+  );
+});
+
+test("supports duplicated labels and a fixed Facebook comment composer", () => {
+  const description =
+    "¿De verdad usar inteligencia artificial para hacer trabajos universitarios es hacer trampa?";
+  const commentText = "Comentario controlado de verificación";
+  const duplicatedLike = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.Button",
+    text: "Botón &quot;Me gusta&quot;. Toca dos veces para reaccionar.",
+    "content-desc": "Botón &quot;Me gusta&quot;. Toca dos veces para reaccionar.",
+    clickable: "true",
+    selected: "false",
+    bounds: "[0,1172][360,1298]",
+  });
+  const duplicatedComment = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.Button",
+    text: "Comentar",
+    "content-desc": "Comentar",
+    clickable: "true",
+    bounds: "[360,1172][720,1298]",
+  });
+  const published = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.TextView",
+    text: commentText,
+    bounds: "[40,1050][800,1120]",
+  });
+  const detailPost = post(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.view.ViewGroup",
+      text: description,
+      "content-desc": description,
+      clickable: "true",
+      bounds: "[0,415][1080,1050]",
+    }) + published + duplicatedLike + duplicatedComment,
+    "[0,205][1080,1298]",
+  );
+  const fixedComposer = node(
+    {
+      package: "com.facebook.katana",
+      class: "android.widget.LinearLayout",
+      bounds: "[0,1626][1080,1775]",
+    },
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.EditText",
+      text: "",
+      hint: "Comentar…",
+      focusable: "true",
+      bounds: "[36,1644][1044,1757]",
+    }),
+  );
+  const detailScreen = `<hierarchy>${node(
+    {
+      package: "com.facebook.katana",
+      class: "androidx.recyclerview.widget.RecyclerView",
+      scrollable: "false",
+      bounds: "[0,204][1080,1625]",
+    },
+    detailPost,
+  )}${fixedComposer}</hierarchy>`;
+
+  assert.equal(
+    extractFacebookDescriptionFromHierarchy(detailScreen),
+    description,
+  );
+  assert.deepEqual(
+    locateFacebookTarget(detailScreen, "de verdad usar inteligencia artificial"),
+    {
+      containerBounds: { left: 0, top: 205, right: 1080, bottom: 1298 },
+      likeBounds: { left: 0, top: 1172, right: 360, bottom: 1298 },
+      commentBounds: { left: 360, top: 1172, right: 720, bottom: 1298 },
+      alreadyLiked: false,
+    },
+  );
+  assert.equal(
+    locateFacebookTarget(
+      detailScreen.replaceAll(
+        "Botón &quot;Me gusta&quot;. Toca dos veces para reaccionar.",
+        "Botón &quot;Me gusta&quot; presionado. Toca dos veces y mantén presionado para cambiar la reacción.",
+      ),
+      "de verdad usar inteligencia artificial",
+    ).alreadyLiked,
+    true,
+  );
+  assert.equal(
+    verifyFacebookDelivery(
+      detailScreen,
+      "de verdad usar inteligencia artificial",
+      { left: 0, top: 205, right: 1080, bottom: 1298 },
+      commentText,
+    ),
+    true,
+  );
+
+  const modalComposer = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.EditText",
+    text: "",
+    hint: "Comentar…",
+    focusable: "true",
+    bounds: "[36,1400][1044,1513]",
+  });
+  const commentModal = `<hierarchy>${node(
+    {
+      package: "com.facebook.katana",
+      class: "android.widget.FrameLayout",
+      bounds: "[0,0][1080,1776]",
+    },
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "Cerrar",
+      clickable: "true",
+      bounds: "[480,72][600,108]",
+    }) +
+      node(
+        {
+          package: "com.facebook.katana",
+          class: "androidx.recyclerview.widget.RecyclerView",
+          bounds: "[0,217][1080,1238]",
+        },
+        published,
+      ) +
+      node(
+        {
+          package: "com.facebook.katana",
+          class: "android.widget.LinearLayout",
+          bounds: "[0,1239][1080,1651]",
+        },
+        modalComposer,
+      ),
+  )}</hierarchy>`;
+  assert.equal(
+    verifyFacebookDelivery(
+      commentModal,
+      "de verdad usar inteligencia artificial",
+      { left: 0, top: 205, right: 1080, bottom: 1298 },
+      commentText,
+    ),
+    true,
+  );
+  assert.throws(
+    () =>
+      verifyFacebookDelivery(
+        commentModal.replace('content-desc="Cerrar"', 'content-desc="Atrás"'),
+        "de verdad usar inteligencia artificial",
+        { left: 0, top: 205, right: 1080, bottom: 1298 },
+        commentText,
+      ),
+    /único hilo/,
+  );
 });
 
 test("extracts a Reel description and ignores its non-actionable comment wrapper", () => {
