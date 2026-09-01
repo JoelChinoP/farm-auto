@@ -34,6 +34,8 @@ Appium escucha únicamente en `127.0.0.1:4723`. Next.js no inicia ni detiene ese
 
 Crea `.env` a partir de `.env.example`. Las variables del proceso Windows tienen prioridad sobre ese archivo.
 
+La redacción usa `COMMENT_GENERATION_PROMPT` como instrucción base. `COMMENT_MIN_WORDS` y `COMMENT_MAX_WORDS` fijan el rango de cada comentario (3 a 15 palabras por defecto). En una publicación con varios dispositivos, todos sus comentarios se solicitan a DeepSeek en una sola llamada y se guardan directamente como listos para ejecutar, sin una etapa de revisión o aprobación.
+
 Los dispositivos se incorporan desde el panel con identidad física, alias, orden y un `systemPort` único entre `8200` y `8299`. La preparación valida ADB, salud Appium, sesión UiAutomator2, jerarquía accesible y Home.
 
 La extracción de contexto de Facebook usa Playwright con un perfil persistente de Edge. Playwright se ejecuta en modo headless para comprobar la sesión y leer publicaciones; Edge solo aparece cuando Facebook requiere iniciar o renovar sesión y se cierra automáticamente al detectar el login. Playwright expande `Ver más` y obtiene únicamente el texto de la publicación; Appium sigue reservado para likes y comentarios móviles. El perfil se guarda fuera del repositorio en `%LOCALAPPDATA%\farm-auto\facebook-browser-profile` por defecto; `FACEBOOK_BROWSER_PROFILE_PATH` permite cambiarlo.

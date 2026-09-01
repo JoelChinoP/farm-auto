@@ -77,3 +77,47 @@ test("waits for every generation worker before reporting a failure", async () =>
   );
   assert.equal(slowWorkerFinished, true);
 });
+
+test("removes an aborted generation from the semaphore queue", async () => {
+  const semaphore = new AsyncSemaphore(1);
+  let releaseFirst!: () => void;
+  const first = semaphore.run(
+    () => new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    }),
+  );
+  const controller = new AbortController();
+  const queued = semaphore.run(async () => undefined, controller.signal);
+
+  controller.abort();
+  await assert.rejects(queued, (error) =>
+    error instanceof DOMException && error.name === "AbortError",
+  );
+  releaseFirst();
+  await first;
+  await semaphore.run(async () => undefined);
+});
+
+test("aborts a retry while it is waiting for the next attempt", async () => {
+  const controller = new AbortController();
+  let attempts = 0;
+  const retrying = retryOperation(
+    async () => {
+      attempts++;
+      throw new Error("transient");
+    },
+    {
+      attempts: 3,
+      shouldRetry: () => true,
+      delayMilliseconds: () => 60_000,
+      signal: controller.signal,
+    },
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  controller.abort();
+  await assert.rejects(retrying, (error) =>
+    error instanceof DOMException && error.name === "AbortError",
+  );
+  assert.equal(attempts, 1);
+});

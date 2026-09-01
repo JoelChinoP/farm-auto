@@ -231,6 +231,32 @@ button:disabled {
   font-size: 20px;
 }
 
+.process-abort-bar {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 18px;
+  padding: 14px 16px;
+  border: 1px solid #e0a08a;
+  border-radius: 12px;
+  background: #fff0e9;
+}
+
+.process-abort-bar > div {
+  display: grid;
+  gap: 3px;
+}
+
+.process-abort-bar strong {
+  font-size: 13px;
+}
+
+.process-abort-bar span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .device-strip,
 .panel,
 .activity {
@@ -2951,6 +2977,16 @@ html {
   background: rgb(255 254 249 / 76%);
 }
 
+.command-deck-controls {
+  display: grid;
+  gap: 10px;
+  justify-items: stretch;
+}
+
+.abort-all-button {
+  width: 100%;
+}
+
 .assistant-state > div {
   display: grid;
   gap: 4px;
@@ -3383,6 +3419,10 @@ html {
   }
 
   .assistant-state {
+    width: 100%;
+  }
+
+  .command-deck-controls {
     width: 100%;
   }
 

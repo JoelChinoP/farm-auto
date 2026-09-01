@@ -6,7 +6,12 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { appConfig } from "@/lib/config";
-import { DATABASE_VERSION, migrateVersion7To8 } from "@/lib/db-migration";
+import {
+  DATABASE_VERSION,
+  migrateVersion7To8,
+  migrateVersion8To9,
+  migrateVersion9To10,
+} from "@/lib/db-migration";
 import { AppError } from "@/lib/errors";
 
 export type DeviceProfileRow = {
@@ -486,6 +491,14 @@ function createDatabase() {
     }
     if (version < 8) {
       migrateVersion7To8(database);
+      version = 8;
+    }
+    if (version < 9) {
+      migrateVersion8To9(database);
+      version = 9;
+    }
+    if (version < 10) {
+      migrateVersion9To10(database);
     }
   });
   migrate.immediate();
@@ -619,7 +632,7 @@ function createDatabase() {
     .run(recoveryTimestamp);
   database
     .prepare(
-      `UPDATE facebook_posts SET status = 'drafts_ready', error = NULL, updated_at = ?
+      `UPDATE facebook_posts SET status = 'approved', error = NULL, updated_at = ?
        WHERE status = 'partial_failed'
          AND error = 'La etapa fue interrumpida al reiniciar el panel.'
          AND EXISTS (
@@ -824,8 +837,8 @@ export function createDraft(input: {
   const draft = {
     id: randomUUID(),
     ...input,
-    status: "draft",
-    approved_at: null,
+    status: "approved",
+    approved_at: timestamp,
     sent_at: null,
     error: null,
     created_at: timestamp,
@@ -869,25 +882,6 @@ export function listDrafts(limit = 20) {
   return db
     .prepare("SELECT * FROM message_drafts ORDER BY created_at DESC LIMIT ?")
     .all(limit) as DraftRow[];
-}
-
-export function approveDraft(id: string, text: string) {
-  const timestamp = now();
-  const result = db
-    .prepare(
-      `UPDATE message_drafts SET
-         text = ?, status = 'approved', approved_at = ?, updated_at = ?, error = NULL
-       WHERE id = ? AND status IN ('draft', 'approved')`,
-    )
-    .run(text, timestamp, timestamp, id);
-  if (result.changes !== 1) {
-    throw new AppError(
-      "El borrador no existe o ya fue enviado.",
-      409,
-      "DRAFT_NOT_EDITABLE",
-    );
-  }
-  return getDraft(id)!;
 }
 
 export function setDraftOutcome(
@@ -977,6 +971,26 @@ export function listOperations(limit = 20) {
   return db
     .prepare("SELECT * FROM operations ORDER BY created_at DESC LIMIT ?")
     .all(limit) as OperationRow[];
+}
+
+export function listActiveOperations() {
+  return db
+    .prepare(
+      "SELECT * FROM operations WHERE status IN ('starting', 'running') ORDER BY created_at",
+    )
+    .all() as OperationRow[];
+}
+
+export function cancelActiveFacebookBatches() {
+  const result = db
+    .prepare(
+      `UPDATE facebook_batches
+       SET status = 'cancelled', execution_status = 'idle', next_execution_at = NULL,
+           updated_at = ?
+       WHERE status = 'active'`,
+    )
+    .run(now());
+  return result.changes;
 }
 
 export function acquireDeviceLock(deviceId: string, operationId: string) {

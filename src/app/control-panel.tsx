@@ -185,7 +185,7 @@ type AutomationDefinition = {
 
 type RunAction = (
   name: string,
-  action: () => Promise<unknown>,
+  action: (signal: AbortSignal) => Promise<unknown>,
   successMessage: string,
 ) => Promise<void>;
 
@@ -222,7 +222,7 @@ const automationDefinitions: AutomationDefinition[] = [
     code: "FB",
     group: "Facebook",
     title: "Like y comentario",
-    description: "Borrador, aprobación y publicación exclusiva para Facebook.",
+    description: "Generación y publicación exclusiva para Facebook.",
     accent: "facebook",
   },
   {
@@ -238,7 +238,7 @@ const automationDefinitions: AutomationDefinition[] = [
     code: "TK",
     group: "TikTok",
     title: "Like y comentario",
-    description: "Borrador, aprobación y publicación exclusiva para TikTok.",
+    description: "Generación y publicación exclusiva para TikTok.",
     accent: "tiktok",
   },
 ];
@@ -284,7 +284,7 @@ function friendlyStatus(status: Operation["status"] | Draft["status"]) {
       failed: "Falló",
       cancelled: "Cancelada",
       draft: "Borrador",
-      approved: "Aprobado",
+      approved: "Listo",
       outcome_unknown: "Verificación manual",
       sent: "Enviado",
     }[status] || status
@@ -407,14 +407,13 @@ function Requirement({ ok, children }: { ok: boolean; children: ReactNode }) {
   );
 }
 
-function WorkflowSteps({ current }: { current: 1 | 2 | 3 | 4 }) {
+function WorkflowSteps({ current }: { current: 1 | 2 | 3 }) {
   return (
     <ol className="workflow-steps" aria-label="Progreso">
       {[
         [1, "Objetivo"],
-        [2, "Borrador"],
-        [3, "Aprobación"],
-        [4, "Ejecución"],
+        [2, "Generación"],
+        [3, "Ejecución"],
       ].map(([step, label]) => (
         <li
           className={Number(step) < current ? "complete" : Number(step) === current ? "active" : ""}
@@ -620,13 +619,7 @@ function SocialCommentWorkspace(
   const installed = Boolean(props.device?.capabilities?.[props.platform]);
   const platformName = props.platform === "tiktok" ? "TikTok" : "Facebook";
   const busyPrefix = `${props.platform}-`;
-  const currentStep: 1 | 2 | 3 | 4 = !activeDraft
-    ? 1
-    : activeDraft.status === "draft"
-      ? 2
-      : activeDraft.status === "approved"
-        ? 4
-        : 4;
+  const currentStep: 1 | 2 | 3 = activeDraft ? 3 : 1;
 
   function selectDraft(draft: Draft) {
     setActiveDraftId(draft.id);
@@ -642,9 +635,10 @@ function SocialCommentWorkspace(
     event.preventDefault();
     await props.runAction(
       `${busyPrefix}generate`,
-      async () => {
+      async (signal) => {
         const result = await api<{ draft: Draft }>("/api/messages/draft", {
           method: "POST",
+          signal,
           body: JSON.stringify({
             kind: "social_comment",
             platform: props.platform,
@@ -655,35 +649,15 @@ function SocialCommentWorkspace(
         });
         selectDraft(result.draft);
       },
-      `Borrador de ${platformName} generado. Revísalo antes de aprobar.`,
+      `Comentario de ${platformName} generado y listo para publicar.`,
     );
   }
 
-  async function approve() {
-    if (!activeDraft) return;
-    await props.runAction(
-      `${busyPrefix}approve`,
-      async () => {
-        const result = await api<{ draft: Draft }>(
-          `/api/messages/${activeDraft.id}/approve`,
-          {
-            method: "PUT",
-            body: JSON.stringify({
-              text: draftText,
-            }),
-          },
-        );
-        setDraftText(result.draft.text);
-      },
-      `Comentario de ${platformName} aprobado y registrado.`,
-    );
-  }
-
-  async function copyApproved() {
+  async function copyComment() {
     await props.runAction(
       `${busyPrefix}copy`,
       () => navigator.clipboard.writeText(draftText),
-      "Texto aprobado copiado.",
+      "Comentario copiado.",
     );
   }
 
@@ -749,7 +723,7 @@ function SocialCommentWorkspace(
                   <span>02</span>
                   <div>
                     <strong>Brief para DeepSeek</strong>
-                    <small>Genera solo el texto, nunca lo publica.</small>
+                    <small>Genera el comentario listo, nunca lo publica por sí solo.</small>
                   </div>
                 </div>
                 <label className="field">
@@ -817,34 +791,17 @@ function SocialCommentWorkspace(
                 </button>
               </div>
               <label className="field">
-                <span>Comentario editable</span>
+                <span>Comentario generado</span>
                 <textarea
                   value={draftText}
-                  onChange={(event) => setDraftText(event.target.value)}
                   rows={6}
                   minLength={2}
                   maxLength={500}
-                  disabled={["running", "sent", "failed", "outcome_unknown"].includes(activeDraft.status)}
+                  readOnly
                 />
                 <small className="field-counter">{draftText.length}/500</small>
               </label>
               {activeDraft.error && <p className="inline-error">{activeDraft.error}</p>}
-              {activeDraft.status === "draft" && (
-                <div className="approval-box">
-                  <div>
-                    <strong>Revisión humana requerida</strong>
-                    <span>El texto aún no puede salir del panel.</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="button primary"
-                    onClick={approve}
-                    disabled={Boolean(props.busy) || draftText.trim().length < 2}
-                  >
-                    {props.busy === `${busyPrefix}approve` ? "Aprobando..." : "Aprobar este texto"}
-                  </button>
-                </div>
-              )}
               {activeDraft.status === "approved" && (
                 <div className="execution-box">
                   <div className="execution-warning">
@@ -852,7 +809,7 @@ function SocialCommentWorkspace(
                     <span>Dará like y publicará este comentario una sola vez.</span>
                   </div>
                   <div className="review-actions">
-                    <button type="button" className="button secondary" onClick={copyApproved}>
+                    <button type="button" className="button secondary" onClick={copyComment}>
                       Copiar texto
                     </button>
                     <button
@@ -897,9 +854,9 @@ function facebookPostStatus(status: FacebookPost["status"]) {
       extracting: "Extrayendo contexto",
       context_ready: "Contexto listo",
       generating: "Generando",
-      drafts_ready: "En revisión",
-      approving: "Aprobando",
-      approved: "Aprobada",
+      drafts_ready: "Comentarios listos",
+      approving: "Preparando",
+      approved: "Lista",
       running: "Ejecutando",
       completed: "Completada",
       partial_failed: "Requiere atención",
@@ -980,11 +937,6 @@ function FacebookCurrentPost({
   const [deviceIds, setDeviceIds] = useState(initialDeviceIds);
   const [allocations, setAllocations] = useState(() =>
     allocationsFromAssignments(post.assignments, initialDeviceIds.length),
-  );
-  const [comments, setComments] = useState<Record<string, string>>(() =>
-    Object.fromEntries(
-      post.assignments.map((assignment) => [assignment.id, assignment.draft?.text || ""]),
-    ),
   );
   const [verifiedOutcomes, setVerifiedOutcomes] = useState<
     Record<string, "" | "sent" | "not_sent">
@@ -1110,9 +1062,10 @@ function FacebookCurrentPost({
     event.preventDefault();
     await runAction(
       "facebook-generate-batch",
-      () =>
+      (signal) =>
         api(`/api/facebook/posts/${post.id}/drafts`, {
           method: "POST",
+          signal,
           body: JSON.stringify({
             context,
             deviceIds,
@@ -1123,24 +1076,7 @@ function FacebookCurrentPost({
             })),
           }),
         }),
-      "Generación procesada. Los borradores correctos se conservarán si algún dispositivo queda pendiente.",
-    );
-  }
-
-  async function approveAll() {
-    await runAction(
-      "facebook-approve-batch",
-      () =>
-        api(`/api/facebook/posts/${post.id}/approve`, {
-          method: "POST",
-          body: JSON.stringify({
-            comments: post.assignments.map((assignment) => ({
-              assignmentId: assignment.id,
-              text: comments[assignment.id] || "",
-            })),
-          }),
-        }),
-      "Todos los comentarios quedaron aprobados para sus dispositivos.",
+      "Los comentarios se generaron en una sola llamada y quedaron listos para ejecutar.",
     );
   }
 
@@ -1341,7 +1277,7 @@ function FacebookCurrentPost({
             <div className="inline-error invalid-device-warning">
               <span>
                 {invalidDeviceIds.length} dispositivo(s) dejaron de estar listos. Esto no impide
-                generar o aprobar textos; deberán estar listos antes de ejecutar la rotación.
+                generar textos; deberán estar listos antes de ejecutar la rotación.
               </span>
               {configurationEditable && !hasDevicePlan && (
                 <button type="button" className="text-button" onClick={removeInvalidDevices}>
@@ -1474,7 +1410,7 @@ function FacebookCurrentPost({
                 ? `Generando ${missingDraftCount || deviceIds.length} comentario(s)...`
                 : generationStarted
                   ? `Reintentar ${missingDraftCount} comentario(s) pendiente(s)`
-                  : "Generar un comentario por dispositivo"}
+                   : "Generar todos en una llamada"}
             </button>
           )}
         </section>
@@ -1485,8 +1421,8 @@ function FacebookCurrentPost({
           <div className="subheading">
             <span>04</span>
             <div>
-              <strong>Revisión por dispositivo</strong>
-              <small>Cada comentario corresponde a una llamada y un borrador independientes.</small>
+              <strong>Comentarios por dispositivo</strong>
+              <small>DeepSeek genera todos los comentarios de esta publicación en una sola llamada.</small>
             </div>
           </div>
           <div className="facebook-comment-list">
@@ -1497,9 +1433,9 @@ function FacebookCurrentPost({
                     <strong>{assignment.device_id}</strong>
                     <span>{assignment.intent} · {assignment.tone}</span>
                   </div>
-                  <span className={`pill ${assignment.status}`}>
-                    {assignment.status === "draft"
-                      ? "Borrador"
+                    <span className={`pill ${assignment.status}`}>
+                      {assignment.status === "draft"
+                      ? "Listo"
                       : assignment.status === "sent"
                         ? "Enviado"
                         : assignment.status === "failed"
@@ -1507,7 +1443,7 @@ function FacebookCurrentPost({
                           : assignment.status === "outcome_unknown"
                             ? "Verificar"
                           : assignment.status === "approved"
-                            ? "Aprobado"
+                            ? "Listo"
                             : assignment.status === "running"
                               ? "Ejecutando"
                               : "Generando"}
@@ -1517,23 +1453,11 @@ function FacebookCurrentPost({
                   <label className="field">
                     <span>Comentario</span>
                     <textarea
-                      value={comments[assignment.id] || ""}
-                      onChange={(event) =>
-                        setComments((current) => ({
-                          ...current,
-                          [assignment.id]: event.target.value,
-                        }))
-                      }
+                      value={assignment.draft.text}
                       minLength={2}
                       maxLength={500}
                       rows={3}
-                      disabled={[
-                        "approved",
-                        "running",
-                        "sent",
-                        "failed",
-                        "outcome_unknown",
-                      ].includes(assignment.status)}
+                      readOnly
                     />
                   </label>
                 ) : (
@@ -1561,29 +1485,6 @@ function FacebookCurrentPost({
               </article>
             ))}
           </div>
-
-          {post.status === "drafts_ready" && (
-            <div className="facebook-approval-bar">
-              <div>
-                <strong>Revisión humana obligatoria</strong>
-                <span>Ningún dispositivo ejecutará una acción hasta aprobar todos los textos.</span>
-              </div>
-              <button
-                type="button"
-                className="button primary"
-                onClick={approveAll}
-                disabled={
-                  Boolean(busy) ||
-                  !draftsComplete ||
-                  post.assignments.some(
-                    (assignment) => (comments[assignment.id] || "").trim().length < 2,
-                  )
-                }
-              >
-                {busy === "facebook-approve-batch" ? "Aprobando..." : "Aprobar todos los comentarios"}
-              </button>
-            </div>
-          )}
 
           {post.status === "approved" && !rotation && (
             <div className="facebook-execution-bar">
@@ -1856,23 +1757,34 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
       setScheduledStepAt(batch.next_execution_at);
       await props.runAction(
         "facebook-execute-rotation",
-        async () => {
+        async (signal) => {
           let current = batch;
           while (current.status === "active" && current.current_round < current.total_rounds) {
+            signal.throwIfAborted();
             setScheduledStepAt(current.next_execution_at);
             const waitMilliseconds = current.next_execution_at
               ? Math.max(0, Date.parse(current.next_execution_at) - Date.now())
               : 0;
             if (waitMilliseconds) {
-              await new Promise<void>((resolve) =>
-                window.setTimeout(resolve, waitMilliseconds),
-              );
+              await new Promise<void>((resolve, reject) => {
+                const timeout = window.setTimeout(() => {
+                  signal.removeEventListener("abort", abort);
+                  resolve();
+                }, waitMilliseconds);
+                const abort = () => {
+                  window.clearTimeout(timeout);
+                  reject(signal.reason);
+                };
+                signal.addEventListener("abort", abort, { once: true });
+              });
             }
             setScheduledStepAt(null);
+            signal.throwIfAborted();
             const result = await api<{ batch: FacebookBatch }>(
               `/api/facebook/batches/${batch.id}/execute`,
               {
                 method: "POST",
+                signal,
                 body: JSON.stringify({
                   minDelaySeconds: numericMinDelay,
                   maxDelaySeconds: numericMaxDelay,
@@ -1885,7 +1797,7 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
           }
           return current;
         },
-        "La rotación terminó con cada comentario verificado antes de avanzar de ronda.",
+        "La rotación terminó y registró cada comentario publicado.",
       );
     } finally {
       rotationExecutionPending.current = false;
@@ -2134,14 +2046,14 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                     }
                   >
                     {props.busy === "facebook-execute-rotation"
-                      ? "Ejecutando y verificando..."
+                      ? "Ejecutando..."
                       : batch.current_round
                         ? "Reanudar rotación"
-                        : "Ejecutar rotación verificada"}
+                        : "Ejecutar rotación"}
                   </button>
                   {!rotationPrepared && (
                     <small className="inline-error">
-                      Falta generar y aprobar un comentario por dispositivo en cada publicación.
+                      Falta generar un comentario por dispositivo en cada publicación.
                     </small>
                   )}
                 </div>
@@ -2334,7 +2246,10 @@ export function ControlPanel() {
   const [activeAutomation, setActiveAutomation] =
     useState<AutomationSlug>("open-social-content");
   const [busy, setBusy] = useState<string | null>(null);
+  const [abortingAll, setAbortingAll] = useState(false);
   const [stoppingOperation, setStoppingOperation] = useState<string | null>(null);
+  const actionController = useRef<AbortController | null>(null);
+  const abortRequested = useRef(false);
   const [profileAlias, setProfileAlias] = useState("");
   const [profileOrder, setProfileOrder] = useState("");
   const [profilePort, setProfilePort] = useState("");
@@ -2429,6 +2344,18 @@ export function ControlPanel() {
   const activePreparationReady = device
     ? preparationResult(device).status === "ready"
     : false;
+  const generatingFacebookPost = snapshot?.facebookBatch?.posts.find(
+    (post) => post.status === "generating",
+  );
+  const hasActiveProcesses = Boolean(
+    busy ||
+      generatingFacebookPost ||
+      snapshot?.facebookBatch?.execution_status === "running" ||
+      snapshot?.facebookBrowser.extracting ||
+      snapshot?.operations.some((operation) =>
+        ["starting", "running"].includes(operation.status),
+      ),
+  );
 
   function toggleSetupDevice(deviceId: string) {
     setSetupDeviceIds((current) =>
@@ -2443,22 +2370,69 @@ export function ControlPanel() {
   }
 
   const runAction: RunAction = async (name, action, successMessage) => {
+    const controller = new AbortController();
+    actionController.current = controller;
     setBusy(name);
     setNotice(null);
     try {
-      await action();
+      await action(controller.signal);
       await loadSnapshot();
       setNotice({ type: "success", text: successMessage });
     } catch (error) {
       await loadSnapshot().catch(() => undefined);
       setNotice({
-        type: "error",
-        text: error instanceof Error ? error.message : "Ocurrió un error.",
+        type: controller.signal.aborted ? "success" : "error",
+        text: controller.signal.aborted
+          ? "El proceso fue abortado."
+          : error instanceof Error
+            ? error.message
+            : "Ocurrió un error.",
       });
     } finally {
+      if (actionController.current === controller) actionController.current = null;
       setBusy(null);
     }
   };
+
+  async function abortAllProcesses() {
+    if (abortingAll) return;
+    abortRequested.current = true;
+    setAbortingAll(true);
+    actionController.current?.abort();
+    try {
+      const result = await api<{
+        cancelledOperations: number;
+        stoppedGenerations: number;
+        stoppedExtractions: number;
+        cancelledBatches: number;
+        failures: string[];
+      }>("/api/processes/abort-all", { method: "POST" });
+      await loadSnapshot();
+      if (result.failures.length) {
+        setNotice({
+          type: "error",
+          text: `Se solicitó el aborto global, pero ${result.failures.length} proceso(s) requieren revisión.`,
+        });
+      } else if (
+        result.cancelledOperations ||
+        result.stoppedGenerations ||
+        result.stoppedExtractions ||
+        result.cancelledBatches
+      ) {
+        setNotice({ type: "success", text: "Se abortaron todos los procesos activos." });
+      } else {
+        setNotice({ type: "success", text: "No había procesos activos." });
+      }
+    } catch (error) {
+      await loadSnapshot().catch(() => undefined);
+      setNotice({
+        type: "error",
+        text: error instanceof Error ? error.message : "No se pudieron abortar los procesos.",
+      });
+    } finally {
+      setAbortingAll(false);
+    }
+  }
 
   async function prepareDevices() {
     const queue = orderedDevices.filter((item) => setupDeviceIds.includes(item.id));
@@ -2466,6 +2440,7 @@ export function ControlPanel() {
 
     setBusy("setup");
     setNotice(null);
+    abortRequested.current = false;
     const pendingResults = Object.fromEntries(
       queue.map((item) => [
         item.id,
@@ -2476,6 +2451,7 @@ export function ControlPanel() {
     let readyCount = 0;
 
     for (const item of queue) {
+      if (abortRequested.current) break;
       setSetupResults((current) => ({
         ...current,
         [item.id]: {
@@ -2513,12 +2489,16 @@ export function ControlPanel() {
       ),
     );
     const failedCount = queue.length - readyCount;
-    setNotice({
-      type: failedCount ? "error" : "success",
-      text: failedCount
-        ? `${readyCount} listos y ${failedCount} no listos. Revisa el problema de cada dispositivo.`
-        : `${readyCount} dispositivos quedaron listos.`,
-    });
+      setNotice(
+        abortRequested.current
+          ? { type: "success", text: "La preparación fue abortada." }
+          : {
+              type: failedCount ? "error" : "success",
+              text: failedCount
+                ? `${readyCount} listos y ${failedCount} no listos. Revisa el problema de cada dispositivo.`
+                : `${readyCount} dispositivos quedaron listos.`,
+            },
+      );
     setBusy(null);
   }
 
@@ -2585,7 +2565,7 @@ export function ControlPanel() {
           <span className="brand-mark">AP</span>
           <div>
             <strong>Control local</strong>
-            <span>Automatizaciones con revisión humana</span>
+            <span>Automatizaciones con ejecución controlada</span>
           </div>
         </div>
         <nav className="primary-nav" aria-label="Áreas del panel">
@@ -2635,18 +2615,28 @@ export function ControlPanel() {
               Elige una tarea, revisa su alcance y ejecuta solo cuando el dispositivo esté listo.
             </p>
           </div>
-          <div className="assistant-state">
-            <div>
-              <span>Asistente de redacción</span>
-              <strong>{snapshot?.deepSeek.model || "Comprobando..."}</strong>
-              <small className={snapshot?.deepSeek.configured ? "ok-text" : "error-text"}>
-                {snapshot?.deepSeek.configured ? "Disponible" : "No configurado"}
-              </small>
+          <div className="command-deck-controls">
+            <div className="assistant-state">
+              <div>
+                <span>Asistente de redacción</span>
+                <strong>{snapshot?.deepSeek.model || "Comprobando..."}</strong>
+                <small className={snapshot?.deepSeek.configured ? "ok-text" : "error-text"}>
+                  {snapshot?.deepSeek.configured ? "Disponible" : "No configurado"}
+                </small>
+              </div>
+              <HelpTip label="Uso del asistente de redacción">
+                <li>Genera comentarios listos con el rango configurado.</li>
+                <li>La publicación sigue requiriendo ejecutar la acción.</li>
+              </HelpTip>
             </div>
-            <HelpTip label="Uso del asistente de redacción">
-              <li>Solo genera borradores para revisar.</li>
-              <li>Nunca publica contenido sin aprobación.</li>
-            </HelpTip>
+            <button
+              type="button"
+              className="button danger abort-all-button"
+              onClick={abortAllProcesses}
+              disabled={abortingAll || !hasActiveProcesses}
+            >
+              {abortingAll ? "Abortando..." : "Abortar todos los procesos"}
+            </button>
           </div>
         </div>
         <div className="device-strip compact-device-strip">
@@ -2732,7 +2722,7 @@ export function ControlPanel() {
           </div>
           <HelpTip label="Cómo usar las automatizaciones">
             <li>Completa solo los campos de la acción elegida.</li>
-            <li>Las acciones públicas se revisan antes de ejecutarse.</li>
+            <li>Las acciones públicas solo ocurren al ejecutar su control.</li>
           </HelpTip>
         </div>
 

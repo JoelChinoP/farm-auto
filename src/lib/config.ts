@@ -30,6 +30,12 @@ function positiveInteger(value: string | undefined, fallback: number) {
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+const commentMinWords = positiveInteger(process.env.COMMENT_MIN_WORDS, 3);
+const commentMaxWords = Math.max(
+  commentMinWords,
+  positiveInteger(process.env.COMMENT_MAX_WORDS, 15),
+);
+
 function defaultFacebookBrowserProfilePath() {
   const localData =
     process.env.LOCALAPPDATA?.trim() ||
@@ -46,6 +52,11 @@ export const appConfig = Object.freeze({
     4,
     positiveInteger(process.env.DEEPSEEK_GENERATION_CONCURRENCY, 4),
   ),
+  commentGenerationPrompt:
+    process.env.COMMENT_GENERATION_PROMPT?.trim() ||
+    "Escribe como una persona peruana comentando en redes sociales. Usa un estilo natural, casual y con ortografia relajada: omite ocasionalmente tildes, mayusculas o puntuacion, sin dificultar la lectura. Relaciona cada comentario con el contexto y la intencion indicados. No inventes experiencias o identidades, no uses tono corporativo, elogios genericos, hashtags ni spam.",
+  commentMinWords,
+  commentMaxWords,
   facebookBrowserExecutablePath:
     process.env.FACEBOOK_BROWSER_EXECUTABLE_PATH?.trim() || undefined,
   facebookBrowserProfilePath:

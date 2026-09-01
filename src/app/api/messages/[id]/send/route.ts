@@ -1,5 +1,5 @@
 import { errorResponse, readJson } from "@/lib/errors";
-import { sendApprovedMessage } from "@/lib/messages";
+import { sendMessage } from "@/lib/messages";
 import { sendDraftSchema } from "@/lib/schemas";
 
 export const runtime = "nodejs";
@@ -11,7 +11,7 @@ export async function POST(
   try {
     const input = sendDraftSchema.parse(await readJson(request));
     const { id } = await params;
-    const result = await sendApprovedMessage(
+    const result = await sendMessage(
       id,
       input.deviceId,
       input.contentUrl,

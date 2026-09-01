@@ -64,11 +64,20 @@ export const draftInputSchema = z
   })
   .strict();
 
-export const generatedDraftSchema = z.object({
+const generatedDraftSchema = z.object({
   text: z.string().trim().min(2).max(500),
-});
+}).strict();
 
-export function parseGeneratedDraftContent(content: string) {
+const generatedCommentsSchema = z.object({
+  comments: z.array(generatedDraftSchema).min(1).max(100),
+}).strict();
+
+export function parseGeneratedCommentsContent(
+  content: string,
+  expectedCount: number,
+  minWords: number,
+  maxWords: number,
+) {
   const trimmed = content.trim();
   if (!trimmed) return null;
 
@@ -84,26 +93,19 @@ export function parseGeneratedDraftContent(content: string) {
 
   for (const candidate of new Set(candidates)) {
     try {
-      const generated = generatedDraftSchema.safeParse(JSON.parse(candidate));
-      if (generated.success) return generated.data;
+      const generated = generatedCommentsSchema.safeParse(JSON.parse(candidate));
+      if (!generated.success || generated.data.comments.length !== expectedCount) continue;
+      const validLengths = generated.data.comments.every(({ text }) => {
+        const words = text.split(/\s+/u).filter(Boolean).length;
+        return words >= minWords && words <= maxWords;
+      });
+      if (validLengths) return generated.data.comments;
     } catch {
       // Try the remaining supported response formats.
     }
   }
-
-  const plainText = fenced?.[1]?.trim() ?? trimmed;
-  if (!/[{}\[\]`]/.test(plainText)) {
-    const generated = generatedDraftSchema.safeParse({ text: plainText });
-    if (generated.success) return generated.data;
-  }
   return null;
 }
-
-export const approveDraftSchema = z
-  .object({
-    text: z.string().trim().min(2).max(500),
-  })
-  .strict();
 
 export const sendDraftSchema = z.object({
   deviceId,
@@ -166,22 +168,6 @@ export const facebookDraftsSchema = z
       });
     }
   });
-
-export const facebookApproveSchema = z
-  .object({
-    comments: z
-      .array(
-        z
-          .object({
-            assignmentId: z.string().uuid(),
-            text: z.string().trim().min(2).max(500),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(100),
-  })
-  .strict();
 
 export const facebookExecuteSchema = z
   .object({

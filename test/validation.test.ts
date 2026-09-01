@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
-  approveDraftSchema,
   distributeFacebookDevices,
   draftInputSchema,
   expandFacebookAllocations,
@@ -15,7 +14,7 @@ import {
   facebookReconcileSchema,
   normalizeContentUrl,
   normalizeFacebookUrls,
-  parseGeneratedDraftContent,
+  parseGeneratedCommentsContent,
   sendDraftSchema,
   tiktokLiveTapTapSchema,
 } from "../src/lib/schemas.ts";
@@ -118,20 +117,7 @@ test("accepts only social drafts for TikTok and Facebook", () => {
   );
 });
 
-test("draft approval accepts only edited text", () => {
-  assert.deepEqual(approveDraftSchema.parse({ text: "Comentario aprobado" }), {
-    text: "Comentario aprobado",
-  });
-  assert.equal(
-    approveDraftSchema.safeParse({
-      text: "Comentario aprobado",
-      unexpected: true,
-    }).success,
-    false,
-  );
-});
-
-test("accepts an optional content URL when sending an approved draft", () => {
+test("accepts an optional content URL when sending a generated comment", () => {
   assert.deepEqual(
     sendDraftSchema.parse({
       deviceId: "device-1",
@@ -147,29 +133,59 @@ test("accepts an optional content URL when sending an approved draft", () => {
   });
 });
 
-test("parses supported DeepSeek draft response formats", () => {
-  assert.deepEqual(parseGeneratedDraftContent('{"text":"Comentario directo"}'), {
-    text: "Comentario directo",
-  });
+test("parses ordered DeepSeek comments within the configured word range", () => {
   assert.deepEqual(
-    parseGeneratedDraftContent('```json\n{"text":"Comentario cercado"}\n```'),
-    { text: "Comentario cercado" },
-  );
-  assert.deepEqual(
-    parseGeneratedDraftContent(
-      'Resultado:\n{"text":"Comentario dentro de una explicación"}',
+    parseGeneratedCommentsContent(
+      '{"comments":[{"text":"ta muy buena esa idea"},{"text":"ese detalle quedo bien chevere"}]}',
+      2,
+      3,
+      15,
     ),
-    { text: "Comentario dentro de una explicación" },
+    [
+      { text: "ta muy buena esa idea" },
+      { text: "ese detalle quedo bien chevere" },
+    ],
   );
-  assert.deepEqual(parseGeneratedDraftContent("Comentario breve sin JSON"), {
-    text: "Comentario breve sin JSON",
-  });
+  assert.deepEqual(
+    parseGeneratedCommentsContent(
+      'Resultado:\n{"comments":[{"text":"quedo bacan ese detalle"}]}',
+      1,
+      3,
+      15,
+    ),
+    [{ text: "quedo bacan ese detalle" }],
+  );
 });
 
-test("rejects malformed or oversized DeepSeek draft responses", () => {
-  assert.equal(parseGeneratedDraftContent("```json\n{invalid}\n```"), null);
-  assert.equal(parseGeneratedDraftContent("x"), null);
-  assert.equal(parseGeneratedDraftContent("x".repeat(501)), null);
+test("rejects malformed, incomplete, or out-of-range DeepSeek comments", () => {
+  assert.equal(parseGeneratedCommentsContent("```json\n{invalid}\n```", 1, 3, 15), null);
+  assert.equal(
+    parseGeneratedCommentsContent(
+      '{"comments":[{"text":"muy corto"}]}',
+      1,
+      3,
+      15,
+    ),
+    null,
+  );
+  assert.equal(
+    parseGeneratedCommentsContent(
+      '{"comments":[{"text":"este comentario si tiene palabras suficientes"}]}',
+      2,
+      3,
+      15,
+    ),
+    null,
+  );
+  assert.equal(
+    parseGeneratedCommentsContent(
+      JSON.stringify({ comments: [{ text: "palabra ".repeat(251).trim() }] }),
+      1,
+      3,
+      300,
+    ),
+    null,
+  );
 });
 
 test("normalizes and deduplicates an ordered Facebook URL batch", () => {

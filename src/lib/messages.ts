@@ -6,7 +6,6 @@ import OpenAI from "openai";
 import { appConfig } from "@/lib/config";
 import { isAutomationRetrySafe } from "@/lib/automation-errors";
 import {
-  approveDraft,
   createDraft,
   DraftRow,
   getDraft,
@@ -27,7 +26,7 @@ import {
 } from "@/lib/automation-service";
 import {
   normalizeContentUrl,
-  parseGeneratedDraftContent,
+  parseGeneratedCommentsContent,
 } from "@/lib/schemas";
 
 type DraftInput = {
@@ -42,6 +41,7 @@ type DraftInput = {
 const globalGeneration = globalThis as typeof globalThis & {
   deepSeekClient?: OpenAI;
   deepSeekSemaphore?: AsyncSemaphore;
+  deepSeekGenerationControllers?: Set<AbortController>;
 };
 
 function getDeepSeekClient() {
@@ -63,6 +63,13 @@ function getDeepSeekClient() {
 
 const deepSeekSemaphore = globalGeneration.deepSeekSemaphore ??=
   new AsyncSemaphore(appConfig.deepSeekGenerationConcurrency);
+const deepSeekGenerationControllers = globalGeneration.deepSeekGenerationControllers ??=
+  new Set<AbortController>();
+
+export function abortAllDraftGenerations() {
+  for (const controller of deepSeekGenerationControllers) controller.abort();
+  return deepSeekGenerationControllers.size;
+}
 
 function providerStatus(error: unknown) {
   if (error instanceof AppError && error.details && typeof error.details === "object") {
@@ -136,103 +143,124 @@ function shouldRetryDeepSeek(error: unknown) {
   return status === 0 || status === 408 || status === 409 || status === 429 || status >= 500;
 }
 
-export async function generateDraft(input: DraftInput) {
+export async function generateDrafts(inputs: DraftInput[], signal?: AbortSignal) {
+  if (!inputs.length) return [];
   const client = getDeepSeekClient();
-  const targetLength = "15 a 180";
-  const generated = await deepSeekSemaphore.run(() =>
-    retryOperation(
-      async () => {
-        let completion: Awaited<ReturnType<typeof client.chat.completions.create>>;
-        try {
-          completion = await client.chat.completions.create({
-            model: appConfig.deepSeekModel,
-            temperature: 0.85,
-            max_tokens: 1_000,
-            response_format: { type: "json_object" },
-            messages: [
-              {
-                role: "system",
-                content: `Eres un asistente de redacción en español peruano actual. Crea un solo borrador natural y breve, no una campaña. Debe mantener exactamente la intención del operador, sonar humano y conversacional, sin inventar experiencias, identidades ni afirmaciones. Si es un comentario social, debe referirse a por lo menos un elemento concreto del contexto proporcionado y evitar elogios genéricos. Evita gramática rígida o tono corporativo. Puedes usar como máximo un modismo suave y pertinente entre "chévere", "bacán", "tranqui", "al toque", "causa" o la partícula "pe"; si no encaja, no uses ninguno. No fuerces faltas ortográficas. No incluyas hashtags repetitivos, presión, engaño, spam ni instrucciones para manipular engagement. Devuelve únicamente JSON con la forma {"text":"..."}. Longitud: ${targetLength} caracteres.`,
-              },
-              {
-                role: "user",
-                content: JSON.stringify({
-                  type: input.kind,
-                  platform: input.platform,
-                  context: input.context,
-                  intent: input.intent,
-                  intentGuidance: describeFacebookIntent(input.intent),
-                  tone: input.tone,
-                  toneGuidance: describeFacebookTone(input.tone),
-                  variation: input.variation,
-                }),
-              },
-            ],
-          });
-        } catch (error) {
-          throw normalizeDeepSeekError(error);
-        }
+  const controller = new AbortController();
+  const relayAbort = () => controller.abort(signal?.reason);
+  if (signal?.aborted) relayAbort();
+  else signal?.addEventListener("abort", relayAbort, { once: true });
+  deepSeekGenerationControllers.add(controller);
+  try {
+    const generated = await deepSeekSemaphore.run(
+      () => retryOperation(
+        async () => {
+          controller.signal.throwIfAborted();
+          let completion: Awaited<ReturnType<typeof client.chat.completions.create>>;
+          try {
+            completion = await client.chat.completions.create({
+              model: appConfig.deepSeekModel,
+              temperature: 0.85,
+              max_tokens: Math.min(
+                8_000,
+                Math.max(
+                  1_000,
+                  inputs.length * (appConfig.commentMaxWords * 4 + 24),
+                ),
+              ),
+              response_format: { type: "json_object" },
+              messages: [
+                {
+                  role: "system",
+                  content: `${appConfig.commentGenerationPrompt}\n\nGenera exactamente ${inputs.length} comentario(s), en el mismo orden de las asignaciones. Cada comentario debe tener entre ${appConfig.commentMinWords} y ${appConfig.commentMaxWords} palabras. Devuelve unicamente JSON con la forma {"comments":[{"text":"..."}]}. No agregues campos ni explicaciones.`,
+                },
+                {
+                  role: "user",
+                  content: JSON.stringify({
+                    assignments: inputs.map((input, index) => ({
+                      position: index + 1,
+                      type: input.kind,
+                      platform: input.platform,
+                      context: input.context,
+                      intent: input.intent,
+                      intentGuidance: describeFacebookIntent(input.intent),
+                      tone: input.tone,
+                      toneGuidance: describeFacebookTone(input.tone),
+                      variation: input.variation,
+                    })),
+                  }),
+                },
+              ],
+            }, { signal: controller.signal });
+          } catch (error) {
+            controller.signal.throwIfAborted();
+            throw normalizeDeepSeekError(error);
+          }
 
-        const content = completion.choices[0]?.message.content;
-        if (!content) {
-          throw new AppError(
-            "DeepSeek no devolvió un borrador.",
-            502,
-            "EMPTY_MODEL_RESPONSE",
+          controller.signal.throwIfAborted();
+          const content = completion.choices[0]?.message.content;
+          if (!content) {
+            throw new AppError(
+              completion.choices[0]?.finish_reason === "length"
+                ? "DeepSeek agotó el límite de salida antes de entregar los comentarios."
+                : "DeepSeek no devolvió comentarios.",
+              502,
+              "EMPTY_MODEL_RESPONSE",
+            );
+          }
+          const parsed = parseGeneratedCommentsContent(
+            content,
+            inputs.length,
+            appConfig.commentMinWords,
+            appConfig.commentMaxWords,
           );
-        }
-        const parsed = parseGeneratedDraftContent(content);
-        if (!parsed) {
-          throw new AppError(
-            "DeepSeek devolvió un borrador fuera del formato esperado.",
-            502,
-            "INVALID_MODEL_RESPONSE",
-          );
-        }
-        return parsed;
-      },
-      {
-        attempts: 3,
-        shouldRetry: shouldRetryDeepSeek,
-        delayMilliseconds: (error, attempt) => {
-          const requestedDelay = retryAfterMilliseconds(error);
-          if (requestedDelay !== null) return Math.min(requestedDelay, 60_000);
-          const ceiling = Math.min(8_000, 500 * 2 ** (attempt - 1));
-          return Math.floor(Math.random() * ceiling);
+          if (!parsed) {
+            throw new AppError(
+              "DeepSeek devolvió comentarios fuera del formato o rango esperado.",
+              502,
+              "INVALID_MODEL_RESPONSE",
+            );
+          }
+          return parsed;
         },
-      },
-    ),
-  );
-  return createDraft({
-    kind: input.kind,
-    platform: input.platform,
-    context: input.context,
-    intent: input.intent,
-    tone: input.tone,
-    text: generated.text,
-  });
-}
-
-export function approveMessage(
-  id: string,
-  input: { text: string },
-  facebookAssignmentId?: string,
-) {
-  const draft = getDraft(id);
-  if (!draft) throw new AppError("Borrador no encontrado.", 404, "NOT_FOUND");
-  const assignment = getFacebookAssignmentByDraftId(id);
-  if (assignment && assignment.id !== facebookAssignmentId) {
-    throw new AppError(
-      "Este borrador se administra desde su cola de Facebook.",
-      409,
-      "BATCH_DRAFT_MANAGED",
+        {
+          attempts: 3,
+          shouldRetry: shouldRetryDeepSeek,
+          delayMilliseconds: (error, attempt) => {
+            const requestedDelay = retryAfterMilliseconds(error);
+            if (requestedDelay !== null) return Math.min(requestedDelay, 60_000);
+            const ceiling = Math.min(8_000, 500 * 2 ** (attempt - 1));
+            return Math.floor(Math.random() * ceiling);
+          },
+          signal: controller.signal,
+        },
+      ),
+      controller.signal,
     );
+    controller.signal.throwIfAborted();
+    return generated.map((comment, index) => {
+      const input = inputs[index];
+      return createDraft({
+        kind: input.kind,
+        platform: input.platform,
+        context: input.context,
+        intent: input.intent,
+        tone: input.tone,
+        text: comment.text,
+      });
+    });
+  } finally {
+    signal?.removeEventListener("abort", relayAbort);
+    deepSeekGenerationControllers.delete(controller);
   }
-
-  return approveDraft(id, input.text);
 }
 
-export async function sendApprovedMessage(
+export async function generateDraft(input: DraftInput, signal?: AbortSignal) {
+  const [draft] = await generateDrafts([input], signal);
+  return draft;
+}
+
+export async function sendMessage(
   id: string,
   deviceId: string,
   contentUrl?: string,
@@ -250,7 +278,7 @@ export async function sendApprovedMessage(
   }
   if (draft.status !== "approved") {
     throw new AppError(
-      "El texto debe estar aprobado antes de publicarse.",
+      "El comentario no esta disponible para publicarse.",
       409,
       "MESSAGE_NOT_SENDABLE",
     );

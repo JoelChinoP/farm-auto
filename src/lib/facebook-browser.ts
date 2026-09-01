@@ -19,6 +19,8 @@ type FacebookBrowserState = {
   launchPromise: Promise<BrowserContext> | null;
   mode: "background" | "login" | null;
   extracting: boolean;
+  extractionController: AbortController | null;
+  extractingPage: Page | null;
   lastError: string | null;
 };
 
@@ -33,6 +35,8 @@ const state =
     launchPromise: null,
     mode: null,
     extracting: false,
+    extractionController: null,
+    extractingPage: null,
     lastError: null,
   });
 
@@ -227,6 +231,13 @@ export async function closeFacebookBrowser() {
   return getFacebookBrowserStatus();
 }
 
+export function abortFacebookExtraction() {
+  if (!state.extracting) return false;
+  state.extractionController?.abort();
+  void state.extractingPage?.close().catch(() => undefined);
+  return true;
+}
+
 async function dismissOptionalDialogs(page: Page) {
   const labels = [
     /^(Permitir todas las cookies|Allow all cookies)$/i,
@@ -376,9 +387,14 @@ export async function getAuthenticatedFacebookDescription(url: string) {
   }
 
   state.extracting = true;
+  const controller = new AbortController();
+  state.extractionController = controller;
   let page: Page | null = null;
   try {
+    controller.signal.throwIfAborted();
     page = await state.context.newPage();
+    state.extractingPage = page;
+    controller.signal.throwIfAborted();
     await page.goto(normalizedUrl, {
       waitUntil: "commit",
       timeout: 20_000,
@@ -387,6 +403,7 @@ export async function getAuthenticatedFacebookDescription(url: string) {
       .waitForLoadState("domcontentloaded", { timeout: 10_000 })
       .catch(() => undefined);
     await page.waitForTimeout(700);
+    controller.signal.throwIfAborted();
     try {
       normalizeContentUrl("facebook", page.url());
     } catch {
@@ -417,6 +434,7 @@ export async function getAuthenticatedFacebookDescription(url: string) {
 
     await dismissOptionalDialogs(page);
     const description = await readPostDescription(page);
+    controller.signal.throwIfAborted();
     if (description.length < 5) {
       throw new AppError(
         "Facebook abrió la publicación, pero no encontró una descripción visible.",
@@ -426,6 +444,13 @@ export async function getAuthenticatedFacebookDescription(url: string) {
     }
     return description;
   } catch (error) {
+    if (controller.signal.aborted) {
+      throw new AppError(
+        "La extracción fue cancelada por el operador.",
+        409,
+        "FACEBOOK_EXTRACTION_CANCELLED",
+      );
+    }
     if (error instanceof AppError) throw error;
     throw new AppError(
       "No se pudo leer la publicación desde la sesión de Facebook.",
@@ -435,6 +460,8 @@ export async function getAuthenticatedFacebookDescription(url: string) {
     );
   } finally {
     if (page) await page.close().catch(() => undefined);
+    if (state.extractingPage === page) state.extractingPage = null;
+    if (state.extractionController === controller) state.extractionController = null;
     state.extracting = false;
   }
 }

@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 
-export const DATABASE_VERSION = 8;
+export const DATABASE_VERSION = 10;
 
 export function migrateVersion7To8(database: Database.Database) {
   const activeOperation = database
@@ -62,5 +62,50 @@ export function migrateVersion7To8(database: Database.Database) {
     ALTER TABLE operations_appium RENAME TO operations;
 
     PRAGMA user_version = 8;
+  `);
+}
+
+export function migrateVersion8To9(database: Database.Database) {
+  database.exec(`
+    UPDATE message_drafts
+    SET status = 'approved',
+        approved_at = COALESCE(approved_at, CURRENT_TIMESTAMP),
+        error = NULL,
+        updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'draft';
+
+    UPDATE facebook_assignments
+    SET status = 'approved', error = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE status = 'draft' AND draft_id IS NOT NULL;
+
+    UPDATE facebook_posts
+    SET status = 'approved', error = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE status IN ('drafts_ready', 'approving')
+      AND EXISTS (
+        SELECT 1 FROM facebook_assignments
+        WHERE facebook_assignments.post_id = facebook_posts.id
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM facebook_assignments
+        WHERE facebook_assignments.post_id = facebook_posts.id
+          AND (facebook_assignments.draft_id IS NULL OR facebook_assignments.status <> 'approved')
+      );
+
+    PRAGMA user_version = 9;
+  `);
+}
+
+export function migrateVersion9To10(database: Database.Database) {
+  database.exec(`
+    DELETE FROM device_locks;
+    DELETE FROM facebook_rotation_slots;
+    DELETE FROM facebook_assignments;
+    DELETE FROM facebook_posts;
+    DELETE FROM facebook_batches;
+    DELETE FROM message_drafts;
+    DELETE FROM operations;
+    DELETE FROM device_preparation;
+
+    PRAGMA user_version = 10;
   `);
 }

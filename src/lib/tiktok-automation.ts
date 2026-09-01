@@ -268,7 +268,7 @@ export async function runTikTokPost(
   const composer = await waitForElement(driver, composerSelector, 10_000, signal);
   if (isPublishedCommentVisible(await driver.getPageSource(), input.commentText)) {
     throw new AppError(
-      "El comentario aprobado ya estaba visible antes del envío.",
+      "El comentario generado ya estaba visible antes del envío.",
       409,
       "COMMENT_ALREADY_PRESENT",
     );
@@ -276,7 +276,7 @@ export async function runTikTokPost(
   await composer.setValue(input.commentText);
   if ((await composer.getValue()).trim() !== input.commentText) {
     throw new AppError(
-      "TikTok no conservó el comentario aprobado en el compositor.",
+      "TikTok no conservó el comentario generado en el compositor.",
       502,
       "COMMENT_NOT_READY",
     );

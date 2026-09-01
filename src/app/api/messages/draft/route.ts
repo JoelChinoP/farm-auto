@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 export async function POST(request: Request) {
   try {
     const input = draftInputSchema.parse(await readJson(request));
-    const draft = await generateDraft(input);
+    const draft = await generateDraft(input, request.signal);
     return Response.json({ success: true, data: { draft } });
   } catch (error) {
     return errorResponse(error);

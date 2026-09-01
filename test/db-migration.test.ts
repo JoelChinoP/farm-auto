@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { migrateVersion7To8 } from "../src/lib/db-migration.ts";
+import {
+  migrateVersion7To8,
+  migrateVersion8To9,
+  migrateVersion9To10,
+} from "../src/lib/db-migration.ts";
 
 test("migrates a version 7 copy without losing history or locks", async () => {
   const directory = await mkdtemp(join(tmpdir(), "farm-auto-v7-"));
@@ -129,5 +133,100 @@ test("refuses to discard the run id of an active version 7 operation", () => {
     ),
     true,
   );
+  database.close();
+});
+
+test("makes version 8 generated comments ready without manual approval", () => {
+  const database = new Database(":memory:");
+  database.exec(`
+    CREATE TABLE message_drafts (
+      id TEXT PRIMARY KEY, status TEXT, approved_at TEXT, error TEXT, updated_at TEXT
+    );
+    CREATE TABLE facebook_posts (
+      id TEXT PRIMARY KEY, status TEXT, error TEXT, updated_at TEXT
+    );
+    CREATE TABLE facebook_assignments (
+      id TEXT PRIMARY KEY, post_id TEXT, draft_id TEXT, status TEXT, error TEXT, updated_at TEXT
+    );
+    INSERT INTO message_drafts VALUES (
+      'draft-1', 'draft', NULL, NULL, '2026-01-01'
+    );
+    INSERT INTO facebook_posts VALUES (
+      'post-1', 'drafts_ready', NULL, '2026-01-01'
+    );
+    INSERT INTO facebook_assignments VALUES (
+      'assignment-1', 'post-1', 'draft-1', 'draft', NULL, '2026-01-01'
+    );
+    PRAGMA user_version = 8;
+  `);
+
+  database.transaction(() => migrateVersion8To9(database)).immediate();
+
+  assert.equal(database.pragma("user_version", { simple: true }), 9);
+  assert.equal(
+    (database.prepare("SELECT status FROM message_drafts").get() as { status: string }).status,
+    "approved",
+  );
+  assert.equal(
+    (database.prepare("SELECT status FROM facebook_assignments").get() as { status: string }).status,
+    "approved",
+  );
+  assert.equal(
+    (database.prepare("SELECT status FROM facebook_posts").get() as { status: string }).status,
+    "approved",
+  );
+  database.close();
+});
+
+test("clears operational history while preserving device profiles", () => {
+  const database = new Database(":memory:");
+  database.exec(`
+    CREATE TABLE device_profiles (hardware_id TEXT PRIMARY KEY, device_id TEXT);
+    CREATE TABLE device_preparation (device_id TEXT PRIMARY KEY);
+    CREATE TABLE operations (id TEXT PRIMARY KEY);
+    CREATE TABLE device_locks (device_id TEXT PRIMARY KEY);
+    CREATE TABLE message_drafts (id TEXT PRIMARY KEY);
+    CREATE TABLE facebook_batches (id TEXT PRIMARY KEY);
+    CREATE TABLE facebook_posts (id TEXT PRIMARY KEY);
+    CREATE TABLE facebook_assignments (id TEXT PRIMARY KEY);
+    CREATE TABLE facebook_rotation_slots (post_id TEXT, device_id TEXT);
+    INSERT INTO device_profiles VALUES ('hardware-1', 'device-1');
+    INSERT INTO device_preparation VALUES ('device-1');
+    INSERT INTO operations VALUES ('operation-1');
+    INSERT INTO device_locks VALUES ('device-1');
+    INSERT INTO message_drafts VALUES ('draft-1');
+    INSERT INTO facebook_batches VALUES ('batch-1');
+    INSERT INTO facebook_posts VALUES ('post-1');
+    INSERT INTO facebook_assignments VALUES ('assignment-1');
+    INSERT INTO facebook_rotation_slots VALUES ('post-1', 'device-1');
+    PRAGMA user_version = 9;
+  `);
+
+  database.transaction(() => migrateVersion9To10(database)).immediate();
+
+  assert.equal(database.pragma("user_version", { simple: true }), 10);
+  assert.equal(
+    (database.prepare("SELECT COUNT(*) AS count FROM device_profiles").get() as {
+      count: number;
+    }).count,
+    1,
+  );
+  for (const table of [
+    "device_preparation",
+    "operations",
+    "device_locks",
+    "message_drafts",
+    "facebook_batches",
+    "facebook_posts",
+    "facebook_assignments",
+    "facebook_rotation_slots",
+  ]) {
+    assert.equal(
+      (database.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
+        count: number;
+      }).count,
+      0,
+    );
+  }
   database.close();
 });

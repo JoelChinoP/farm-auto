@@ -598,7 +598,7 @@ export async function runFacebookPost(
       );
       if (updated.published.length) {
         throw new AppError(
-          "El comentario aprobado ya estaba visible antes del envío.",
+          "El comentario generado ya estaba visible antes del envío.",
           409,
           "COMMENT_ALREADY_PRESENT",
         );
@@ -617,7 +617,7 @@ export async function runFacebookPost(
   if (!readyThread) {
     if (!commentReady) {
       throw new AppError(
-        "Facebook no conservó el comentario aprobado en el compositor.",
+        "Facebook no conservó el comentario generado en el compositor.",
         502,
         "COMMENT_NOT_READY",
       );

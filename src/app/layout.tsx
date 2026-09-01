@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Control local · Appium",
-  description: "Panel local con revisión humana para automatizaciones Android.",
+  description: "Panel local de ejecución controlada para automatizaciones Android.",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

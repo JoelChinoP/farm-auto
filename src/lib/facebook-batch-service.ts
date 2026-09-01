@@ -11,9 +11,9 @@ import {
   assertDevicePrepared,
   ensureAutomationDeviceReady,
 } from "@/lib/automation-service";
-import { appConfig } from "@/lib/config";
 import {
   advanceFacebookBatchRound,
+  cancelActiveFacebookBatches,
   claimFacebookBatchExecution,
   createFacebookBatch,
   getDraft,
@@ -38,8 +38,10 @@ import type {
   FacebookPostRow,
 } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import { getAuthenticatedFacebookDescription } from "@/lib/facebook-browser";
-import { mapWithConcurrency } from "@/lib/generation-utils";
+import {
+  abortFacebookExtraction,
+  getAuthenticatedFacebookDescription,
+} from "@/lib/facebook-browser";
 import {
   buildFacebookRotationPlan,
   getFacebookRoundDisposition,
@@ -47,9 +49,8 @@ import {
 } from "@/lib/facebook-rotation";
 import type { FacebookRoundAssignmentStatus } from "@/lib/facebook-rotation";
 import {
-  approveMessage,
-  generateDraft,
-  sendApprovedMessage,
+  generateDrafts,
+  sendMessage,
 } from "@/lib/messages";
 import {
   distributeFacebookDevices,
@@ -58,6 +59,15 @@ import {
 } from "@/lib/schemas";
 
 const terminalPostStatuses = new Set(["completed", "skipped"]);
+const globalFacebookGeneration = globalThis as typeof globalThis & {
+  facebookGenerationControllers?: Map<string, AbortController>;
+  facebookExecutionControllers?: Map<string, AbortController>;
+};
+const facebookGenerationControllers =
+  globalFacebookGeneration.facebookGenerationControllers ??= new Map();
+const facebookExecutionControllers =
+  globalFacebookGeneration.facebookExecutionControllers ??= new Map();
+
 function parseBatchDeviceIds(value: string) {
   try {
     const parsed: unknown = JSON.parse(value);
@@ -309,6 +319,7 @@ export async function generatePostDrafts(input: {
   context: string;
   deviceIds: string[];
   allocations: Array<{ intent: string; tone: string; count: number }>;
+  signal?: AbortSignal;
 }) {
   const post = currentPost(input.postId);
   const batch = getFacebookBatch(post.batch_id)!;
@@ -380,6 +391,7 @@ export async function generatePostDrafts(input: {
   const generationContext = existing.length
     ? post.context || input.context
     : input.context;
+  let generationError: unknown = null;
   let unexpectedError: unknown = null;
   try {
     if (!existing.length) updateFacebookPost(post.id, { context: input.context });
@@ -393,60 +405,58 @@ export async function generatePostDrafts(input: {
       (assignment) =>
         !assignment.draft_id && ["pending", "failed"].includes(assignment.status),
     );
-    let fatalError: unknown = null;
-    await mapWithConcurrency(
-      pending,
-      appConfig.deepSeekGenerationConcurrency,
-      async (assignment) => {
-        if (fatalError) {
-          updateFacebookAssignment(assignment.id, {
-            status: "failed",
-            error: fatalError instanceof Error ? fatalError.message : String(fatalError),
-          });
-          return;
-        }
-        updateFacebookAssignment(assignment.id, { status: "generating", error: null });
-        try {
+    for (const assignment of pending) {
+      updateFacebookAssignment(assignment.id, { status: "generating", error: null });
+    }
+    const controller = new AbortController();
+    const relayAbort = () => controller.abort(input.signal?.reason);
+    if (input.signal?.aborted) relayAbort();
+    else input.signal?.addEventListener("abort", relayAbort, { once: true });
+    facebookGenerationControllers.set(post.id, controller);
+    try {
+      const drafts = await generateDrafts(
+        pending.map((assignment) => {
           const position = deviceOrder.get(assignment.device_id) ?? 0;
-          const draft = await generateDraft({
+          return {
             kind: "social_comment",
             platform: "facebook",
             context: generationContext,
             intent: assignment.intent,
             tone: assignment.tone,
-            variation: `Borrador independiente ${position + 1} de ${assignments.length}. Redacta una variante propia para esta asignación.`,
-          });
-          updateFacebookAssignment(assignment.id, {
-            draft_id: draft.id,
-            status: "draft",
-            error: null,
-          });
-        } catch (error) {
-          const providerStatus =
-            error instanceof AppError &&
-            error.details &&
-            typeof error.details === "object" &&
-            "providerStatus" in error.details
-              ? Number(error.details.providerStatus)
-              : 0;
-          if (
-            error instanceof AppError &&
-            (["DEEPSEEK_NOT_CONFIGURED", "DEEPSEEK_AUTH_FAILED"].includes(
-              error.code,
-            ) ||
-              (providerStatus >= 400 &&
-                providerStatus < 500 &&
-                ![408, 409, 429].includes(providerStatus)))
-          ) {
-            fatalError = error;
-          }
-          updateFacebookAssignment(assignment.id, {
-            status: "failed",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      },
-    );
+            variation: `Comentario ${position + 1} de ${assignments.length}; debe ser distinto de los demas.`,
+          };
+        }),
+        controller.signal,
+      );
+      for (const [index, assignment] of pending.entries()) {
+        updateFacebookAssignment(assignment.id, {
+          draft_id: drafts[index].id,
+          status: "approved",
+          error: null,
+        });
+      }
+    } catch (error) {
+      generationError = controller.signal.aborted
+        ? new AppError(
+            "La generación fue cancelada por el operador.",
+            409,
+            "GENERATION_CANCELLED",
+          )
+        : error;
+      for (const assignment of pending) {
+        updateFacebookAssignment(assignment.id, {
+          status: "failed",
+          error: generationError instanceof Error
+            ? generationError.message
+            : String(generationError),
+        });
+      }
+    } finally {
+      input.signal?.removeEventListener("abort", relayAbort);
+      if (facebookGenerationControllers.get(post.id) === controller) {
+        facebookGenerationControllers.delete(post.id);
+      }
+    }
   } catch (error) {
     unexpectedError = error;
   } finally {
@@ -467,67 +477,55 @@ export async function generatePostDrafts(input: {
     const failures = finalAssignments.filter((assignment) => !assignment.draft_id).length;
     const preserved = finalAssignments.length - failures;
     updateFacebookPost(post.id, {
-      status: failures ? "partial_failed" : "drafts_ready",
+      status: failures ? "partial_failed" : "approved",
       error: failures
-        ? `${failures} de ${finalAssignments.length} comentarios siguen pendientes. ${preserved} borrador(es) correcto(s) se conservaron.`
+        ? `${failures} de ${finalAssignments.length} comentarios siguen pendientes. ${preserved} comentario(s) correcto(s) se conservaron.`
         : null,
     });
   }
   if (unexpectedError) throw unexpectedError;
+  if (generationError) throw generationError;
   return getFacebookBatchSnapshot();
 }
 
-export function approvePostDrafts(
-  postId: string,
-  comments: Array<{ assignmentId: string; text: string }>,
-) {
-  const post = currentPost(postId);
-  const assignments = listFacebookAssignments(post.id);
-  if (!assignments.length || assignments.some((assignment) => !assignment.draft_id)) {
-    throw new AppError(
-      "Todos los dispositivos deben tener un comentario generado.",
-      409,
-      "DRAFTS_INCOMPLETE",
-    );
-  }
-  const byAssignment = new Map(
-    comments.map((comment) => [comment.assignmentId, comment.text]),
-  );
-  if (
-    byAssignment.size !== assignments.length ||
-    assignments.some((assignment) => !byAssignment.has(assignment.id))
-  ) {
-    throw new AppError(
-      "Revisa y envía un comentario por cada dispositivo.",
-      400,
-      "COMMENTS_INCOMPLETE",
-    );
-  }
+function cancelPostDraftGenerationById(postId: string) {
+  const post = getFacebookPost(postId);
+  if (!post) return false;
+  facebookGenerationControllers.get(post.id)?.abort();
+  if (post.status !== "generating") return false;
 
-  transitionFacebookPost(post.id, ["drafts_ready"], "approving");
-  try {
-    for (const assignment of assignments) {
-      approveMessage(
-        assignment.draft_id!,
-        {
-          text: byAssignment.get(assignment.id)!,
-        },
-        assignment.id,
-      );
+  for (const assignment of listFacebookAssignments(post.id)) {
+    if (assignment.status === "generating") {
       updateFacebookAssignment(assignment.id, {
-        status: "approved",
-        error: null,
+        status: "failed",
+        error: "La generación fue cancelada por el operador.",
       });
     }
-    updateFacebookPost(post.id, { status: "approved", error: null });
-  } catch (error) {
-    updateFacebookPost(post.id, {
-      status: "partial_failed",
-      error: error instanceof Error ? error.message : String(error),
-    });
-    throw error;
   }
+  updateFacebookPost(post.id, {
+    status: "partial_failed",
+    error: "La generación fue cancelada. Puedes reintentar los comentarios pendientes.",
+  });
+  return true;
+}
+
+export function cancelPostDraftGeneration(postId: string) {
+  currentPost(postId);
+  cancelPostDraftGenerationById(postId);
   return getFacebookBatchSnapshot();
+}
+
+export function abortAllFacebookWork() {
+  let stoppedGenerations = 0;
+  for (const postId of facebookGenerationControllers.keys()) {
+    if (cancelPostDraftGenerationById(postId)) stoppedGenerations++;
+  }
+  for (const controller of facebookExecutionControllers.values()) controller.abort();
+  return {
+    stoppedGenerations,
+    stoppedExtractions: abortFacebookExtraction() ? 1 : 0,
+    cancelledBatches: cancelActiveFacebookBatches(),
+  };
 }
 
 export async function executePostAssignments(
@@ -554,9 +552,9 @@ export async function executePostAssignments(
     )
   ) {
     throw new AppError(
-      "No hay comentarios aprobados pendientes de ejecución.",
+      "No hay comentarios listos pendientes de ejecucion.",
       409,
-      "COMMENTS_NOT_APPROVED",
+      "COMMENTS_NOT_READY",
     );
   }
 
@@ -568,9 +566,12 @@ export async function executePostAssignments(
   currentPost(post.id);
   transitionFacebookPost(post.id, ["approved"], "running");
   for (const [index, assignment] of executableAssignments.entries()) {
+    if (getFacebookBatch(post.batch_id)?.status !== "active") {
+      throw new AppError("La cola fue cancelada por el operador.", 409, "BATCH_NOT_ACTIVE");
+    }
     updateFacebookAssignment(assignment.id, { status: "running", error: null });
     try {
-      await sendApprovedMessage(
+      await sendMessage(
         assignment.draft_id!,
         assignment.device_id,
         post.url,
@@ -585,6 +586,9 @@ export async function executePostAssignments(
     }
 
     if (index < executableAssignments.length - 1) {
+      if (getFacebookBatch(post.batch_id)?.status !== "active") {
+        throw new AppError("La cola fue cancelada por el operador.", 409, "BATCH_NOT_ACTIVE");
+      }
       const delaySeconds = randomInt(
         timing.minDelaySeconds,
         timing.maxDelaySeconds + 1,
@@ -628,7 +632,7 @@ export async function executePostAssignments(
   }
   if (retryable) {
     throw new AppError(
-      `${retryable} dispositivos no iniciaron la acción; puedes reintentarlos con los mismos comentarios aprobados.`,
+      `${retryable} dispositivos no iniciaron la acción; puedes reintentarlos con los mismos comentarios.`,
       409,
       "FACEBOOK_EXECUTION_RETRYABLE",
     );
@@ -671,7 +675,7 @@ function updateRotationPostStatus(post: FacebookPostRow) {
     error: unknown
       ? `${unknown} dispositivos tienen un resultado público pendiente de verificación manual.`
       : approved && failures
-        ? `${failures} acciones fallaron; quedan ${approved} comentarios aprobados por ejecutar.`
+        ? `${failures} acciones fallaron; quedan ${approved} comentarios por ejecutar.`
         : failures
           ? `${failures} de ${assignments.length} dispositivos no completaron la acción.`
           : null,
@@ -746,7 +750,7 @@ function assertRotationPrepared(
       )
     ) {
       throw new AppError(
-        `La publicación ${post.position + 1} todavía no tiene todos sus comentarios aprobados.`,
+        `La publicación ${post.position + 1} todavía no tiene todos sus comentarios generados.`,
         409,
         "ROTATION_NOT_PREPARED",
       );
@@ -774,6 +778,8 @@ export async function executeFacebookBatch(
   }
 
   claimFacebookBatchExecution(batchId);
+  const controller = new AbortController();
+  facebookExecutionControllers.set(batchId, controller);
   let releaseRequired = true;
   const releaseAndSnapshot = () => {
     releaseFacebookBatchExecution(batchId);
@@ -781,6 +787,7 @@ export async function executeFacebookBatch(
     return getFacebookBatchSnapshot();
   };
   try {
+    controller.signal.throwIfAborted();
     const posts = listFacebookPosts(batchId);
     const activePosts = posts.filter((post) => post.status !== "skipped");
     const unresolvedOutcomes = activePosts.flatMap((post) =>
@@ -887,7 +894,7 @@ export async function executeFacebookBatch(
         )
       ) {
         throw new AppError(
-          "La ronda contiene comentarios que todavía no están aprobados.",
+          "La ronda contiene comentarios que todavía no estan listos.",
           409,
           "ROTATION_NOT_PREPARED",
         );
@@ -896,6 +903,7 @@ export async function executeFacebookBatch(
       const executable = roundItems.filter(
         ({ assignment }) => assignment.status === "approved",
       );
+      controller.signal.throwIfAborted();
       await Promise.all(
         executable.map(({ assignment }) =>
           ensureAutomationDeviceReady(assignment.device_id),
@@ -922,6 +930,7 @@ export async function executeFacebookBatch(
       await runFacebookRound(
         lanes,
         async ({ post, assignment }) => {
+          controller.signal.throwIfAborted();
           const current = listFacebookAssignments(post.id).find(
             (item) => item.id === assignment.id,
           );
@@ -929,12 +938,13 @@ export async function executeFacebookBatch(
           assertRotationExecutionClaim(batchId, roundIndex, post.id);
           updateFacebookAssignment(current.id, { status: "running", error: null });
           try {
-            await sendApprovedMessage(
+            await sendMessage(
               current.draft_id,
               current.device_id,
               post.url,
               current.id,
             );
+            controller.signal.throwIfAborted();
             updateFacebookAssignment(current.id, { status: "sent", error: null });
           } catch (error) {
             updateFacebookAssignment(
@@ -1052,6 +1062,9 @@ export async function executeFacebookBatch(
     }
     return releaseAndSnapshot();
   } finally {
+    if (facebookExecutionControllers.get(batchId) === controller) {
+      facebookExecutionControllers.delete(batchId);
+    }
     if (releaseRequired) releaseFacebookBatchExecution(batchId);
   }
 }
