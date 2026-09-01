@@ -2,6 +2,7 @@ import { AppError } from "./errors.ts";
 
 const retrySafeCodes = new Set([
   "ADB_ERROR",
+  "APPIUM_SESSION_NOT_CREATED",
   "APPIUM_UNAVAILABLE",
   "AUTOMATION_PREFLIGHT_FAILED",
   "APP_NOT_INSTALLED",

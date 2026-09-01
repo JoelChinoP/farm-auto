@@ -208,9 +208,14 @@ async function saveFailureArtifacts(
   ]);
 }
 
-function sessionWasDefinitelyNotCreated(error: unknown) {
+function appiumConnectionWasUnavailable(error: unknown) {
   const message = error instanceof Error ? `${error.message} ${error.cause ?? ""}` : String(error);
   return /\b(?:ECONNREFUSED|ENOTFOUND|EHOSTUNREACH|ENETUNREACH)\b/.test(message);
+}
+
+function appiumRejectedSession(error: unknown) {
+  const message = error instanceof Error ? `${error.message} ${error.cause ?? ""}` : String(error);
+  return /\bsession (?:not created|could not be created)\b/i.test(message);
 }
 
 export async function withAndroidSession<T>(
@@ -272,14 +277,21 @@ export async function withAndroidSession<T>(
     if (operation.controller.signal.aborted) {
       failure = new AppError("La operación fue cancelada.", 409, "OPERATION_CANCELLED");
     } else if (!operation.driver) {
-      const definitelyUnavailable = sessionWasDefinitelyNotCreated(error);
-      operation.sessionCreationUnknown = !definitelyUnavailable;
+      const unavailable = appiumConnectionWasUnavailable(error);
+      const rejected = appiumRejectedSession(error);
+      operation.sessionCreationUnknown = !unavailable && !rejected;
       failure = new AppError(
-        definitelyUnavailable
+        unavailable
           ? "No se pudo conectar con Appium."
-          : "Appium no confirmó si la sesión llegó a crearse; el dispositivo permanece bloqueado.",
+          : rejected
+            ? "Appium rechazó la creación de la sesión."
+            : "Appium no confirmó si la sesión llegó a crearse; el dispositivo permanece bloqueado.",
         503,
-        definitelyUnavailable ? "APPIUM_UNAVAILABLE" : "DEVICE_CLEANUP_UNKNOWN",
+        unavailable
+          ? "APPIUM_UNAVAILABLE"
+          : rejected
+            ? "APPIUM_SESSION_NOT_CREATED"
+            : "DEVICE_CLEANUP_UNKNOWN",
         { cause: error instanceof Error ? error.message : String(error) },
       );
     } else {

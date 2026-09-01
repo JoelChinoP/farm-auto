@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  extractFacebookDescriptionFromHierarchy,
   locateFacebookTarget,
   verifyFacebookDelivery,
 } from "../src/lib/facebook-automation.ts";
@@ -58,6 +59,161 @@ test("binds marker and controls to one post and preserves an existing like", () 
 });
 
 const markerText = "cosecha de verano sustentable";
+
+test("extracts the visible Facebook description without action controls", () => {
+  assert.equal(
+    extractFacebookDescriptionFromHierarchy(
+      screen(
+        post(
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.TextView",
+            text: "Cosecha &amp; verano sustentable para toda la comunidad",
+            bounds: "[40,300][1040,600]",
+          }) +
+            like() +
+            comment,
+        ),
+      ),
+    ),
+    "Cosecha & verano sustentable para toda la comunidad",
+  );
+  assert.equal(
+    extractFacebookDescriptionFromHierarchy(
+      screen(
+        post(
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.TextView",
+            "content-desc": "Descripción disponible por accesibilidad",
+            bounds: "[40,300][1040,600]",
+          }) +
+            like() +
+            comment,
+        ),
+      ),
+    ),
+    "Descripción disponible por accesibilidad",
+  );
+});
+
+test("extracts a Reel description and ignores its non-actionable comment wrapper", () => {
+  const description = "Compromiso con una campaña de respeto, propuestas y transparencia";
+  const reel = post(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "Detalles del reel",
+      bounds: "[20,200][1060,1500]",
+    }) +
+      like()
+        .replace('content-desc="Me gusta"', 'content-desc="Botón Me gusta. Toca para reaccionar al comentario"')
+        .replace('selected="false"', 'selected="false" clickable="true"') +
+      node(
+        {
+          package: "com.facebook.katana",
+          class: "android.widget.Button",
+          "content-desc": "Comentar",
+          clickable: "false",
+          bounds: "[360,900][620,1100]",
+        },
+        leaf({
+          package: "com.facebook.katana",
+          class: "android.widget.Button",
+          "content-desc": "Comentar",
+          clickable: "true",
+          bounds: "[360,900][620,1000]",
+        }) +
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.Button",
+            "content-desc": "46 comentarios",
+            clickable: "true",
+            bounds: "[360,1000][620,1050]",
+          }),
+      ),
+  ).replace('class="android.view.ViewGroup"', `class="android.view.ViewGroup" content-desc="${description}"`);
+  assert.equal(
+    extractFacebookDescriptionFromHierarchy(screen(reel)),
+    description,
+  );
+  assert.deepEqual(
+    locateFacebookTarget(screen(reel), "compromiso con una campana"),
+    {
+      containerBounds: { left: 20, top: 200, right: 1060, bottom: 1500 },
+      likeBounds: { left: 80, top: 900, right: 300, bottom: 1000 },
+      commentBounds: { left: 360, top: 900, right: 620, bottom: 1000 },
+      alreadyLiked: false,
+    },
+  );
+  const videoWithoutControls = post(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "Detalles del video",
+      bounds: "[20,200][1060,1500]",
+    }),
+  ).replace('class="android.view.ViewGroup"', `class="android.view.ViewGroup" content-desc="${description}"`);
+  assert.equal(
+    extractFacebookDescriptionFromHierarchy(screen(videoWithoutControls)),
+    description,
+  );
+
+  const quotedDescription = '"Simplemente el mejor personaje de toda la serie"';
+  for (const tab of ["Reels", "Video"]) {
+    const tabDetails = post(
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": `Detalles de la pestaña &quot;${tab}&quot;`,
+        bounds: "[20,200][1060,1500]",
+      }),
+    ).replace(
+      'class="android.view.ViewGroup"',
+      'class="android.view.ViewGroup" content-desc="&quot;Simplemente el mejor personaje de toda la serie&quot;"',
+    );
+    assert.equal(
+      extractFacebookDescriptionFromHierarchy(screen(tabDetails)),
+      quotedDescription,
+    );
+  }
+});
+
+test("fails closed for ambiguous posts or a Facebook login screen", () => {
+  const secondPost = post(
+    marker.replaceAll("[40,300][1040,600]", "[40,1610][1040,1910]") +
+      like().replaceAll("[80,900][300,1000]", "[80,2210][300,2310]") +
+      comment.replaceAll("[360,900][620,1000]", "[360,2210][620,2310]"),
+    "[20,1510][1060,2810]",
+  );
+  assert.throws(
+    () =>
+      extractFacebookDescriptionFromHierarchy(
+        screen(post(marker + like() + comment) + secondPost),
+      ),
+    /única publicación/,
+  );
+  assert.throws(
+    () =>
+      extractFacebookDescriptionFromHierarchy(
+        screen(
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.TextView",
+            text: "Inicia sesión en Facebook",
+            bounds: "[40,300][1040,600]",
+          }),
+        ),
+      ),
+    (error: unknown) =>
+      Boolean(
+        error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "FACEBOOK_LOGIN_REQUIRED",
+      ),
+  );
+});
 
 test("fails closed for ambiguous controls or different posts", () => {
   assert.throws(

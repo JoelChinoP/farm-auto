@@ -1,6 +1,6 @@
 import "server-only";
 
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 
 import {
   getDeviceHardwareId,
@@ -10,6 +10,7 @@ import {
 import {
   assertDevicePrepared,
   ensureAutomationDeviceReady,
+  extractFacebookPostContext,
 } from "@/lib/automation-service";
 import { appConfig } from "@/lib/config";
 import {
@@ -38,7 +39,6 @@ import type {
   FacebookPostRow,
 } from "@/lib/db";
 import { AppError } from "@/lib/errors";
-import { getAuthenticatedFacebookDescription } from "@/lib/facebook-browser";
 import { mapWithConcurrency } from "@/lib/generation-utils";
 import {
   buildFacebookRotationPlan,
@@ -269,6 +269,15 @@ export async function startFacebookBatch(values: string[], deviceIds: string[]) 
 
 export async function extractPostContext(input: { postId: string }) {
   const post = currentPost(input.postId);
+  const batch = getFacebookBatch(post.batch_id)!;
+  const deviceIds = parseBatchDeviceIds(batch.device_ids_json);
+  if (!deviceIds.length) {
+    throw new AppError(
+      "La cola no tiene un dispositivo Appium asignado para leer Facebook.",
+      409,
+      "FACEBOOK_EXTRACTION_DEVICE_REQUIRED",
+    );
+  }
   const assignments = listFacebookAssignments(post.id);
   if (
     assignments.some((assignment) =>
@@ -287,7 +296,22 @@ export async function extractPostContext(input: { postId: string }) {
     "extracting",
   );
   try {
-    const context = await getAuthenticatedFacebookDescription(post.url);
+    const deviceId = listFacebookRotationSlots(batch.id).find(
+      (slot) => slot.post_id === post.id && deviceIds.includes(slot.device_id),
+    )?.device_id;
+    if (!deviceId) {
+      throw new AppError(
+        "La publicación no tiene un dispositivo Appium válido en el plan del lote.",
+        409,
+        "FACEBOOK_EXTRACTION_DEVICE_REQUIRED",
+      );
+    }
+    const execution = await extractFacebookPostContext({
+      deviceId,
+      idempotencyKey: randomUUID(),
+      url: post.url,
+    });
+    const context = execution.result.description;
     updateFacebookPost(post.id, {
       extracted_context: context,
       context,

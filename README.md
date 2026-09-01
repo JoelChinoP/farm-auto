@@ -35,6 +35,8 @@ Crea `.env` a partir de `.env.example`. Las variables del proceso Windows tienen
 
 Los dispositivos se incorporan desde el panel con identidad física, alias, orden y un `systemPort` único entre `8200` y `8299`. La preparación valida ADB, salud Appium, sesión UiAutomator2, jerarquía accesible y Home.
 
+La extracción de contexto de Facebook abre la publicación en la aplicación Android mediante Appium, lee su jerarquía accesible y vuelve a Home sin intentar efectos públicos.
+
 ## Verificación
 
 ```powershell
@@ -50,5 +52,7 @@ Los E2E físicos no forman parte de `npm test`:
 $env:RUN_APPIUM_E2E="1"
 npm run test:e2e:appium
 ```
+
+El smoke se ejecuta de forma secuencial sobre `APPIUM_DEVICE_IDS`, emparejando cada dispositivo con el `systemPort` en la misma posición de `APPIUM_SYSTEM_PORTS`. La configuración local validada usa `ce10171ab4d3543f04`/`8298` y `988a9838544a4b5a37`/`8299`; no ejecutes el smoke mientras Appium Inspector tenga una sesión abierta sobre alguno de ellos.
 
 Las pruebas con efectos públicos también requieren `RUN_APPIUM_DESTRUCTIVE=1` y las variables de contenido controlado declaradas en `e2e/appium/destructive/controlled/social.test.ts`.

@@ -128,12 +128,6 @@ export const facebookBatchSchema = z
 
 export const facebookExtractSchema = z.object({}).strict();
 
-export const facebookBrowserActionSchema = z
-  .object({
-    action: z.enum(["open", "close"]),
-  })
-  .strict();
-
 const facebookAllocationSchema = z
   .object({
     intent: z.string().trim().min(3).max(300),

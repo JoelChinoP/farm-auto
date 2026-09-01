@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import test from "node:test";
 
-test("builds capabilities, checks health, closes sessions and cancels", async () => {
+test("builds capabilities, checks health, closes sessions and cancels", async (context) => {
   let created = 0;
   let deleted = 0;
   let delaySession = false;
+  let failCreate = false;
   let failDelete = false;
+  const sessions = new Set<string>();
   const server = createServer((request, response) => {
     response.setHeader("content-type", "application/json");
     if (request.method === "GET" && request.url === "/wd/hub/status") {
@@ -18,16 +20,32 @@ test("builds capabilities, checks health, closes sessions and cancels", async ()
       return;
     }
     if (request.method === "POST" && request.url === "/wd/hub/session") {
-      created += 1;
-      const send = () =>
+      if (failCreate) {
+        response.statusCode = 500;
         response.end(
           JSON.stringify({
             value: {
-              sessionId: `session-${created}`,
+              error: "session not created",
+              message:
+                "A new session could not be created. Details: UiAutomation not connected",
+            },
+          }),
+        );
+        return;
+      }
+      created += 1;
+      const sessionId = `session-${created}`;
+      const send = () => {
+        sessions.add(sessionId);
+        response.end(
+          JSON.stringify({
+            value: {
+              sessionId,
               capabilities: { platformName: "Android" },
             },
           }),
         );
+      };
       if (delaySession) setTimeout(send, 50);
       else send();
       return;
@@ -41,6 +59,7 @@ test("builds capabilities, checks health, closes sessions and cancels", async ()
         );
         return;
       }
+      sessions.delete(request.url.split("/").at(-1)!);
       response.end(JSON.stringify({ value: null }));
       return;
     }
@@ -48,6 +67,13 @@ test("builds capabilities, checks health, closes sessions and cancels", async ()
     response.end(JSON.stringify({ value: { error: "unknown command" } }));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  context.after(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      }),
+  );
   const address = server.address();
   assert.ok(address && typeof address === "object");
   process.env.APPIUM_URL = `http://127.0.0.1:${address.port}/wd/hub`;
@@ -84,6 +110,19 @@ test("builds capabilities, checks health, closes sessions and cancels", async ()
     version: "3.7.0",
     message: "ready",
   });
+
+  failCreate = true;
+  await assert.rejects(
+    withAndroidSession("rejected", profile, async () => undefined),
+    (error: unknown) =>
+      Boolean(
+        error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "APPIUM_SESSION_NOT_CREATED",
+      ),
+  );
+  failCreate = false;
 
   await withAndroidSession("complete", profile, async () => "ok");
   assert.equal(deleted, 1);
@@ -141,8 +180,6 @@ test("builds capabilities, checks health, closes sessions and cancels", async ()
     ),
   ]);
   assert.equal(created, 5);
-  assert.equal(deleted, 9);
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
+  assert.ok(deleted >= created);
+  assert.equal(sessions.size, 0);
 });

@@ -8,7 +8,6 @@ import {
   expandFacebookAllocations,
   facebookBatchExecuteSchema,
   facebookBatchSchema,
-  facebookBrowserActionSchema,
   facebookDraftsSchema,
   facebookExecuteSchema,
   facebookExtractSchema,
@@ -401,16 +400,6 @@ test("accepts only an empty request for server-side Facebook extraction", () => 
   assert.deepEqual(facebookExtractSchema.parse({}), {});
   assert.equal(
     facebookExtractSchema.safeParse({ deviceId: "device-a" }).success,
-    false,
-  );
-  assert.deepEqual(facebookBrowserActionSchema.parse({ action: "open" }), {
-    action: "open",
-  });
-  assert.deepEqual(facebookBrowserActionSchema.parse({ action: "close" }), {
-    action: "close",
-  });
-  assert.equal(
-    facebookBrowserActionSchema.safeParse({ action: "login" }).success,
     false,
   );
 });

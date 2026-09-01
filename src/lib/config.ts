@@ -37,11 +37,6 @@ export const appConfig = Object.freeze({
     4,
     positiveInteger(process.env.DEEPSEEK_GENERATION_CONCURRENCY, 4),
   ),
-  facebookBrowserExecutablePath:
-    process.env.FACEBOOK_BROWSER_EXECUTABLE_PATH?.trim() || undefined,
-  facebookBrowserProfilePath:
-    process.env.FACEBOOK_BROWSER_PROFILE_PATH?.trim() ||
-    resolve(process.cwd(), "data", "facebook-browser-profile"),
   adbPath: process.env.ADB_PATH?.trim(),
   databasePath:
     process.env.CONTROL_PANEL_DB_PATH?.trim() ||

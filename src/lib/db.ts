@@ -132,6 +132,28 @@ const globalDatabase = globalThis as typeof globalThis & {
   controlPanelDatabase?: Database.Database;
 };
 
+function claimDatabaseRecovery(database: Database.Database) {
+  if (process.env.NEXT_PHASE === "phase-production-build") return false;
+  const runtimeId = process.env.FARM_AUTO_RUNTIME_ID?.trim();
+  if (!runtimeId) return false;
+  return database.transaction(() => {
+    const owner = database
+      .prepare("SELECT owner_id FROM control_panel_runtime WHERE id = 1")
+      .get() as { owner_id: string | null } | undefined;
+    if (owner?.owner_id === runtimeId) return false;
+    database
+      .prepare(
+        `INSERT INTO control_panel_runtime (id, owner_id, owner_pid, started_at)
+         VALUES (1, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET owner_id = excluded.owner_id,
+           owner_pid = excluded.owner_pid,
+           started_at = excluded.started_at`,
+      )
+      .run(runtimeId, process.pid, new Date().toISOString());
+    return true;
+  }).immediate();
+}
+
 function createDatabase() {
   mkdirSync(dirname(appConfig.databasePath), { recursive: true });
   const database = new Database(appConfig.databasePath);
@@ -172,6 +194,13 @@ function createDatabase() {
       device_id TEXT PRIMARY KEY,
       operation_id TEXT NOT NULL,
       acquired_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS control_panel_runtime (
+      id INTEGER PRIMARY KEY CHECK (id = 1),
+      owner_id TEXT NOT NULL,
+      owner_pid INTEGER NOT NULL,
+      started_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS device_preparation (
@@ -241,6 +270,12 @@ function createDatabase() {
     CREATE INDEX IF NOT EXISTS facebook_rotation_slots_round
       ON facebook_rotation_slots(batch_id, round_index, post_id, sequence_index);
   `);
+  const runtimeColumns = database.pragma(
+    "table_info(control_panel_runtime)",
+  ) as Array<{ name: string }>;
+  if (!runtimeColumns.some((column) => column.name === "owner_id")) {
+    database.exec("ALTER TABLE control_panel_runtime ADD COLUMN owner_id TEXT");
+  }
   const migrate = database.transaction(() => {
     let version = database.pragma("user_version", { simple: true }) as number;
     if (version > DATABASE_VERSION) {
@@ -462,6 +497,9 @@ function createDatabase() {
       "ALTER TABLE operations ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''",
     );
   }
+  const recoveryClaimed = claimDatabaseRecovery(database);
+  if (!recoveryClaimed) return database;
+  try {
   database
     .prepare(
       `UPDATE operations
@@ -613,6 +651,12 @@ function createDatabase() {
          )`,
     )
     .run(recoveryTimestamp);
+  } catch (error) {
+    database
+      .prepare("DELETE FROM control_panel_runtime WHERE id = 1 AND owner_id = ?")
+      .run(process.env.FARM_AUTO_RUNTIME_ID);
+    throw error;
+  }
   return database;
 }
 

@@ -11,6 +11,12 @@ test("only proven preflight failures are retry safe", () => {
   );
   assert.equal(
     isAutomationRetrySafe(
+      new AppError("rejected", 503, "APPIUM_SESSION_NOT_CREATED"),
+    ),
+    true,
+  );
+  assert.equal(
+    isAutomationRetrySafe(
       new AppError("target", 409, "FACEBOOK_TARGET_NOT_VERIFIED"),
     ),
     true,

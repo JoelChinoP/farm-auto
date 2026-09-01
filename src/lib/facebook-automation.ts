@@ -14,6 +14,7 @@ import {
   parseAndroidHierarchy,
   subtreeNodes,
 } from "./android-ui.ts";
+import { buildFacebookPostDescription } from "./facebook-context.ts";
 import { AppError } from "./errors.ts";
 
 export const FACEBOOK_PACKAGE = "com.facebook.katana";
@@ -38,7 +39,9 @@ function isLike(node: AndroidNode) {
   return Boolean(
     node.bounds &&
       node.attributes.enabled !== "false" &&
-      /(^| )(me gusta|ya no me gusta|like|liked|unlike)( |$)/.test(label),
+      /^(?:(?:boton|button) )?(?:me gusta|ya no me gusta|like|liked|unlike)(?:$| (?:boton|button)$| toca )/.test(
+        label,
+      ),
   );
 }
 
@@ -47,7 +50,9 @@ function isCommentControl(node: AndroidNode) {
   return Boolean(
     node.bounds &&
       node.attributes.enabled !== "false" &&
-      /(^| )(comentar|comentario|comment)( |$)/.test(label),
+      /^(?:(?:boton|button) )?(?:comentar|comentario|comment)(?:$| (?:boton|button)$)/.test(
+        label,
+      ),
   );
 }
 
@@ -66,13 +71,17 @@ function sameBounds(left: Bounds | null, right: Bounds) {
   );
 }
 
-export function locateFacebookTarget(xml: string, targetMarker: string) {
-  const marker = normalizeAccessibleText(targetMarker);
-  if (marker.length < 12 || marker.split(" ").length < 3) {
-    throw new Error("Marcador objetivo inválido.");
-  }
-  const roots = parseAndroidHierarchy(xml);
-  const all = flattenAndroidNodes(roots).filter(
+function preferredControls(
+  nodes: AndroidNode[],
+  predicate: (node: AndroidNode) => boolean,
+) {
+  const controls = nodes.filter(predicate);
+  const clickable = controls.filter((node) => node.attributes.clickable === "true");
+  return clickable.length ? clickable : controls;
+}
+
+function facebookPostCandidates(xml: string) {
+  const all = flattenAndroidNodes(parseAndroidHierarchy(xml)).filter(
     (node) =>
       node.attributes.package === FACEBOOK_PACKAGE &&
       node.attributes.displayed !== "false",
@@ -91,12 +100,11 @@ export function locateFacebookTarget(xml: string, targetMarker: string) {
         node.attributes.package === FACEBOOK_PACKAGE &&
         node.attributes.displayed !== "false",
     );
-    const likes = nodes.filter(isLike);
-    const comments = nodes.filter(isCommentControl);
-    if (!orderedMarkerMatch(nodes, marker) || likes.length !== 1 || comments.length !== 1) {
-      return [];
-    }
-    return [{ container, like: likes[0], comment: comments[0] }];
+    const likes = preferredControls(nodes, isLike);
+    const comments = preferredControls(nodes, isCommentControl);
+    return likes.length === 1 && comments.length === 1
+      ? [{ container, nodes, like: likes[0], comment: comments[0] }]
+      : [];
   });
   const smallest = candidates.filter(
     (candidate) =>
@@ -105,11 +113,23 @@ export function locateFacebookTarget(xml: string, targetMarker: string) {
           other !== candidate && other.container.parent === candidate.container,
       ),
   );
-  const unique = new Map(
+  return new Map(
     smallest.map((candidate) => [
       `${candidate.like.attributes.bounds}\0${candidate.comment.attributes.bounds}`,
       candidate,
     ]),
+  );
+}
+
+export function locateFacebookTarget(xml: string, targetMarker: string) {
+  const marker = normalizeAccessibleText(targetMarker);
+  if (marker.length < 12 || marker.split(" ").length < 3) {
+    throw new Error("Marcador objetivo inválido.");
+  }
+  const unique = new Map(
+    [...facebookPostCandidates(xml)].filter(([, candidate]) =>
+      orderedMarkerMatch(candidate.nodes, marker),
+    ),
   );
   if (unique.size !== 1) {
     throw new Error("No se identificó un único contenedor de publicación objetivo.");
@@ -124,6 +144,129 @@ export function locateFacebookTarget(xml: string, targetMarker: string) {
       target.like.attributes.checked === "true" ||
       /(^| )(unlike|liked|ya no me gusta)( |$)/.test(nodeLabel(target.like)),
   };
+}
+
+const ignoredDescription = /^(?:me gusta|ya no me gusta|like|liked|unlike|comentar|comentario|comment|compartir|share|enviar|send|seguir|follow|publico|public|patrocinado|sponsored|ver mas|see more)$/;
+
+export function extractFacebookDescriptionFromHierarchy(xml: string) {
+  const all = flattenAndroidNodes(parseAndroidHierarchy(xml)).filter(
+    (node) =>
+      node.attributes.package === FACEBOOK_PACKAGE &&
+      node.attributes.displayed !== "false",
+  );
+  const screenText = all.map(nodeLabel).join(" ");
+  if (
+    /(?:inicia sesion|iniciar sesion|log in|create new account|crear cuenta nueva|checkpoint)/.test(
+      screenText,
+    )
+  ) {
+    throw new AppError(
+      "Facebook requiere iniciar sesión en la aplicación móvil.",
+      409,
+      "FACEBOOK_LOGIN_REQUIRED",
+    );
+  }
+  const videoDescriptions = new Set(
+    all
+      .filter((node) =>
+        /^(?:detalles del reel|detalles del video|detalles de la pestana (?:reels?|video)|reel details|video details)$/.test(
+          nodeLabel(node),
+        ),
+      )
+      .map((node) => node.parent?.attributes["content-desc"]?.trim() ?? "")
+      .filter((value) => value.length >= 5),
+  );
+  if (videoDescriptions.size > 1) {
+    throw new Error("No se identificó un único Reel visible para extraer.");
+  }
+  if (videoDescriptions.size === 1) {
+    const description = buildFacebookPostDescription({
+      messages: [[...videoDescriptions][0]],
+    });
+    if (description.length < 5) {
+      throw new Error("Facebook no expuso una descripción visible del Reel.");
+    }
+    return description;
+  }
+  const candidates = facebookPostCandidates(xml);
+  if (candidates.size !== 1) {
+    throw new Error("No se identificó una única publicación visible para extraer.");
+  }
+  const target = [...candidates.values()][0];
+  const actionTop = Math.min(target.like.bounds!.top, target.comment.bounds!.top);
+  const values = target.nodes
+    .flatMap((node) => {
+      const className = node.attributes.class ?? "";
+      if (
+        !node.bounds ||
+        node.bounds.top < target.container.bounds!.top ||
+        node.bounds.bottom > actionTop ||
+        !/(?:TextView|android\.view\.View)$/.test(className) ||
+        /(?:Button|EditText|ImageView)/.test(className) ||
+        node.attributes.clickable === "true"
+      ) {
+        return [];
+      }
+      const value = (node.attributes.text || node.attributes["content-desc"] || "")
+        .replace(/\s+/g, " ")
+        .trim();
+      const normalized = normalizeAccessibleText(value);
+      if (
+        value.length < 5 ||
+        ignoredDescription.test(normalized) ||
+        /^(?:\d+[hmsd]|\d+\s*(?:reacciones?|reactions?|comentarios?|comments?|veces compartido|shares?|visualizaciones?|views?))$/.test(
+          normalized,
+        )
+      ) {
+        return [];
+      }
+      return [value];
+    })
+    .filter((value, index, allValues) => allValues.indexOf(value) === index)
+    .sort((left, right) => right.length - left.length);
+  const description = buildFacebookPostDescription({
+    messages: values.slice(0, 1),
+  });
+  if (description.length < 5) {
+    throw new Error("Facebook no expuso una descripción visible de la publicación.");
+  }
+  return description;
+}
+
+export async function readFacebookPostDescription(
+  driver: AndroidDriver,
+  url: string,
+  signal: AbortSignal,
+) {
+  const targetUrl = new URL(url);
+  if (["web.facebook.com", "m.facebook.com"].includes(targetUrl.hostname)) {
+    targetUrl.hostname = "www.facebook.com";
+  }
+  await activateAndOpenUrl(driver, FACEBOOK_PACKAGE, targetUrl.toString(), true);
+  await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
+  let previous: string | null = null;
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await wait(attempt ? 750 : 1_000, signal);
+    try {
+      const description = extractFacebookDescriptionFromHierarchy(
+        await driver.getPageSource(),
+      );
+      if (description === previous) return description;
+      previous = description;
+    } catch (error) {
+      if (error instanceof AppError && error.code === "FACEBOOK_LOGIN_REQUIRED") {
+        throw error;
+      }
+      lastError = error;
+    }
+  }
+  throw new AppError(
+    "Facebook no expuso una descripción estable de la publicación.",
+    422,
+    "FACEBOOK_CONTENT_NOT_VERIFIED",
+    { cause: lastError instanceof Error ? lastError.message : String(lastError) },
+  );
 }
 
 function locateThread(

@@ -16,7 +16,8 @@ test("uses UiAutomator2 commands for Home, deep links and gestures", async () =>
   const commands: Array<[string, unknown[]]> = [];
   const calls: string[] = [];
   const driver = {
-    execute: async (command: string, args: unknown[]) => commands.push([command, args]),
+    execute: async (command: string, ...args: unknown[]) =>
+      commands.push([command, args]),
     terminateApp: async (name: string) => calls.push(`terminate:${name}`),
     activateApp: async (name: string) => calls.push(`activate:${name}`),
     getWindowSize: async () => ({ width: 1080, height: 1920 }),
@@ -29,14 +30,28 @@ test("uses UiAutomator2 commands for Home, deep links and gestures", async () =>
   await clickBounds(driver, { left: 10, top: 20, right: 30, bottom: 60 });
 
   assert.deepEqual(calls, ["terminate:com.test", "activate:com.test"]);
-  assert.deepEqual(commands.map(([command]) => command), [
-    "mobile: pressKey",
-    "mobile: deepLink",
-    "mobile: doubleClickGesture",
-    "mobile: swipeGesture",
-    "mobile: clickGesture",
+  assert.deepEqual(commands, [
+    ["mobile: pressKey", [{ keycode: 3 }]],
+    [
+      "mobile: deepLink",
+      [{ url: "https://example.test/post", package: "com.test" }],
+    ],
+    ["mobile: doubleClickGesture", [{ x: 100, y: 200 }]],
+    [
+      "mobile: swipeGesture",
+      [
+        {
+          left: 0,
+          top: 0,
+          width: 1080,
+          height: 1920,
+          direction: "up",
+          percent: 0.7,
+        },
+      ],
+    ],
+    ["mobile: clickGesture", [{ x: 20, y: 40 }]],
   ]);
-  assert.deepEqual(commands.at(-1)?.[1], [{ x: 20, y: 40 }]);
 });
 
 test("waits for foreground and elements, then honors abort", async () => {
