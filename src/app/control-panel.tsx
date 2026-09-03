@@ -1,3019 +1,926 @@
 "use client";
 
 import {
-  FormEvent,
-  ReactNode,
-  startTransition,
-  useEffect,
-  useEffectEvent,
-  useId,
-  useRef,
-  useState,
-} from "react";
+  Alert,
+  Badge,
+  Button,
+  Drawer,
+  Group,
+  Modal,
+  NumberInput,
+  Stack,
+  Text,
+  TextInput,
+} from "@mantine/core";
+import { useEffect, useReducer, useRef } from "react";
 
+import { CampaignView } from "./campaign-view";
+import type {
+  CampaignDraft,
+  ControlAction,
+  ControlDispatch,
+  ControlState,
+  Device,
+  Platform,
+  ViewId,
+} from "./control-panel.types";
 import {
-  facebookIntentOptions,
-  facebookToneOptions,
-} from "@/lib/facebook-copy-options";
-import { isConfiguredFacebookDevice } from "@/lib/facebook-devices";
+  buildAssignments,
+  formatDate,
+  createInitialState,
+  parseCampaignUrls,
+  parseDeviceInput,
+  scheduleAssignments,
+  statusLabels,
+} from "./demo-state";
+import { DevicesView } from "./devices-view";
+import { HistoryView } from "./history-view";
 
-type Device = {
-  id: string;
-  state: string;
-  model: string;
-  profile: null | {
-    hardware_id: string;
-    device_id: string;
-    alias: string;
-    physical_order: number;
-    system_port: number;
-  };
-  capabilities: null | {
-    tiktok: boolean;
-    facebook: boolean;
-    hardwareId: string;
-    focusedPackage: string | null;
-  };
-};
-
-type Draft = {
-  id: string;
-  kind: "social_comment";
-  platform: "tiktok" | "facebook";
-  text: string;
-  status: "draft" | "approved" | "running" | "sent" | "failed" | "outcome_unknown";
-  error: string | null;
-  created_at: string;
-  sent_at: string | null;
-};
-
-type Operation = {
-  id: string;
-  kind: string;
-  status: "starting" | "running" | "succeeded" | "failed" | "cancelled";
-  device_id: string;
-  error: string | null;
-  created_at: string;
-};
-
-type FacebookBrowserSnapshot = {
-  status: "closed" | "login_required" | "ready" | "extracting";
-  browserOpen: boolean;
-  loggedIn: boolean;
-  extracting: boolean;
-  mode: "background" | "login" | null;
-  lastError: string | null;
-};
-
-type Snapshot = {
-  health: { ok: boolean; version: string | null };
-  deepSeek: { configured: boolean; model: string };
-  facebookBrowser: FacebookBrowserSnapshot;
-  setup: {
-    revision: number;
-    devices: Array<{
-      device_id: string;
-      status: "running" | "ready" | "not_ready";
-      problem: string | null;
-      setup_revision: number;
-      updated_at: string;
-    }>;
-  };
-  devices: Device[];
-  drafts: Draft[];
-  operations: Operation[];
-  facebookBatch: FacebookBatch | null;
-  polledAt: string;
-};
-
-type FacebookAssignment = {
-  id: string;
-  device_id: string;
-  intent: string;
-  tone: (typeof tones)[number][0];
-  status:
-    | "pending"
-    | "generating"
-    | "draft"
-    | "approved"
-    | "running"
-    | "sent"
-    | "failed"
-    | "outcome_unknown";
-  error: string | null;
-  round_index: number | null;
-  sequence_index: number | null;
-  scheduled_at: string | null;
-  draft: Draft | null;
-};
-
-type FacebookPost = {
-  id: string;
-  position: number;
-  url: string;
-  extracted_context: string | null;
-  context: string | null;
-  status:
-    | "queued"
-    | "extracting"
-    | "context_ready"
-    | "generating"
-    | "drafts_ready"
-    | "approving"
-    | "approved"
-    | "running"
-    | "completed"
-    | "partial_failed"
-    | "outcome_unknown"
-    | "skipped";
-  error: string | null;
-  updated_at: string;
-  planned_device_ids: string[];
-  assignments: FacebookAssignment[];
-};
-
-type FacebookBatch = {
-  id: string;
-  status: "active" | "completed" | "cancelled";
-  plan_version: "legacy" | "rotation_v1";
-  current_round: number;
-  total_rounds: number;
-  execution_status: "idle" | "running";
-  next_execution_at: string | null;
-  execution_started: boolean;
-  device_ids: string[];
-  devices: Array<{
-    device_id: string;
-    post_id: string;
-    post_url: string;
-    assignment_status: FacebookAssignment["status"] | null;
-    scheduled_at: string | null;
-    opened_at: string | null;
-    open_error: string | null;
-  }>;
-  progress: {
-    prepared_posts: number;
-    completed_assignments: number;
-    total_assignments: number;
-  };
-  posts: FacebookPost[];
-};
-
-type FacebookAllocation = {
-  id: string;
-  intent: string;
-  tone: (typeof tones)[number][0];
-  count: number;
-};
-
-type ApiPayload<T> = {
-  success: boolean;
-  data: T;
-  code?: string;
-  message?: string;
-};
-
-type SetupResult = {
-  status: "pending" | "running" | "ready" | "not_ready";
-  problem: string | null;
-};
-
-type AutomationSlug =
-  | "device-home"
-  | "open-social-content"
-  | "facebook-post-like-comment"
-  | "tiktok-live-tap-tap"
-  | "tiktok-post-like-comment";
-
-type AutomationDefinition = {
-  slug: AutomationSlug;
-  code: string;
-  group: string;
-  title: string;
-  description: string;
-  accent: "system" | "neutral" | "facebook" | "live" | "tiktok";
-};
-
-type RunAction = (
-  name: string,
-  action: (signal: AbortSignal) => Promise<unknown>,
-  successMessage: string,
-) => Promise<void>;
-
-type WorkspaceProps = {
-  active: boolean;
-  definition: AutomationDefinition;
-  selectedDevice: string;
-  ready: boolean;
-  device: Device | undefined;
-  snapshot: Snapshot | null;
-  busy: string | null;
-  runAction: RunAction;
-};
-
-const automationDefinitions: AutomationDefinition[] = [
-  {
-    slug: "device-home",
-    code: "HM",
-    group: "Sistema",
-    title: "Pantalla de inicio",
-    description: "Cierra el contexto actual y deja Android en un estado conocido.",
-    accent: "system",
-  },
-  {
-    slug: "open-social-content",
-    code: "AB",
-    group: "Navegación",
-    title: "Abrir contenido",
-    description: "Abre un enlace sin dar like, comentar ni enviar nada.",
-    accent: "neutral",
-  },
-  {
-    slug: "facebook-post-like-comment",
-    code: "FB",
-    group: "Facebook",
-    title: "Like y comentario",
-    description: "Generación y publicación exclusiva para Facebook.",
-    accent: "facebook",
-  },
-  {
-    slug: "tiktok-live-tap-tap",
-    code: "LV",
-    group: "TikTok Live",
-    title: "Tap tap controlado",
-    description: "Rondas y coordenadas propias para una transmisión en vivo.",
-    accent: "live",
-  },
-  {
-    slug: "tiktok-post-like-comment",
-    code: "TK",
-    group: "TikTok",
-    title: "Like y comentario",
-    description: "Generación y publicación exclusiva para TikTok.",
-    accent: "tiktok",
-  },
+const navItems: { id: ViewId; index: string; label: string }[] = [
+  { id: "devices", index: "01", label: "Dispositivos" },
+  { id: "facebook", index: "02", label: "Facebook" },
+  { id: "tiktok", index: "03", label: "TikTok" },
+  { id: "history", index: "04", label: "Historial" },
 ];
 
-const tones = facebookToneOptions;
+const preparationSteps = ["Validando ADB", "Comprobando Appium", "Leyendo jerarquía", "Volviendo a Inicio"];
+const abortSteps = [
+  "Solicitud registrada",
+  "Deteniendo nuevos trabajos",
+  "Cancelando tareas activas",
+  "Cerrando sesiones propias",
+  "Enviando Home por dispositivo",
+  "Finalizado o requiere recuperación",
+];
 
-async function api<T>(path: string, init?: RequestInit) {
-  const response = await fetch(path, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "X-Control-Panel-Client": "control-panel",
-      ...init?.headers,
-    },
-  });
-  const payload = (await response.json()) as ApiPayload<T>;
-  if (!response.ok || !payload.success) {
-    const message = payload.message || "No se pudo completar la acción.";
-    throw new Error(payload.code ? `${message} [${payload.code}]` : message);
-  }
-  return payload.data;
+function draftKey(platform: Platform) {
+  return platform === "facebook" ? "facebookDraft" : "tiktokDraft";
 }
 
-function friendlyAction(kind: string) {
-  return (
-    {
-      "device-home": "Pantalla de inicio",
-      "facebook-post-like-comment": "Like y comentario en Facebook",
-      "facebook-context-extract": "Extraer contexto de Facebook",
-      "open-social-content": "Abrir contenido",
-      "tiktok-live-tap-tap": "Tap tap en TikTok Live",
-      "tiktok-post-like-comment": "Like y comentario en TikTok",
-    }[kind] || kind
-  );
+function updateDraft(state: ControlState, platform: Platform, update: (draft: CampaignDraft) => CampaignDraft): ControlState {
+  const key = draftKey(platform);
+  return { ...state, [key]: update(state[key]) };
 }
 
-function friendlyStatus(status: Operation["status"] | Draft["status"]) {
-  return (
-    {
-      starting: "Iniciando",
-      running: "Ejecutando",
-      succeeded: "Completada",
-      failed: "Falló",
-      cancelled: "Cancelada",
-      draft: "Borrador",
-      approved: "Listo",
-      outcome_unknown: "Verificación manual",
-      sent: "Enviado",
-    }[status] || status
-  );
+function resetWorkflow(draft: CampaignDraft): CampaignDraft {
+  return {
+    ...draft,
+    status: "draft",
+    posts: [],
+    assignments: [],
+    selectedPostId: null,
+    scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+  };
 }
 
-function latestOperation(
-  snapshot: Snapshot | null,
-  slug: AutomationSlug,
-  deviceId: string,
-) {
-  return snapshot?.operations.find(
-    (operation) => operation.kind === slug && operation.device_id === deviceId,
-  );
+function validateDeviceEditor(state: ControlState) {
+  const modal = state.activeModal;
+  const editor = state.demoOperations.deviceEditor;
+  if (!editor || modal?.type !== "edit-device") return null;
+  const others = state.devices.filter((item) => item.id !== modal.deviceId);
+  const errors = {
+    ...(!editor.alias.trim() ? { alias: "El alias es obligatorio" } : {}),
+    ...(!Number.isInteger(editor.order) || editor.order < 1 ? { order: "Usa un entero positivo" } : {}),
+    ...(others.some((item) => item.order === editor.order) ? { order: "El orden ya está asignado" } : {}),
+    ...(!editor.serial.trim() ? { serial: "El serial es obligatorio" } : {}),
+    ...(editor.serial.length > 120 ? { serial: "Máximo 120 caracteres" } : {}),
+    ...(/[\u0000-\u001f\u007f]/.test(editor.serial) ? { serial: "Contiene caracteres de control" } : {}),
+    ...(others.some((item) => item.serial.toLowerCase() === editor.serial.trim().toLowerCase()) ? { serial: "El serial ya está registrado" } : {}),
+    ...(!Number.isInteger(editor.systemPort) || editor.systemPort < 8200 || editor.systemPort > 8299
+      ? { systemPort: "Debe estar entre 8200 y 8299" }
+      : {}),
+    ...(others.some((item) => item.systemPort === editor.systemPort) ? { systemPort: "El puerto ya está asignado" } : {}),
+  };
+  return { editor, errors, deviceId: modal.deviceId };
 }
 
-function appAvailable(definition: AutomationDefinition, device?: Device) {
-  if (!device?.capabilities) return false;
-  if (definition.accent === "facebook") return device.capabilities.facebook;
-  if (["live", "tiktok"].includes(definition.accent)) {
-    return device.capabilities.tiktok;
-  }
-  if (definition.slug === "open-social-content") {
-    return device.capabilities.tiktok || device.capabilities.facebook;
-  }
-  return true;
-}
-
-function WorkspaceShell({
-  active,
-  definition,
-  ready,
-  latest,
-  children,
-}: {
-  active: boolean;
-  definition: AutomationDefinition;
-  ready: boolean;
-  latest?: Operation;
-  children: ReactNode;
-}) {
-  return (
-    <section
-      className={`automation-workspace accent-${definition.accent}`}
-      hidden={!active}
-      aria-labelledby={`workspace-${definition.slug}`}
-      >
-      <header className="workspace-header">
-        <div className="workspace-identity">
-          <span className="workspace-code">{definition.code}</span>
-          <div>
-            <p className="workspace-kicker">{definition.group}</p>
-            <h2 id={`workspace-${definition.slug}`}>{definition.title}</h2>
-            <p>{definition.description}</p>
-          </div>
-        </div>
-        <div className="workspace-state">
-          <span className={`pill ${ready ? "succeeded" : "failed"}`}>
-            {ready ? "Lista para ejecutar" : "Preparación pendiente"}
-          </span>
-          {latest && (
-            <span className={`last-run ${latest.status}`}>
-              Última ejecución: {friendlyStatus(latest.status)}
-            </span>
-          )}
-          <HelpTip label={`Detalles técnicos de ${definition.title}`}>
-            <li>Flujo TypeScript ejecutado mediante Appium.</li>
-            <li>El estado depende del dispositivo seleccionado.</li>
-          </HelpTip>
-        </div>
-      </header>
-      {children}
-    </section>
-  );
-}
-
-function HelpTip({ label, children }: { label: string; children: ReactNode }) {
-  const id = useId();
-  const [open, setOpen] = useState(false);
-
-  return (
-    <span
-      className="help-tip"
-      onMouseEnter={() => setOpen(true)}
-      onMouseLeave={() => setOpen(false)}
-    >
-      <button
-        type="button"
-        aria-label={label}
-        aria-describedby={open ? id : undefined}
-        aria-expanded={open}
-        onBlur={() => setOpen(false)}
-        onClick={() => setOpen(true)}
-        onFocus={() => setOpen(true)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") {
-            event.preventDefault();
-            setOpen(false);
-          }
-        }}
-      >
-        <span aria-hidden="true">?</span>
-      </button>
-      {open && (
-        <span id={id} role="tooltip" className="help-tip-content">
-          <strong>{label}</strong>
-          <ul>{children}</ul>
-        </span>
-      )}
-    </span>
-  );
-}
-
-function Requirement({ ok, children }: { ok: boolean; children: ReactNode }) {
-  return (
-    <span className={`requirement ${ok ? "ok" : "missing"}`}>
-      <span aria-hidden="true">{ok ? "OK" : "!"}</span>
-      {children}
-    </span>
-  );
-}
-
-function WorkflowSteps({ current }: { current: 1 | 2 | 3 }) {
-  return (
-    <ol className="workflow-steps" aria-label="Progreso">
-      {[
-        [1, "Objetivo"],
-        [2, "Generación"],
-        [3, "Ejecución"],
-      ].map(([step, label]) => (
-        <li
-          className={Number(step) < current ? "complete" : Number(step) === current ? "active" : ""}
-          key={step}
-          aria-current={Number(step) === current ? "step" : undefined}
-        >
-          <span>{step}</span>
-          {label}
-        </li>
-      ))}
-    </ol>
-  );
-}
-
-function DraftHistory({
-  drafts,
-  onSelect,
-}: {
-  drafts: Draft[];
-  onSelect: (draft: Draft) => void;
-}) {
-  if (!drafts.length) return null;
-  return (
-    <div className="draft-history">
-      <div className="subheading">
-        <div>
-          <strong>Borradores recientes</strong>
-          <span>Solo de esta interfaz</span>
-        </div>
-      </div>
-      <div className="draft-history-list">
-        {drafts.slice(0, 3).map((draft) => (
-          <button type="button" key={draft.id} onClick={() => onSelect(draft)}>
-            <span className={`activity-icon ${draft.status}`} />
-            <span>{draft.text}</span>
-            <small>{friendlyStatus(draft.status)}</small>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function HomeWorkspace(props: WorkspaceProps) {
-  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  return (
-    <WorkspaceShell {...props} latest={latest}>
-      <div className="simple-workspace-grid">
-        <div className="home-preview" aria-hidden="true">
-          <div className="phone-outline">
-            <span />
-            <div className="home-glyph">⌂</div>
-          </div>
-        </div>
-        <div className="action-brief">
-          <p className="eyebrow">Acción segura</p>
-          <h3>Recupera un punto de partida limpio.</h3>
-          <p>
-            Úsala cuando una app quedó en un diálogo, teclado o pantalla inesperada. No
-            publica ni modifica contenido.
-          </p>
-          <div className="requirement-row">
-            <Requirement ok={Boolean(props.selectedDevice)}>Dispositivo seleccionado</Requirement>
-            <Requirement ok={props.ready}>Preparación Appium</Requirement>
-          </div>
-          <button
-            type="button"
-            className="button primary action-button"
-            onClick={() =>
-              props.runAction(
-                "device-home",
-                () =>
-                  api("/api/automations/home", {
-                    method: "POST",
-                    body: JSON.stringify({
-                      deviceId: props.selectedDevice,
-                      idempotencyKey: crypto.randomUUID(),
-                    }),
-                  }),
-                "El dispositivo volvió a la pantalla de inicio.",
-              )
-            }
-            disabled={Boolean(props.busy) || !props.ready || !props.selectedDevice}
-          >
-            {props.busy === "device-home" ? "Volviendo..." : "Ir a inicio ahora"}
-          </button>
-        </div>
-      </div>
-    </WorkspaceShell>
-  );
-}
-
-function OpenContentWorkspace(props: WorkspaceProps) {
-  const [platform, setPlatform] = useState<"tiktok" | "facebook">("tiktok");
-  const [url, setUrl] = useState("");
-  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  const installed = Boolean(props.device?.capabilities?.[platform]);
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await props.runAction(
-      "open-content",
-      () =>
-        api("/api/automations/open-content", {
-          method: "POST",
-          body: JSON.stringify({
-            deviceId: props.selectedDevice,
-            idempotencyKey: crypto.randomUUID(),
-            platform,
-            url,
-          }),
-        }),
-      `Contenido abierto en ${platform === "tiktok" ? "TikTok" : "Facebook"}.`,
-    );
-  }
-
-  return (
-    <WorkspaceShell {...props} latest={latest}>
-      <div className="workspace-body two-column-workspace">
-        <div className="workspace-explainer">
-          <p className="eyebrow">Navegación aislada</p>
-          <h3>Primero observa. Después decide.</h3>
-          <p>
-            Este módulo solo abre el enlace. Es ideal para revisar una publicación antes
-            de generar un comentario o configurar un Live.
-          </p>
-          <div className="action-boundary">
-            <strong>No interactúa</strong>
-            <span>Sin likes, comentarios, mensajes ni tap tap.</span>
-          </div>
-        </div>
-        <form onSubmit={submit} className="workspace-form">
-          <div className="platform-choice" role="group" aria-label="Plataforma objetivo">
-            <button
-              type="button"
-              className={platform === "tiktok" ? "active tiktok" : "tiktok"}
-              onClick={() => setPlatform("tiktok")}
-              aria-pressed={platform === "tiktok"}
-            >
-              <span>TK</span>
-              <strong>TikTok</strong>
-              <small>{props.device?.capabilities?.tiktok ? "Instalado" : "No instalado"}</small>
-            </button>
-            <button
-              type="button"
-              className={platform === "facebook" ? "active facebook" : "facebook"}
-              onClick={() => setPlatform("facebook")}
-              aria-pressed={platform === "facebook"}
-            >
-              <span>FB</span>
-              <strong>Facebook</strong>
-              <small>{props.device?.capabilities?.facebook ? "Instalado" : "No instalado"}</small>
-            </button>
-          </div>
-          <label className="field">
-            <span>Enlace de {platform === "tiktok" ? "TikTok" : "Facebook"}</span>
-            <input
-              type="url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder={
-                platform === "tiktok"
-                  ? "https://www.tiktok.com/@cuenta/video/..."
-                  : "https://www.facebook.com/share/p/..."
-              }
-              maxLength={2048}
-              required
-            />
-          </label>
-          <div className="requirement-row">
-            <Requirement ok={props.ready}>Preparación Appium</Requirement>
-            <Requirement ok={installed}>{platform} instalado</Requirement>
-          </div>
-          <button
-            className="button primary full"
-            disabled={Boolean(props.busy) || !props.ready || !installed}
-          >
-            {props.busy === "open-content"
-              ? "Abriendo..."
-              : `Abrir sin interactuar en ${platform === "tiktok" ? "TikTok" : "Facebook"}`}
-          </button>
-        </form>
-      </div>
-    </WorkspaceShell>
-  );
-}
-
-function SocialCommentWorkspace(
-  props: WorkspaceProps & { platform: "tiktok" | "facebook" },
-) {
-  const [url, setUrl] = useState("");
-  const [context, setContext] = useState("");
-  const [intent, setIntent] = useState("");
-  const [tone, setTone] = useState<(typeof tones)[number][0]>("casual");
-  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
-  const [draftText, setDraftText] = useState("");
-  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  const drafts =
-    props.snapshot?.drafts.filter(
-      (draft) => draft.kind === "social_comment" && draft.platform === props.platform,
-    ) ?? [];
-  const activeDraft = drafts.find((draft) => draft.id === activeDraftId) ?? null;
-  const installed = Boolean(props.device?.capabilities?.[props.platform]);
-  const platformName = props.platform === "tiktok" ? "TikTok" : "Facebook";
-  const busyPrefix = `${props.platform}-`;
-  const currentStep: 1 | 2 | 3 = activeDraft ? 3 : 1;
-
-  function selectDraft(draft: Draft) {
-    setActiveDraftId(draft.id);
-    setDraftText(draft.text);
-  }
-
-  function startNewDraft() {
-    setActiveDraftId(null);
-    setDraftText("");
-  }
-
-  async function generate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await props.runAction(
-      `${busyPrefix}generate`,
-      async (signal) => {
-        const result = await api<{ draft: Draft }>("/api/messages/draft", {
-          method: "POST",
-          signal,
-          body: JSON.stringify({
-            kind: "social_comment",
-            platform: props.platform,
-            context,
-            intent,
-            tone,
-          }),
-        });
-        selectDraft(result.draft);
-      },
-      `Comentario de ${platformName} generado y listo para publicar.`,
-    );
-  }
-
-  async function copyComment() {
-    await props.runAction(
-      `${busyPrefix}copy`,
-      () => navigator.clipboard.writeText(draftText),
-      "Comentario copiado.",
-    );
-  }
-
-  async function send() {
-    if (!activeDraft) return;
-    await props.runAction(
-      `${busyPrefix}send`,
-      () =>
-        api(`/api/messages/${activeDraft.id}/send`, {
-          method: "POST",
-          body: JSON.stringify({ deviceId: props.selectedDevice, contentUrl: url }),
-        }),
-      `Like y comentario publicados una sola vez en ${platformName}.`,
-    );
-  }
-
-  return (
-    <WorkspaceShell {...props} latest={latest}>
-      <WorkflowSteps current={currentStep} />
-      <div className="social-workspace-grid">
-        <div className="target-column">
-          <div className="subheading">
-            <span>01</span>
-            <div>
-              <strong>Publicación objetivo</strong>
-              <small>Exclusiva para {platformName}</small>
-            </div>
-          </div>
-          <label className="field">
-            <span>Enlace HTTPS</span>
-            <input
-              type="url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder={
-                props.platform === "tiktok"
-                  ? "https://www.tiktok.com/@cuenta/video/..."
-                  : "https://www.facebook.com/share/p/..."
-              }
-              maxLength={2048}
-              required
-            />
-          </label>
-          <div className="platform-lock">
-            <span>{props.definition.code}</span>
-            <div>
-              <strong>Destino bloqueado a {platformName}</strong>
-              <small>El servidor rechazará enlaces de otra plataforma.</small>
-            </div>
-          </div>
-          <div className="requirement-stack">
-            <Requirement ok={props.ready}>Automatización preparada</Requirement>
-            <Requirement ok={installed}>{platformName} instalado</Requirement>
-            <Requirement ok={Boolean(url)}>Enlace ingresado</Requirement>
-          </div>
-        </div>
-
-        <div className="draft-column">
-          {!activeDraft ? (
-            <>
-              <form onSubmit={generate} className="workspace-form draft-generator">
-                <div className="subheading">
-                  <span>02</span>
-                  <div>
-                    <strong>Brief para DeepSeek</strong>
-                    <small>Genera el comentario listo, nunca lo publica por sí solo.</small>
-                  </div>
-                </div>
-                <label className="field">
-                  <span>Contexto real</span>
-                  <textarea
-                    value={context}
-                    onChange={(event) => setContext(event.target.value)}
-                    placeholder="Describe qué aparece en la publicación y por qué importa."
-                    minLength={5}
-                    maxLength={1200}
-                    rows={4}
-                    required
-                  />
-                </label>
-                <div className="form-row">
-                  <label className="field">
-                    <span>Intención</span>
-                    <input
-                      value={intent}
-                      onChange={(event) => setIntent(event.target.value)}
-                      placeholder="Ej. opinar y hacer una pregunta"
-                      minLength={3}
-                      maxLength={300}
-                      required
-                    />
-                  </label>
-                  <label className="field tone-field">
-                    <span>Tono</span>
-                    <select
-                      value={tone}
-                      onChange={(event) =>
-                        setTone(event.target.value as (typeof tones)[number][0])
-                      }
-                    >
-                      {tones.map(([value, label]) => (
-                        <option value={value} key={value}>
-                          {label}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                </div>
-                <button
-                  className="button ink full"
-                  disabled={Boolean(props.busy) || !props.snapshot?.deepSeek.configured}
-                >
-                  {props.busy === `${busyPrefix}generate`
-                    ? "Redactando..."
-                    : "Generar borrador con DeepSeek"}
-                </button>
-              </form>
-              <DraftHistory drafts={drafts} onSelect={selectDraft} />
-            </>
-          ) : (
-            <div className="draft-review independent-review">
-              <div className="draft-meta">
-                <div>
-                  <span className={`pill ${activeDraft.status}`}>
-                    {friendlyStatus(activeDraft.status)}
-                  </span>
-                  <small>{platformName} · {new Date(activeDraft.created_at).toLocaleString("es-PE")}</small>
-                </div>
-                <button type="button" className="text-button" onClick={startNewDraft}>
-                  Nuevo borrador
-                </button>
-              </div>
-              <label className="field">
-                <span>Comentario generado</span>
-                <textarea
-                  value={draftText}
-                  rows={6}
-                  minLength={2}
-                  maxLength={500}
-                  readOnly
-                />
-                <small className="field-counter">{draftText.length}/500</small>
-              </label>
-              {activeDraft.error && <p className="inline-error">{activeDraft.error}</p>}
-              {activeDraft.status === "approved" && (
-                <div className="execution-box">
-                  <div className="execution-warning">
-                    <strong>Acción pública</strong>
-                    <span>Dará like y publicará este comentario una sola vez.</span>
-                  </div>
-                  <div className="review-actions">
-                    <button type="button" className="button secondary" onClick={copyComment}>
-                      Copiar texto
-                    </button>
-                    <button
-                      type="button"
-                      className="button danger"
-                      onClick={send}
-                      disabled={Boolean(props.busy) || !props.ready || !installed || !url}
-                    >
-                      {props.busy === `${busyPrefix}send`
-                        ? "Publicando..."
-                        : `Dar like y comentar en ${platformName}`}
-                    </button>
-                  </div>
-                </div>
-              )}
-              {activeDraft.status === "sent" && (
-                <div className="completion-box">
-                  <strong>Publicación completada</strong>
-                  <span>
-                    El registro local marca este borrador como enviado y no lo repetirá.
-                  </span>
-                </div>
-              )}
-              {activeDraft.status === "failed" && (
-                <div className="failure-box">
-                  <strong>Esta ejecución quedó bloqueada</strong>
-                  <span>Crea un borrador nuevo para evitar un envío duplicado accidental.</span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-    </WorkspaceShell>
-  );
-}
-
-function facebookPostStatus(status: FacebookPost["status"]) {
-  return (
-    {
-      queued: "Pendiente",
-      extracting: "Extrayendo contexto",
-      context_ready: "Contexto listo",
-      generating: "Generando",
-      drafts_ready: "Comentarios listos",
-      approving: "Preparando",
-      approved: "Lista",
-      running: "Ejecutando",
-      completed: "Completada",
-      partial_failed: "Requiere atención",
-      outcome_unknown: "Verificación manual",
-      skipped: "Omitida",
-    }[status] || status
-  );
-}
-
-function allocationsFromAssignments(
-  assignments: FacebookAssignment[],
-  defaultCount: number,
-): FacebookAllocation[] {
-  if (!assignments.length) {
-    return [
-      {
-        id: "allocation-primary",
-        intent: "Crítica Constructiva",
-        tone: "casual",
-        count: Math.max(1, defaultCount),
-      },
-    ];
-  }
-  const allocations: FacebookAllocation[] = [];
-  for (const assignment of assignments) {
-    const existing = allocations.find(
-      (allocation) =>
-        allocation.intent === assignment.intent && allocation.tone === assignment.tone,
-    );
-    if (existing) {
-      existing.count++;
-    } else {
-      allocations.push({
-        id: `allocation-${assignment.id}`,
-        intent: assignment.intent,
-        tone: assignment.tone,
-        count: 1,
-      });
+function controlReducer(state: ControlState, action: ControlAction): ControlState {
+  switch (action.type) {
+    case "tick":
+      return { ...state, demoOperations: { ...state.demoOperations, now: action.now } };
+    case "navigate":
+      return { ...state, activeView: action.view };
+    case "clear-notice":
+      return { ...state, notice: null };
+    case "set-device-import":
+      return {
+        ...state,
+        demoOperations: { ...state.demoOperations, deviceImportText: action.value, deviceImportErrors: [] },
+      };
+    case "add-devices": {
+      const parsed = parseDeviceInput(state.demoOperations.deviceImportText, state.devices);
+      if (parsed.errors.length || parsed.serials.length === 0) {
+        return {
+          ...state,
+          notice: parsed.serials.length === 0 && parsed.errors.length === 0
+            ? { kind: "error", title: "No hay seriales", message: "Escribe al menos un identificador ADB." }
+            : { kind: "error", title: "Revisa la lista", message: "Corrige los errores por línea antes de agregar dispositivos." },
+          demoOperations: { ...state.demoOperations, deviceImportErrors: parsed.errors },
+        };
+      }
+      const usedPorts = new Set(state.devices.map((item) => item.systemPort));
+      const availablePorts = Array.from({ length: 100 }, (_, index) => 8200 + index).filter((port) => !usedPorts.has(port));
+      if (parsed.serials.length > availablePorts.length) {
+        return {
+          ...state,
+          notice: { kind: "error", title: "Sin puertos disponibles", message: "El rango exclusivo 8200–8299 no alcanza para toda la lista." },
+        };
+      }
+      const maxOrder = Math.max(0, ...state.devices.map((item) => item.order));
+      const added: Device[] = parsed.serials.map((serial, index) => ({
+        id: `device-demo-${Date.now()}-${index}`,
+        order: maxOrder + index + 1,
+        alias: `Equipo ${maxOrder + index + 1}`,
+        serial,
+        model: "Pendiente de lectura",
+        connection: "offline",
+        preparation: "not_ready",
+        capabilities: { facebook: "session_required", tiktok: "session_required" },
+        activity: "available",
+        systemPort: availablePorts[index],
+        hardwareId: `PENDIENTE-${maxOrder + index + 1}`,
+        lastPreparation: null,
+        lastPlatformCheck: { facebook: null, tiktok: null },
+      }));
+      return {
+        ...state,
+        devices: [...state.devices, ...added],
+        notice: { kind: "status", title: `${added.length} dispositivos agregados`, message: "Ya aparecen en la allowlist; la preparación continúa pendiente." },
+        demoOperations: { ...state.demoOperations, deviceImportText: "", deviceImportErrors: [] },
+      };
     }
-  }
-  return allocations;
-}
-
-function FacebookCurrentPost({
-  post,
-  position,
-  total,
-  rotation,
-  rotationStarted,
-  eligibleDevices,
-  facebookBrowser,
-  deepSeekConfigured,
-  busy,
-  runAction,
-}: {
-  post: FacebookPost;
-  position: number;
-  total: number;
-  rotation: boolean;
-  rotationStarted: boolean;
-  eligibleDevices: Device[];
-  facebookBrowser: FacebookBrowserSnapshot;
-  deepSeekConfigured: boolean;
-  busy: string | null;
-  runAction: RunAction;
-}) {
-  const intentOptionsId = useId();
-  const assignedDeviceIds = post.assignments.map((assignment) => assignment.device_id);
-  const hasDevicePlan = post.planned_device_ids.length > 0;
-  const initialDeviceIds = hasDevicePlan
-    ? post.planned_device_ids
-    : assignedDeviceIds.length
-      ? assignedDeviceIds
-      : eligibleDevices.map((device) => device.id);
-  const [context, setContext] = useState(
-    post.context || post.extracted_context || "",
-  );
-  const [deviceIds, setDeviceIds] = useState(initialDeviceIds);
-  const [allocations, setAllocations] = useState(() =>
-    allocationsFromAssignments(post.assignments, initialDeviceIds.length),
-  );
-  const [verifiedOutcomes, setVerifiedOutcomes] = useState<
-    Record<string, "" | "sent" | "not_sent">
-  >({});
-  const [minDelaySeconds, setMinDelaySeconds] = useState("15");
-  const [maxDelaySeconds, setMaxDelaySeconds] = useState("45");
-  const numericMinDelay = Number(minDelaySeconds);
-  const numericMaxDelay = Number(maxDelaySeconds);
-  const validTiming =
-    Number.isInteger(numericMinDelay) &&
-    Number.isInteger(numericMaxDelay) &&
-    numericMinDelay >= 1 &&
-    numericMaxDelay <= 600 &&
-    numericMaxDelay >= numericMinDelay;
-  const allocatedCount = allocations.reduce(
-    (totalCount, allocation) => totalCount + allocation.count,
-    0,
-  );
-  const hasLockedAssignments = post.assignments.some(
-    (assignment) => ["sent", "outcome_unknown"].includes(assignment.status),
-  );
-  const draftsComplete =
-    post.assignments.length > 0 &&
-    post.assignments.every((assignment) => assignment.draft);
-  const missingDraftCount = post.assignments.filter(
-    (assignment) => !assignment.draft,
-  ).length;
-  const generationStarted = post.assignments.length > 0;
-  const editable = ![
-    "extracting",
-    "generating",
-    "approving",
-    "approved",
-    "running",
-    "completed",
-    "outcome_unknown",
-  ].includes(post.status) && !hasLockedAssignments;
-  const configurationEditable = editable && !generationStarted;
-  const eligibleDeviceIds = new Set(eligibleDevices.map((item) => item.id));
-  const invalidDeviceIds = deviceIds.filter((id) => !eligibleDeviceIds.has(id));
-  const invalidAssignmentIds = post.assignments
-    .filter((assignment) => !["sent", "failed"].includes(assignment.status))
-    .map((assignment) => assignment.device_id)
-    .filter((id) => !eligibleDeviceIds.has(id));
-  const pendingExecutionCount = post.assignments.filter(
-    (assignment) => assignment.status === "approved",
-  ).length;
-  const reconcilableAssignments = post.assignments.filter((assignment) =>
-    post.status === "outcome_unknown"
-      ? assignment.status === "outcome_unknown"
-      : assignment.status === "failed" && Boolean(assignment.draft),
-  );
-
-  function toggleDevice(deviceId: string) {
-    setDeviceIds((current) => {
-      const next = current.includes(deviceId)
-        ? current.filter((id) => id !== deviceId)
-        : [...current, deviceId];
-      setAllocations((currentAllocations) =>
-        currentAllocations.length === 1
-          ? [
-              {
-                ...currentAllocations[0],
-                count: Math.max(1, next.length),
-              },
-            ]
-          : currentAllocations,
-      );
-      return next;
-    });
-  }
-
-  function removeInvalidDevices() {
-    setDeviceIds((current) => {
-      const next = current.filter((id) => eligibleDeviceIds.has(id));
-      setAllocations((currentAllocations) =>
-        currentAllocations.length === 1
-          ? [{ ...currentAllocations[0], count: Math.max(1, next.length) }]
-          : currentAllocations,
-      );
-      return next;
-    });
-  }
-
-  function updateAllocation(
-    id: string,
-    values: Partial<Pick<FacebookAllocation, "intent" | "tone" | "count">>,
-  ) {
-    setAllocations((current) =>
-      current.map((allocation) =>
-        allocation.id === id ? { ...allocation, ...values } : allocation,
-      ),
-    );
-  }
-
-  async function changeFacebookBrowser(action: "open" | "close") {
-    await runAction(
-      `facebook-browser-${action}`,
-      () =>
-        api("/api/facebook/browser", {
-          method: "POST",
-          body: JSON.stringify({ action }),
-        }),
-      action === "open"
-        ? "Facebook está abierto. Completa el inicio de sesión en Edge."
-        : "El navegador se cerró; la sesión quedó guardada localmente.",
-    );
-  }
-
-  async function extractContext() {
-    await runAction(
-      "facebook-extract-context",
-      () =>
-        api(`/api/facebook/posts/${post.id}/extract`, {
-          method: "POST",
-          body: JSON.stringify({}),
-        }),
-      "Se obtuvo la descripción visible de la publicación. Revísala antes de generar.",
-    );
-  }
-
-  async function generateDrafts(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await runAction(
-      "facebook-generate-batch",
-      (signal) =>
-        api(`/api/facebook/posts/${post.id}/drafts`, {
-          method: "POST",
-          signal,
-          body: JSON.stringify({
-            context,
-            deviceIds,
-            allocations: allocations.map(({ intent, tone, count }) => ({
-              intent,
-              tone,
-              count,
-            })),
-          }),
-        }),
-      "Los comentarios se generaron en una sola llamada y quedaron listos para ejecutar.",
-    );
-  }
-
-  async function executeAll() {
-    await runAction(
-      "facebook-execute-batch",
-      () =>
-        api(`/api/facebook/posts/${post.id}/execute`, {
-          method: "POST",
-          body: JSON.stringify({
-            minDelaySeconds: numericMinDelay,
-            maxDelaySeconds: numericMaxDelay,
-          }),
-        }),
-      "La publicación terminó y la cola avanzó a la siguiente URL.",
-    );
-  }
-
-  async function skipPost() {
-    await runAction(
-      "facebook-skip-post",
-      () =>
-        api(`/api/facebook/posts/${post.id}/skip`, {
-          method: "POST",
-        }),
-      "La publicación fue omitida y la cola avanzó.",
-    );
-  }
-
-  async function reconcileOutcomes() {
-    await runAction(
-      "facebook-reconcile-post",
-      () =>
-        api(`/api/facebook/posts/${post.id}/reconcile`, {
-          method: "POST",
-          body: JSON.stringify({
-            outcomes: reconcilableAssignments.map((assignment) => ({
-              assignmentId: assignment.id,
-              outcome: verifiedOutcomes[assignment.id],
-            })),
-          }),
-        }),
-      "La verificación manual quedó registrada para cada dispositivo.",
-    );
-  }
-
-  return (
-    <div className="facebook-batch-current">
-      <div className="facebook-progress-card">
-        <div>
-          <span>{rotation ? "Publicación seleccionada" : "Publicación actual"}</span>
-          <strong>{position} de {total}</strong>
-        </div>
-        <span className={`pill facebook-${post.status}`}>
-          {facebookPostStatus(post.status)}
-        </span>
-      </div>
-
-      <div className={`facebook-browser-bar ${facebookBrowser.status}`}>
-        <span className="facebook-browser-mark" aria-hidden="true">FB</span>
-        <div>
-          <strong>
-            {facebookBrowser.status === "ready"
-              ? "Sesión de Facebook lista"
-              : facebookBrowser.status === "extracting"
-                ? "Leyendo la publicación"
-                : facebookBrowser.status === "login_required"
-                  ? "Completa el inicio de sesión"
-                  : "Conecta una sesión de Facebook"}
-          </strong>
-          <small>
-            {facebookBrowser.status === "ready"
-              ? "Playwright se ejecuta en segundo plano con el perfil local autenticado."
-              : facebookBrowser.status === "login_required"
-                ? "Edge solo permanece visible para iniciar o renovar la sesión; después se cerrará automáticamente."
-                : facebookBrowser.status === "extracting"
-                  ? "Playwright está expandiendo y leyendo la publicación en segundo plano."
-                  : "Playwright probará el perfil en segundo plano y abrirá Edge solo si necesita login."}
-          </small>
-          {facebookBrowser.lastError && !facebookBrowser.browserOpen && (
-            <small className="facebook-browser-error">{facebookBrowser.lastError}</small>
-          )}
-        </div>
-        <div className="facebook-browser-actions">
-          <button
-            type="button"
-            className="button secondary"
-            onClick={() => changeFacebookBrowser("open")}
-            disabled={Boolean(busy) || facebookBrowser.extracting}
-          >
-            {busy === "facebook-browser-open"
-              ? "Comprobando sesión..."
-              : facebookBrowser.status === "login_required"
-                ? "Mostrar login"
-                : facebookBrowser.status === "ready"
-                  ? "Comprobar sesión"
-                  : "Preparar Facebook"}
-          </button>
-          {facebookBrowser.browserOpen && (
-            <button
-              type="button"
-              className="text-button"
-              onClick={() => changeFacebookBrowser("close")}
-              disabled={Boolean(busy) || facebookBrowser.extracting}
-            >
-              {busy === "facebook-browser-close" ? "Cerrando..." : "Cerrar navegador"}
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="facebook-target-bar">
-        <div>
-          <span>Playwright leerá esta URL desde la sesión local de Edge</span>
-          <a href={post.url} target="_blank" rel="noreferrer">{post.url}</a>
-        </div>
-        <button
-          type="button"
-          className="button secondary"
-          onClick={extractContext}
-          disabled={
-            Boolean(busy) ||
-            facebookBrowser.extracting ||
-            !configurationEditable
-          }
-        >
-          {busy === "facebook-extract-context"
-            ? "Leyendo descripción..."
-            : "Obtener contexto"}
-        </button>
-      </div>
-
-      <form className="facebook-configuration" onSubmit={generateDrafts}>
-        <section className="facebook-context-panel">
-          <div className="subheading">
-            <span>01</span>
-            <div>
-              <strong>Descripción editable</strong>
-              <small>Texto completo leído desde la sesión local de Facebook mediante Playwright.</small>
-            </div>
-          </div>
-          <label className="field">
-            <span>Contexto que recibirá DeepSeek</span>
-            <textarea
-              value={context}
-              onChange={(event) => setContext(event.target.value)}
-              minLength={5}
-              maxLength={1200}
-              rows={7}
-              placeholder="Extrae el contexto o descríbelo manualmente."
-              disabled={!configurationEditable}
-              required
-            />
-            <small className="field-counter">{context.length}/1200</small>
-          </label>
-        </section>
-
-        {rotation ? (
-          <section className="facebook-devices-panel facebook-fixed-device-summary">
-            <strong>{deviceIds.length} dispositivos fijados para esta publicación</strong>
-            <small>La rotación usa el mismo grupo en todas las publicaciones.</small>
-            {invalidDeviceIds.length > 0 && (
-              <p className="inline-error">
-                {invalidDeviceIds.length} dispositivo(s) deben prepararse antes de iniciar.
-              </p>
-            )}
-          </section>
-        ) : (
-          <section className="facebook-devices-panel">
-            <div className="subheading">
-              <span>02</span>
-              <div>
-                <strong>Dispositivos participantes</strong>
-                <small>
-                  {hasDevicePlan
-                    ? "Grupo fijado al crear la cola; cada dispositivo participa en un solo enlace."
-                    : "Solo conectados, con Facebook y preparación Appium vigente."}
-                </small>
-              </div>
-            </div>
-            <div className="facebook-device-list">
-              {eligibleDevices.length ? (
-                eligibleDevices.map((device) => (
-                  <label key={device.id} className="facebook-device-option">
-                    <input
-                      type="checkbox"
-                      checked={deviceIds.includes(device.id)}
-                      onChange={() => toggleDevice(device.id)}
-                      disabled={!configurationEditable || hasDevicePlan}
-                    />
-                    <span>
-                      <strong>{device.model}</strong>
-                      <small>{device.id}</small>
-                    </span>
-                  </label>
-                ))
-              ) : (
-                <p className="inline-error">No hay dispositivos Facebook listos.</p>
-              )}
-            </div>
-            <div className="facebook-device-total">
-              <span>Seleccionados</span>
-              <strong>{deviceIds.length}</strong>
-            </div>
-            {invalidDeviceIds.length > 0 && (
-              <div className="inline-error invalid-device-warning">
-                <span>
-                  {invalidDeviceIds.length} dispositivo(s) dejaron de estar listos. Esto no impide
-                  generar textos; deberán estar listos antes de ejecutar la rotación.
-                </span>
-                {configurationEditable && !hasDevicePlan && (
-                  <button type="button" className="text-button" onClick={removeInvalidDevices}>
-                    Retirar no listos
-                  </button>
-                )}
-              </div>
-            )}
-          </section>
-        )}
-
-        <section className="facebook-allocation-panel">
-          <div className="subheading">
-            <span>Comentario</span>
-            <div>
-              <strong>Instrucciones para los comentarios</strong>
-              <small>La distribución debe cubrir todos los dispositivos fijados.</small>
-            </div>
-          </div>
-          <div className="facebook-allocation-list">
-            {allocations.map((allocation, index) => (
-              <div className="facebook-allocation-row" key={allocation.id}>
-                <label className="field">
-                  <span>Intención {index + 1}</span>
-                  <input
-                    list={intentOptionsId}
-                    value={allocation.intent}
-                    onChange={(event) =>
-                      updateAllocation(allocation.id, { intent: event.target.value })
-                    }
-                    minLength={3}
-                    maxLength={300}
-                    disabled={!configurationEditable}
-                    required
-                  />
-                  <small>
-                    {facebookIntentOptions.find(
-                      ([value]) => value === allocation.intent,
-                    )?.[1] || "Intención personalizada."}
-                  </small>
-                </label>
-                <label className="field">
-                  <span>Tono</span>
-                  <select
-                    value={allocation.tone}
-                    onChange={(event) =>
-                      updateAllocation(allocation.id, {
-                        tone: event.target.value as FacebookAllocation["tone"],
-                      })
-                    }
-                    disabled={!configurationEditable}
-                  >
-                    {tones.map(([value, label]) => (
-                      <option value={value} key={value}>{label}</option>
-                    ))}
-                  </select>
-                  <small>{tones.find(([value]) => value === allocation.tone)?.[2]}</small>
-                </label>
-                <label className="field">
-                  <span>Cantidad</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={100}
-                    value={allocation.count}
-                    onChange={(event) =>
-                      updateAllocation(allocation.id, {
-                        count: Number(event.target.value),
-                      })
-                    }
-                    disabled={!configurationEditable}
-                    required
-                  />
-                </label>
-                {allocations.length > 1 && configurationEditable && (
-                  <button
-                    type="button"
-                    className="text-button danger-text"
-                    onClick={() =>
-                      setAllocations((current) =>
-                        current.filter((item) => item.id !== allocation.id),
-                      )
-                    }
-                  >
-                    Quitar
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-          <datalist id={intentOptionsId}>
-            {facebookIntentOptions.map(([value, description]) => (
-              <option value={value} key={value}>{description}</option>
-            ))}
-          </datalist>
-          {configurationEditable && (
-            <button
-              type="button"
-              className="button secondary"
-              onClick={() =>
-                setAllocations((current) => [
-                  ...current,
-                  {
-                    id: crypto.randomUUID(),
-                    intent: "Elogio o Apoyo",
-                    tone: "dulce-calido",
-                    count: 1,
-                  },
-                ])
-              }
-            >
-              Agregar intención
-            </button>
-          )}
-          <div className={`facebook-allocation-total ${allocatedCount === deviceIds.length ? "ok" : "mismatch"}`}>
-            <span>Distribuidos {allocatedCount} / {deviceIds.length}</span>
-            <strong>{allocatedCount === deviceIds.length ? "Coincide" : "Ajusta cantidades"}</strong>
-          </div>
-          {editable && !draftsComplete && (
-            <button
-              className="button ink full"
-              disabled={
-                Boolean(busy) ||
-                !deepSeekConfigured ||
-                context.trim().length < 5 ||
-                !deviceIds.length ||
-                allocatedCount !== deviceIds.length
-              }
-            >
-              {busy === "facebook-generate-batch"
-                ? `Generando ${missingDraftCount || deviceIds.length} comentario(s)...`
-                : generationStarted
-                  ? `Reintentar ${missingDraftCount} comentario(s) pendiente(s)`
-                   : "Generar todos en una llamada"}
-            </button>
-          )}
-        </section>
-      </form>
-
-      {post.assignments.length > 0 && (
-        <section className="facebook-review-panel">
-          <div className="subheading">
-            <span>Revisión</span>
-            <div>
-              <strong>Borradores por dispositivo</strong>
-              <small>DeepSeek genera todos los comentarios de esta publicación en una sola llamada.</small>
-            </div>
-          </div>
-          <div className="facebook-comment-list">
-            {post.assignments.map((assignment) => (
-              <article className="facebook-comment-card" key={assignment.id}>
-                <header>
-                  <div>
-                    <strong>{assignment.device_id}</strong>
-                    <span>{assignment.intent} · {assignment.tone}</span>
-                  </div>
-                    <span className={`pill ${assignment.status}`}>
-                      {assignment.status === "draft"
-                      ? "Listo"
-                      : assignment.status === "sent"
-                        ? "Enviado"
-                        : assignment.status === "failed"
-                          ? "Falló"
-                          : assignment.status === "outcome_unknown"
-                            ? "Verificar"
-                          : assignment.status === "approved"
-                            ? "Listo"
-                            : assignment.status === "running"
-                              ? "Ejecutando"
-                              : "Generando"}
-                  </span>
-                </header>
-                {assignment.draft ? (
-                  <label className="field">
-                    <span>Comentario</span>
-                    <textarea
-                      value={assignment.draft.text}
-                      minLength={2}
-                      maxLength={500}
-                      rows={3}
-                      readOnly
-                    />
-                  </label>
-                ) : (
-                  <p className="inline-error">No se generó un borrador para este dispositivo.</p>
-                )}
-                {assignment.error && <p className="inline-error">{assignment.error}</p>}
-                {reconcilableAssignments.some((item) => item.id === assignment.id) && (
-                  <label className="field">
-                    <span>Resultado observado en Facebook</span>
-                    <select
-                      value={verifiedOutcomes[assignment.id] || ""}
-                      onChange={(event) =>
-                        setVerifiedOutcomes((current) => ({
-                          ...current,
-                          [assignment.id]: event.target.value as "" | "sent" | "not_sent",
-                        }))
-                      }
-                    >
-                      <option value="">Selecciona después de verificar</option>
-                      <option value="sent">El comentario sí aparece</option>
-                      <option value="not_sent">El comentario no aparece</option>
-                    </select>
-                  </label>
-                )}
-              </article>
-            ))}
-          </div>
-
-          {post.status === "approved" && !rotation && (
-            <div className="facebook-execution-bar">
-              <div>
-                <strong>Ejecución escalonada</strong>
-                <span>
-                  {pendingExecutionCount} dispositivo(s) se ejecutarán uno por uno, con una pausa
-                  aleatoria antes del siguiente.
-                </span>
-              </div>
-              <div className="facebook-execution-controls">
-                <div className="facebook-timing-grid">
-                  <label className="field">
-                    <span>Pausa mínima</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={600}
-                      step={1}
-                      value={minDelaySeconds}
-                      onChange={(event) => setMinDelaySeconds(event.target.value)}
-                      disabled={Boolean(busy)}
-                    />
-                    <small>segundos</small>
-                  </label>
-                  <label className="field">
-                    <span>Pausa máxima</span>
-                    <input
-                      type="number"
-                      min={1}
-                      max={600}
-                      step={1}
-                      value={maxDelaySeconds}
-                      onChange={(event) => setMaxDelaySeconds(event.target.value)}
-                      disabled={Boolean(busy)}
-                    />
-                    <small>segundos</small>
-                  </label>
-                </div>
-                <button
-                  type="button"
-                  className="button danger"
-                  onClick={executeAll}
-                  disabled={
-                    Boolean(busy) ||
-                    invalidAssignmentIds.length > 0 ||
-                    !validTiming
-                  }
-                >
-                  {busy === "facebook-execute-batch"
-                    ? "Ejecutando en secuencia..."
-                    : "Ejecutar con pausas aleatorias"}
-                </button>
-              </div>
-              {invalidAssignmentIds.length > 0 && (
-                <div className="inline-error invalid-device-warning">
-                  <span>
-                    Hay {invalidAssignmentIds.length} dispositivo(s) no listos. Prepáralos antes
-                    de ejecutar o continúa con la siguiente publicación.
-                  </span>
-                  <button type="button" className="text-button" onClick={skipPost}>
-                    Omitir publicación
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
-
-          {reconcilableAssignments.length > 0 && (
-            <div className="facebook-reconciliation-bar">
-              <div>
-                <strong>Verificación manual requerida</strong>
-                <span>Revisa cada dispositivo y registra si el comentario aparece en Facebook.</span>
-              </div>
-              <button
-                type="button"
-                className="button primary"
-                onClick={reconcileOutcomes}
-                disabled={
-                  Boolean(busy) ||
-                  reconcilableAssignments.some(
-                    (assignment) => !verifiedOutcomes[assignment.id],
-                  )
-                }
-              >
-                {busy === "facebook-reconcile-post" ? "Guardando..." : "Guardar verificación"}
-              </button>
-            </div>
-          )}
-        </section>
-      )}
-
-      {post.error && <div className="facebook-post-error">{post.error}</div>}
-      {post.status === "partial_failed" && (
-        <div className="facebook-skip-bar">
-          <span>
-            {rotationStarted
-              ? "La rotación ya publicó acciones; conserva esta cola y revisa sus resultados."
-              : "Corrige y regenera si aún no hubo envíos, o avanza dejando registrados los resultados."}
-          </span>
-          <button
-            type="button"
-            className="button secondary"
-            onClick={skipPost}
-            disabled={Boolean(busy) || rotationStarted}
-          >
-            {rotationStarted ? "La rotación ya comenzó" : "Continuar con la siguiente URL"}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function FacebookBatchWorkspace(props: WorkspaceProps) {
-  const [urlsText, setUrlsText] = useState("");
-  const [replacing, setReplacing] = useState(false);
-  const [selectedPostId, setSelectedPostId] = useState<string | null>(null);
-  const [maxDelayMinutes, setMaxDelayMinutes] = useState("60");
-  const [scheduledStepAt, setScheduledStepAt] = useState<string | null>(null);
-  const [timerNow, setTimerNow] = useState(() => Date.now());
-  const rotationExecutionPending = useRef(false);
-  useEffect(() => {
-    if (!scheduledStepAt) return;
-    const interval = window.setInterval(() => setTimerNow(Date.now()), 1_000);
-    return () => window.clearInterval(interval);
-  }, [scheduledStepAt]);
-  const batch = props.snapshot?.facebookBatch ?? null;
-  const rotation = batch?.plan_version === "rotation_v1";
-  const legacyCurrentPost = batch?.posts.find(
-    (post) => !["completed", "skipped"].includes(post.status),
-  );
-  const currentPost = rotation
-    ? batch?.posts.find((post) => post.id === selectedPostId) ||
-      batch?.posts.find((post) => !["completed", "skipped"].includes(post.status)) ||
-      batch?.posts[0]
-    : legacyCurrentPost;
-  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  const prepared = new Set(
-    props.snapshot?.setup.devices
-      .filter(
-        (status) =>
-          status.status === "ready" &&
-          status.setup_revision === props.snapshot?.setup.revision,
-      )
-      .map((status) => status.device_id) ?? [],
-  );
-  const configuredDevices = (() => {
-    const seenHardwareIds = new Set<string>();
-    return props.snapshot?.devices
-      .filter(
-        (device) =>
-          device.state === "device" &&
-          isConfiguredFacebookDevice(device.id) &&
-          Boolean(device.profile) &&
-          Boolean(device.capabilities?.facebook),
-      )
-      .sort(
-        (left, right) =>
-          (left.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) -
-            (right.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) ||
-          left.id.localeCompare(right.id),
-      )
-      .filter((device) => {
-        const hardwareId = device.capabilities?.hardwareId;
-        if (!hardwareId || seenHardwareIds.has(hardwareId)) return false;
-        seenHardwareIds.add(hardwareId);
-        return true;
-      }) ?? [];
-  })();
-  const eligibleDevices = configuredDevices.filter((device) => prepared.has(device.id));
-  const completed = batch?.posts.filter(
-    (post) => post.status === "completed" || post.status === "skipped",
-  ).length ?? 0;
-  const numericMaxDelayMinutes = Number(maxDelayMinutes);
-  const validRotationTiming =
-    Number.isInteger(numericMaxDelayMinutes) &&
-    numericMaxDelayMinutes >= 0 &&
-    numericMaxDelayMinutes <= 1_440;
-  const scheduledSeconds = scheduledStepAt
-    ? Math.max(0, Math.ceil((Date.parse(scheduledStepAt) - timerNow) / 1_000))
-    : null;
-  const showQueueForm = !batch || replacing;
-  const queueUrls = Array.from(
-    new Set(
-      urlsText
-        .split(/\r?\n/)
-        .map((url) => url.trim())
-        .filter(Boolean),
-    ),
-  );
-  const devicePlanReady =
-    queueUrls.length > 0 &&
-    queueUrls.length <= 50 &&
-    eligibleDevices.length <= 100 &&
-    eligibleDevices.length > 0;
-  const rotationPosts = batch?.posts.filter((post) => post.status !== "skipped") ?? [];
-  const rotationPrepared = Boolean(
-    rotation &&
-    batch &&
-    rotationPosts.length > 0 &&
-    rotationPosts.every(
-      (post) =>
-        post.assignments.length === batch.device_ids.length &&
-        post.assignments.every(
-          (assignment) =>
-            assignment.draft &&
-            ["approved", "sent", "failed"].includes(assignment.status),
-        ),
-    ),
-  );
-  const rotationHasPending = rotationPosts.some((post) =>
-    post.assignments.some((assignment) => assignment.status === "approved"),
-  );
-
-  async function createBatch(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await props.runAction(
-      "facebook-create-batch",
-      async () => {
-        await api("/api/facebook/batches", {
-          method: "POST",
-          body: JSON.stringify({
-            urls: queueUrls,
-            deviceIds: eligibleDevices.map((device) => device.id),
-          }),
-        });
-        setReplacing(false);
-        setUrlsText("");
-      },
-      `Rotación creada: se abrió la primera publicación asignada en ${eligibleDevices.length} dispositivos; revisa las filas antes de iniciar.`,
-    );
-  }
-
-  async function reopenDevice(deviceId: string) {
-    if (!batch) return;
-    await props.runAction(
-      `facebook-reopen-${deviceId}`,
-      () =>
-        api(
-          `/api/facebook/batches/${batch.id}/devices/${encodeURIComponent(deviceId)}/reopen`,
-          { method: "POST" },
-        ),
-      "Facebook se cerró y abrió de nuevo en la publicación asignada.",
-    );
-  }
-
-  async function executeRotation() {
-    if (!batch || rotationExecutionPending.current) return;
-    rotationExecutionPending.current = true;
-    try {
-      setScheduledStepAt(batch.next_execution_at);
-      await props.runAction(
-        "facebook-execute-rotation",
-        async (signal) => {
-          let current = batch;
-          while (current.status === "active" && current.current_round < current.total_rounds) {
-            signal.throwIfAborted();
-            setScheduledStepAt(current.next_execution_at);
-            const waitMilliseconds = current.next_execution_at
-              ? Math.max(0, Date.parse(current.next_execution_at) - Date.now())
-              : 0;
-            if (waitMilliseconds) {
-              await new Promise<void>((resolve, reject) => {
-                const timeout = window.setTimeout(() => {
-                  signal.removeEventListener("abort", abort);
-                  resolve();
-                }, waitMilliseconds);
-                const abort = () => {
-                  window.clearTimeout(timeout);
-                  reject(signal.reason);
-                };
-                signal.addEventListener("abort", abort, { once: true });
-              });
-            }
-            setScheduledStepAt(null);
-            signal.throwIfAborted();
-            const result = await api<{ batch: FacebookBatch }>(
-              `/api/facebook/batches/${batch.id}/execute`,
-              {
-                method: "POST",
-                signal,
-                body: JSON.stringify({
-                  maxDelayMinutes: numericMaxDelayMinutes,
-                }),
-              },
-            );
-            current = result.batch;
-          }
-          return current;
+    case "set-device-search":
+      return { ...state, demoOperations: { ...state.demoOperations, deviceSearch: action.value } };
+    case "toggle-device-selection": {
+      const selected = state.demoOperations.selectedDeviceIds.includes(action.deviceId);
+      return {
+        ...state,
+        demoOperations: {
+          ...state.demoOperations,
+          selectedDeviceIds: selected
+            ? state.demoOperations.selectedDeviceIds.filter((id) => id !== action.deviceId)
+            : [...state.demoOperations.selectedDeviceIds, action.deviceId],
         },
-        "La rotación terminó y registró cada comentario publicado.",
-      );
-    } finally {
-      rotationExecutionPending.current = false;
-      setScheduledStepAt(null);
+      };
     }
+    case "select-visible-devices": {
+      const visible = new Set(action.deviceIds);
+      const selectedDeviceIds = action.selected
+        ? [...new Set([...state.demoOperations.selectedDeviceIds, ...action.deviceIds])]
+        : state.demoOperations.selectedDeviceIds.filter((id) => !visible.has(id));
+      return { ...state, demoOperations: { ...state.demoOperations, selectedDeviceIds } };
+    }
+    case "open-device-editor": {
+      const device = state.devices.find((item) => item.id === action.deviceId);
+      if (!device) return state;
+      return {
+        ...state,
+        activeModal: { type: "edit-device", deviceId: device.id },
+        demoOperations: {
+          ...state.demoOperations,
+          deviceEditor: { alias: device.alias, order: device.order, serial: device.serial, systemPort: device.systemPort, errors: {} },
+        },
+      };
+    }
+    case "update-device-editor": {
+      const editor = state.demoOperations.deviceEditor;
+      if (!editor) return state;
+      return {
+        ...state,
+        demoOperations: { ...state.demoOperations, deviceEditor: { ...editor, [action.field]: action.value, errors: {} } },
+      };
+    }
+    case "save-device": {
+      const validation = validateDeviceEditor(state);
+      if (!validation) return state;
+      if (Object.keys(validation.errors).length) {
+        return {
+          ...state,
+          demoOperations: {
+            ...state.demoOperations,
+            deviceEditor: { ...validation.editor, errors: validation.errors },
+          },
+        };
+      }
+      return {
+        ...state,
+        devices: state.devices.map((item) => {
+          if (item.id !== validation.deviceId) return item;
+          const changedIdentity = item.serial !== validation.editor.serial.trim() || item.systemPort !== validation.editor.systemPort;
+          return {
+            ...item,
+            alias: validation.editor.alias.trim(),
+            order: validation.editor.order,
+            serial: validation.editor.serial.trim(),
+            systemPort: validation.editor.systemPort,
+            preparation: changedIdentity ? "not_ready" : item.preparation,
+            preparationStep: changedIdentity ? undefined : item.preparationStep,
+          };
+        }),
+        activeModal: null,
+        notice: { kind: "status", title: "Dispositivo actualizado", message: "Los cambios solo existen en esta sesión de demostración." },
+        demoOperations: { ...state.demoOperations, deviceEditor: null },
+      };
+    }
+    case "request-device-retirement": {
+      const device = state.devices.find((item) => item.id === action.deviceId);
+      if (!device) return state;
+      if (device.activity === "available") {
+        return {
+          ...state,
+          devices: state.devices.filter((item) => item.id !== device.id),
+          notice: { kind: "status", title: "Dispositivo retirado", message: "Sus referencias históricas se conservaron." },
+        };
+      }
+      return { ...state, activeModal: { type: "retire-device", deviceId: device.id } };
+    }
+    case "confirm-device-retirement": {
+      const modal = state.activeModal;
+      if (modal?.type !== "retire-device") return state;
+      return {
+        ...state,
+        devices: state.devices.map((item) => item.id === modal.deviceId ? { ...item, retireAfterCampaign: true } : item),
+        activeModal: null,
+        notice: { kind: "status", title: "Retiro programado", message: "El equipo se retirará al finalizar; la campaña no fue cancelada." },
+      };
+    }
+    case "start-device-preparation":
+      return {
+        ...state,
+        devices: state.devices.map((item) => action.deviceIds.includes(item.id)
+          ? { ...item, preparation: "preparing", preparationStep: preparationSteps[0] }
+          : item),
+        notice: { kind: "status", title: "Preparación simulada iniciada", message: `${action.deviceIds.length} equipos avanzan de forma independiente.` },
+      };
+    case "advance-device-preparation":
+      return { ...state, devices: state.devices.map((item) => item.id === action.deviceId ? { ...item, preparationStep: action.step } : item) };
+    case "finish-device-preparation":
+      return {
+        ...state,
+        devices: state.devices.map((item) => item.id === action.deviceId
+          ? {
+              ...item,
+              preparation: action.failed ? "failed" : "ready",
+              preparationStep: action.failed ? "Falló la lectura de jerarquía" : "Listo",
+              connection: action.failed ? item.connection : "connected",
+              capabilities: action.failed ? item.capabilities : { facebook: "ready", tiktok: "ready" },
+              lastPreparation: action.failed ? item.lastPreparation : state.demoOperations.now,
+            }
+          : item),
+      };
+    case "set-campaign-devices":
+      return updateDraft(state, action.platform, (draft) => {
+        const next = resetWorkflow({ ...draft, selectedDeviceIds: action.deviceIds });
+        if (next.distribution.length === 1) next.distribution = [{ ...next.distribution[0], count: action.deviceIds.length }];
+        return next;
+      });
+    case "set-campaign-urls": {
+      const parsed = parseCampaignUrls(action.value, action.platform);
+      return updateDraft(state, action.platform, (draft) => resetWorkflow({
+        ...draft,
+        urlInput: action.value,
+        urls: parsed.urls,
+        urlErrors: parsed.errors,
+      }));
+    }
+    case "remove-campaign-url":
+      return updateDraft(state, action.platform, (draft) => {
+        const urls = draft.urls.filter((_, index) => index !== action.index);
+        return resetWorkflow({ ...draft, urls, urlInput: urls.join("\n"), urlErrors: [] });
+      });
+    case "move-campaign-url":
+      return updateDraft(state, action.platform, (draft) => {
+        const target = action.index + action.direction;
+        if (target < 0 || target >= draft.urls.length) return draft;
+        const urls = [...draft.urls];
+        [urls[action.index], urls[target]] = [urls[target], urls[action.index]];
+        return resetWorkflow({ ...draft, urls, urlInput: urls.join("\n") });
+      });
+    case "toggle-campaign-action":
+      return updateDraft(state, action.platform, (draft) => resetWorkflow({
+        ...draft,
+        actions: { ...draft.actions, [action.action]: !draft.actions[action.action] },
+      }));
+    case "add-distribution":
+      return updateDraft(state, action.platform, (draft) => resetWorkflow({
+        ...draft,
+        distribution: [...draft.distribution, { id: `${action.platform}-intent-${Date.now()}`, intention: "Nueva intención", tone: "Cercano", count: 0 }],
+      }));
+    case "remove-distribution":
+      return updateDraft(state, action.platform, (draft) => resetWorkflow({
+        ...draft,
+        distribution: draft.distribution.filter((item) => item.id !== action.id),
+      }));
+    case "update-distribution":
+      return updateDraft(state, action.platform, (draft) => resetWorkflow({
+        ...draft,
+        distribution: draft.distribution.map((item) => item.id === action.id ? { ...item, [action.field]: action.value } : item),
+      }));
+    case "prepare-campaign":
+      return updateDraft(state, action.platform, (draft) => {
+        const built = buildAssignments(draft);
+        return {
+          ...draft,
+          ...built,
+          status: draft.actions.comment ? "preparing" : "ready",
+          selectedPostId: built.posts[0]?.id ?? null,
+          scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+        };
+      });
+    case "advance-post":
+      return updateDraft(state, action.platform, (draft) => {
+        const posts = draft.posts.map((post) => {
+          if (post.id !== action.postId) return post;
+          if (action.stage === "failed") {
+            return {
+              ...post,
+              status: "partial_failed" as const,
+              contextStatus: "failed" as const,
+              error: "La extracción simulada falló de forma aislada.",
+              comments: post.comments.map((comment) => ({ ...comment, status: "failed" as const, error: "Sin contexto para generar" })),
+            };
+          }
+          if (action.stage === "context") {
+            const context = `Contexto simulado para la publicación ${post.position}: tema principal, tono y señales útiles para respuestas naturales.`;
+            return {
+              ...post,
+              status: "generating" as const,
+              contextStatus: "ready" as const,
+              context,
+              extractedContext: context,
+              contextSource: "extracted" as const,
+              extractedAt: state.demoOperations.now,
+              elapsedSeconds: 4 + post.position,
+              comments: post.comments.map((comment) => ({ ...comment, status: "generating" as const })),
+            };
+          }
+          return {
+            ...post,
+            status: "ready" as const,
+            comments: post.comments.map((comment, index) => ({
+              ...comment,
+              text: `${comment.tone === "Breve" ? "Buena propuesta" : "Me gustó esta publicación y la forma clara de presentar la idea"}${index % 2 ? "." : ", gracias por compartirla."}`,
+              status: "ready" as const,
+              stale: false,
+              error: undefined,
+            })),
+          };
+        });
+        const finished = posts.every((post) => post.status === "ready" || post.status === "partial_failed");
+        return { ...draft, posts, status: finished ? "ready" : draft.status };
+      });
+    case "select-post":
+      return updateDraft(state, action.platform, (draft) => ({ ...draft, selectedPostId: action.postId }));
+    case "edit-context":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+        posts: draft.posts.map((post) => post.id === action.postId
+          ? {
+              ...post,
+              context: action.value,
+              contextStatus: "edited",
+              contextSource: "manual",
+              status: "context_ready",
+              error: undefined,
+              comments: post.comments.map((comment) => ({ ...comment, stale: true })),
+            }
+          : post),
+      }));
+    case "restore-context":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+        posts: draft.posts.map((post) => post.id === action.postId
+          ? { ...post, context: post.extractedContext, contextStatus: "ready", contextSource: "extracted", comments: post.comments.map((comment) => ({ ...comment, stale: true })) }
+          : post),
+      }));
+    case "retry-context":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        status: "preparing",
+        posts: draft.posts.map((post) => post.id === action.postId
+          ? { ...post, status: "extracting", contextStatus: "extracting", error: undefined }
+          : post),
+      }));
+    case "edit-comment":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+        posts: draft.posts.map((post) => post.id === action.postId
+          ? { ...post, comments: post.comments.map((comment) => comment.id === action.commentId ? { ...comment, text: action.value, status: "edited", stale: false } : comment) }
+          : post),
+      }));
+    case "update-comment-profile":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+        posts: draft.posts.map((post) => post.id === action.postId
+          ? {
+              ...post,
+              comments: post.comments.map((comment) => comment.id === action.commentId
+                ? {
+                    ...comment,
+                    intention: action.field === "intention" ? action.value : comment.intention,
+                    tone: action.field === "tone" ? action.value : comment.tone,
+                    stale: true,
+                  }
+                : comment),
+            }
+          : post),
+      }));
+    case "start-comment-regeneration":
+      return updateDraft({ ...state, activeModal: null }, action.platform, (draft) => ({
+        ...draft,
+        scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+        posts: draft.posts.map((post) => post.id === action.postId
+          ? { ...post, comments: post.comments.map((comment) => action.commentIds.includes(comment.id) ? { ...comment, status: "regenerating", stale: false } : comment) }
+          : post),
+      }));
+    case "finish-comment-regeneration":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        posts: draft.posts.map((post) => post.id === action.postId
+          ? {
+              ...post,
+              status: "ready",
+              comments: post.comments.map((comment) => action.commentIds.includes(comment.id)
+                ? { ...comment, text: `Nueva versión ${comment.tone.toLowerCase()} para esta publicación.`, status: "ready", stale: false, error: undefined }
+                : comment),
+            }
+          : post),
+      }));
+    case "request-regenerate-post": {
+      const draft = state[draftKey(action.platform)];
+      const post = draft.posts.find((item) => item.id === action.postId);
+      if (!post) return state;
+      return post.comments.some((comment) => comment.status === "edited")
+        ? { ...state, activeModal: { type: "regenerate-post", platform: action.platform, postId: action.postId } }
+        : state;
+    }
+    case "set-schedule":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        [action.field]: action.field === "maxWaitMinutes"
+          ? Math.min(1440, Math.max(0, Number(action.value) || 0))
+          : action.value,
+        scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
+      } as CampaignDraft));
+    case "generate-schedule":
+      return updateDraft(state, action.platform, (draft) => ({
+        ...draft,
+        assignments: scheduleAssignments(draft, state.demoOperations.now),
+        posts: draft.posts.map((post) => ({ ...post, status: post.status === "ready" ? "scheduled" : post.status })),
+        status: "scheduled",
+        scheduleStatus: "valid",
+      }));
+    case "set-review-group":
+      return updateDraft(state, action.platform, (draft) => ({ ...draft, reviewGrouping: action.value }));
+    case "request-start-campaign":
+      return { ...state, activeModal: { type: "start-campaign", platform: action.platform } };
+    case "start-campaign": {
+      const key = draftKey(action.platform);
+      const draft = state[key];
+      const id = `CMP-DEMO-${action.platform === "facebook" ? "FB" : "TT"}-${state.history.length + 1}`;
+      const assignments = draft.assignments.map((assignment) => {
+        const post = draft.posts.find((item) => item.id === assignment.postId);
+        const device = state.devices.find((item) => item.id === assignment.deviceId);
+        const comment = post?.comments.find((item) => item.deviceId === assignment.deviceId);
+        return {
+          id: assignment.id,
+          postUrl: post?.url ?? "",
+          deviceId: assignment.deviceId,
+          deviceAlias: device?.alias ?? "Dispositivo retirado",
+          deviceSerial: device?.serial ?? "—",
+          plannedAt: assignment.scheduledAt ?? state.demoOperations.now,
+          actualAt: null,
+          status: "queued" as const,
+          comment: comment?.text ?? null,
+          context: post?.context ?? "No requerido",
+          likeResult: "not_requested" as const,
+          commentResult: "not_requested" as const,
+          attempts: 0,
+          cleanup: "session_closed" as const,
+        };
+      });
+      return {
+        ...state,
+        [key]: {
+          ...draft,
+          status: "running",
+          scheduleStatus: "frozen",
+          posts: draft.posts.map((post) => ({ ...post, status: "running" })),
+          assignments: draft.assignments.map((assignment) => ({ ...assignment, status: "running", actualAt: state.demoOperations.now })),
+        },
+        devices: state.devices.map((item) => draft.selectedDeviceIds.includes(item.id) ? { ...item, activity: "busy" } : item),
+        history: [{
+          id,
+          platform: action.platform,
+          startedAt: state.demoOperations.now,
+          deviceIds: draft.selectedDeviceIds,
+          postUrls: draft.urls,
+          actions: draft.actions,
+          status: "running",
+          completedAssignments: 0,
+          totalAssignments: assignments.length,
+          assignments,
+        }, ...state.history],
+        activeModal: null,
+        notice: { kind: "status", title: "Campaña simulada iniciada", message: "MODO PROTOTIPO: no se realizó ninguna solicitud HTTP ni acción pública." },
+      };
+    }
+    case "advance-running-campaign": {
+      const key = draftKey(action.platform);
+      const draft = state[key];
+      const active = state.history.find((item) => item.platform === action.platform && item.status === "running");
+      if (!active) return state;
+      const limit = Math.max(1, Math.floor(active.assignments.length / 2));
+      return {
+        ...state,
+        [key]: {
+          ...draft,
+          assignments: draft.assignments.map((item, index) => index < limit ? { ...item, status: "completed" } : item),
+          posts: draft.posts.map((post, index) => index === 0 ? { ...post, status: "completed" } : post),
+        },
+        history: state.history.map((campaign) => campaign.id === active.id
+          ? {
+              ...campaign,
+              completedAssignments: limit,
+              assignments: campaign.assignments.map((item, index) => index < limit
+                ? { ...item, status: "completed", actualAt: state.demoOperations.now, likeResult: campaign.actions.like ? "ok" : "not_requested", commentResult: campaign.actions.comment ? "ok" : "not_requested", attempts: 1, cleanup: "home_confirmed" }
+                : { ...item, status: "running", actualAt: state.demoOperations.now, attempts: 1 })
+            }
+          : campaign),
+      };
+    }
+    case "clear-campaign": {
+      const next = createInitialState(state.demoOperations.now)[draftKey(action.platform)];
+      return updateDraft(state, action.platform, () => ({
+        ...next,
+        selectedDeviceIds: [],
+        urlInput: "",
+        urls: [],
+        distribution: [{ ...next.distribution[0], count: 0 }],
+      }));
+    }
+    case "set-history-filter":
+      return {
+        ...state,
+        demoOperations: {
+          ...state.demoOperations,
+          historyFilters: { ...state.demoOperations.historyFilters, [action.field]: action.value },
+        },
+      };
+    case "open-history":
+      return { ...state, activeModal: { type: "history-detail", campaignId: action.campaignId } };
+    case "request-abort":
+      return {
+        ...state,
+        activeModal: { type: "abort-all" },
+        demoOperations: { ...state.demoOperations, abort: { active: false, step: 0, deviceCleanup: {} } },
+      };
+    case "start-abort": {
+      const busyDevices = state.devices.filter((item) => item.activity === "busy");
+      return {
+        ...state,
+        facebookDraft: ["running", "preparing", "scheduled"].includes(state.facebookDraft.status) ? { ...state.facebookDraft, status: "cancellation_requested" } : state.facebookDraft,
+        tiktokDraft: ["running", "preparing", "scheduled"].includes(state.tiktokDraft.status) ? { ...state.tiktokDraft, status: "cancellation_requested" } : state.tiktokDraft,
+        history: state.history.map((item) => item.status === "running" ? { ...item, status: "cancellation_requested" } : item),
+        demoOperations: {
+          ...state.demoOperations,
+          abort: { active: true, step: 0, deviceCleanup: Object.fromEntries(busyDevices.map((item) => [item.id, "pending"])) },
+        },
+      };
+    }
+    case "advance-abort":
+      return {
+        ...state,
+        demoOperations: {
+          ...state.demoOperations,
+          abort: {
+            ...state.demoOperations.abort,
+            step: action.step,
+            deviceCleanup: Object.fromEntries(Object.keys(state.demoOperations.abort.deviceCleanup).map((id, index) => [
+              id,
+              action.step < 2 ? "cancelling" : action.step < 4 ? "session_closed" : index === 0 ? "cleanup_unknown" : "home_confirmed",
+            ])),
+          },
+        },
+      };
+    case "finish-abort":
+      return {
+        ...state,
+        facebookDraft: state.facebookDraft.status === "cancellation_requested" ? { ...state.facebookDraft, status: "cancelled_with_cleanup_errors" } : state.facebookDraft,
+        tiktokDraft: state.tiktokDraft.status === "cancellation_requested" ? { ...state.tiktokDraft, status: "cancelled_with_cleanup_errors" } : state.tiktokDraft,
+        history: state.history.map((item) => item.status === "cancellation_requested"
+          ? { ...item, status: "cancelled_with_cleanup_errors", cancellationReason: "Aborto global simulado; un cleanup quedó incierto." }
+          : item),
+        devices: state.devices.map((item) => item.activity === "busy" ? { ...item, activity: item.id === "device-01" ? "recovery_required" : "available" } : item),
+        demoOperations: { ...state.demoOperations, abort: { ...state.demoOperations.abort, active: false, step: 5 } },
+        notice: { kind: "error", title: "Aborto finalizado con una advertencia", message: "Una confirmación Home quedó incierta. GenFarmer no fue afectado." },
+      };
+    case "close-modal":
+      return { ...state, activeModal: null, demoOperations: { ...state.demoOperations, deviceEditor: null } };
+    default:
+      return state;
   }
-
-  return (
-    <WorkspaceShell {...props} latest={latest}>
-      <div className="facebook-batch-workspace">
-        <header className="facebook-batch-header">
-          <div>
-            <p className="eyebrow">{rotation ? "Rotación por rondas" : "Cola progresiva"}</p>
-            <h3>
-              {rotation
-                ? "Cada dispositivo recorre todos los enlaces."
-                : "Todos los dispositivos, repartidos entre los enlaces."}
-            </h3>
-            <p>
-              {rotation
-                ? "Los enlaces avanzan en paralelo; dentro de cada enlace los dispositivos actúan uno por uno antes de rotar."
-                : "Cada dispositivo comenta una sola publicación y las ejecuciones se separan con pausas aleatorias configurables."}
-            </p>
-          </div>
-          {batch && (
-            <div className="facebook-batch-meter">
-              <span>{rotation ? "Acciones" : "Progreso"}</span>
-              <strong>
-                {rotation
-                  ? `${batch.progress.completed_assignments} / ${batch.progress.total_assignments}`
-                  : `${completed} / ${batch.posts.length}`}
-              </strong>
-              <div>
-                <span
-                  style={{
-                    width: `${rotation
-                      ? batch.progress.total_assignments
-                        ? (batch.progress.completed_assignments / batch.progress.total_assignments) * 100
-                        : 0
-                      : batch.posts.length
-                        ? (completed / batch.posts.length) * 100
-                        : 0}%`,
-                  }}
-                />
-              </div>
-            </div>
-          )}
-        </header>
-
-        {showQueueForm ? (
-          <form className="facebook-queue-form" onSubmit={createBatch}>
-            <div className="subheading">
-              <span>URL</span>
-              <div>
-                <strong>Lista de publicaciones</strong>
-                <small>Una URL HTTPS de Facebook por línea; se eliminan duplicados conservando el orden.</small>
-              </div>
-            </div>
-            <label className="field">
-              <span>Hasta 50 enlaces</span>
-              <textarea
-                value={urlsText}
-                onChange={(event) => setUrlsText(event.target.value)}
-                rows={8}
-                placeholder={"https://www.facebook.com/share/p/...\nhttps://fb.watch/..."}
-                required
-              />
-            </label>
-            <section className="facebook-batch-device-plan">
-              <div className="subheading">
-                <span>ADB</span>
-                <div>
-                    <strong>Equipos configurados</strong>
-                    <small>
-                      Al crear, los equipos listos abrirán por ADB su primera publicación asignada.
-                    </small>
-                </div>
-              </div>
-              <div className="facebook-ready-device-list">
-                {configuredDevices.length ? (
-                  configuredDevices.map((device) => {
-                    const isReady = prepared.has(device.id);
-                    return (
-                    <div
-                      key={device.id}
-                      className={`facebook-ready-device ${isReady ? "ready" : "not-ready"}`}
-                    >
-                      <strong>{device.profile?.alias || device.model}</strong>
-                      <small>{device.id}</small>
-                      <small>{isReady ? "Listo" : "Requiere preparación Appium"}</small>
-                    </div>
-                    );
-                  })
-                ) : (
-                  <p className="inline-error">No hay equipos Facebook configurados y conectados.</p>
-                )}
-              </div>
-              <div className="facebook-device-total">
-                <span>Listos / configurados</span>
-                <strong>{eligibleDevices.length} / {configuredDevices.length}</strong>
-              </div>
-            </section>
-            {!devicePlanReady && queueUrls.length > 0 && (
-              <p className="inline-error">
-                {queueUrls.length > 50
-                  ? "La cola admite hasta 50 enlaces."
-                  : "Se necesita al menos un dispositivo Facebook configurado y listo."}
-              </p>
-            )}
-            <div className="facebook-queue-actions">
-              {batch?.status === "active" && (
-                <button type="button" className="button secondary" onClick={() => setReplacing(false)}>
-                  Conservar cola actual
-                </button>
-              )}
-              <button
-                className="button primary"
-                disabled={Boolean(props.busy) || !devicePlanReady}
-              >
-                {props.busy === "facebook-create-batch" ? "Creando rotación..." : "Crear rotación de Facebook"}
-              </button>
-            </div>
-          </form>
-        ) : batch?.status !== "completed" && currentPost ? (
-          <>
-            <div className="facebook-queue-strip">
-              <div className="facebook-queue-items" role="list" aria-label="Estado de la cola">
-                {batch.posts.map((post) =>
-                  rotation ? (
-                    <button
-                      type="button"
-                      key={post.id}
-                      className={`facebook-queue-item ${post.id === currentPost.id ? "current" : ""} ${post.status}`}
-                      role="listitem"
-                      aria-current={post.id === currentPost.id ? "step" : undefined}
-                      aria-label={`Publicación ${post.position + 1}: ${facebookPostStatus(post.status)}`}
-                      title={`${post.planned_device_ids.length} dispositivo(s) en ${batch.total_rounds} rondas`}
-                      onClick={() => setSelectedPostId(post.id)}
-                      disabled={Boolean(props.busy)}
-                    >
-                      {post.position + 1}
-                    </button>
-                  ) : (
-                    <span
-                      key={post.id}
-                      className={`facebook-queue-item ${post.id === currentPost.id ? "current" : ""} ${post.status}`}
-                      role="listitem"
-                      aria-current={post.id === currentPost.id ? "step" : undefined}
-                      aria-label={`Publicación ${post.position + 1}: ${facebookPostStatus(post.status)}`}
-                      title={`${post.planned_device_ids.length} dispositivo(s) asignado(s)`}
-                    >
-                      {post.position + 1}
-                    </span>
-                  ),
-                )}
-              </div>
-              <button
-                type="button"
-                className="text-button"
-                onClick={() => setReplacing(true)}
-                disabled={rotation && batch.execution_started}
-                title={rotation && batch.execution_started ? "Una rotación con acciones públicas no puede reemplazarse." : undefined}
-              >
-                Reemplazar cola
-              </button>
-            </div>
-            {rotation && batch.devices.length > 0 && (
-              <section className="facebook-rotation-devices" aria-label="Dispositivos de la ronda actual">
-                <div className="subheading">
-                  <span>ADB</span>
-                  <div>
-                    <strong>Publicaciones abiertas</strong>
-                    <small>Reabrir cierra Facebook y vuelve a mostrar el destino asignado.</small>
-                  </div>
-                </div>
-                <div className="facebook-rotation-device-list">
-                  {batch.devices.map((item) => {
-                    const device = props.snapshot?.devices.find(
-                      (candidate) => candidate.id === item.device_id,
-                    );
-                    const post = batch.posts.find((candidate) => candidate.id === item.post_id);
-                    const reopening = props.busy === `facebook-reopen-${item.device_id}`;
-                    const scheduledLabel = item.scheduled_at
-                      ? `Espera hasta ${new Date(item.scheduled_at).toLocaleTimeString("es-PE", {
-                          hour: "2-digit",
-                          minute: "2-digit",
-                        })}`
-                      : null;
-                    const readyLabel = item.assignment_status === "sent"
-                      ? "Enviado"
-                      : item.open_error
-                        ? "Reintentar"
-                        : scheduledLabel || (item.opened_at ? "Lista" : "Abriendo");
-                    return (
-                      <article key={item.device_id} className="facebook-rotation-device">
-                        <div>
-                          <strong>{device?.profile?.alias || device?.model || item.device_id}</strong>
-                          <small>{item.device_id} · Publicación {(post?.position ?? 0) + 1}</small>
-                          {item.open_error && <small className="error-text">{item.open_error}</small>}
-                        </div>
-                        <span className={`pill ${item.open_error ? "failed" : item.assignment_status === "sent" || item.opened_at ? "succeeded" : "pending"}`}>
-                          {readyLabel}
-                        </span>
-                        <button
-                          type="button"
-                          className="text-button"
-                          onClick={() => reopenDevice(item.device_id)}
-                          disabled={Boolean(props.busy) || batch.execution_status === "running"}
-                        >
-                          {reopening ? "Reabriendo..." : "Reabrir"}
-                        </button>
-                      </article>
-                    );
-                  })}
-                </div>
-              </section>
-            )}
-            {rotation && (
-              <div className="facebook-execution-bar facebook-rotation-execution">
-                <div>
-                  <strong>
-                    {batch.execution_status === "running"
-                      ? `Ejecutando ronda ${Math.min(batch.current_round + 1, batch.total_rounds)} de ${batch.total_rounds}`
-                      : `Rotación ${batch.current_round} de ${batch.total_rounds} rondas completadas`}
-                  </strong>
-                  <span>
-                    Cada teléfono espera un tiempo propio entre cero y el máximo antes de comentar.
-                    {scheduledSeconds !== null && ` Próxima acción en ${scheduledSeconds} s.`}
-                  </span>
-                </div>
-                <div className="facebook-execution-controls">
-                  <div className="facebook-timing-grid facebook-rotation-timing-grid">
-                    <label className="field">
-                      <span>Máximo de espera</span>
-                      <input type="number" min={0} max={1440} value={maxDelayMinutes} onChange={(event) => setMaxDelayMinutes(event.target.value)} disabled={Boolean(props.busy) || batch.execution_status === "running"} />
-                      <small>minutos por dispositivo</small>
-                    </label>
-                  </div>
-                  <button
-                    type="button"
-                    className="button danger"
-                    onClick={executeRotation}
-                    disabled={
-                      Boolean(props.busy) ||
-                      batch.execution_status === "running" ||
-                      !rotationPrepared ||
-                      !rotationHasPending ||
-                      !validRotationTiming
-                    }
-                  >
-                    {props.busy === "facebook-execute-rotation"
-                      ? "Ejecutando..."
-                      : batch.current_round
-                        ? "Continuar rotación"
-                        : "Iniciar rotación"}
-                  </button>
-                  {!rotationPrepared && (
-                    <small className="inline-error">
-                      Falta generar un comentario por dispositivo en cada publicación.
-                    </small>
-                  )}
-                </div>
-              </div>
-            )}
-            <FacebookCurrentPost
-              key={`${currentPost.id}-${currentPost.updated_at}`}
-              post={currentPost}
-              position={currentPost.position + 1}
-              total={batch.posts.length}
-              rotation={rotation}
-              rotationStarted={batch.execution_started}
-              eligibleDevices={eligibleDevices}
-              facebookBrowser={props.snapshot?.facebookBrowser ?? {
-                status: "closed",
-                browserOpen: false,
-                loggedIn: false,
-                extracting: false,
-                mode: null,
-                lastError: null,
-              }}
-              deepSeekConfigured={Boolean(props.snapshot?.deepSeek.configured)}
-              busy={props.busy}
-              runAction={props.runAction}
-            />
-          </>
-        ) : (
-          <div className="facebook-batch-complete">
-            <strong>Cola completada</strong>
-            <span>
-              {rotation
-                ? `Se cerraron ${batch?.current_round || 0} de ${batch?.total_rounds || 0} rondas; las publicaciones omitidas quedaron fuera del conteo de acciones.`
-                : `Las ${batch?.posts.length || 0} publicaciones fueron procesadas u omitidas.`}
-            </span>
-            <button type="button" className="button primary" onClick={() => setReplacing(true)}>
-              Crear una nueva cola
-            </button>
-          </div>
-        )}
-      </div>
-    </WorkspaceShell>
-  );
 }
 
-function TikTokLiveWorkspace(props: WorkspaceProps) {
-  const [url, setUrl] = useState("");
-  const [tapRounds, setTapRounds] = useState("10");
-  const [tapX, setTapX] = useState("540");
-  const [tapY, setTapY] = useState("960");
-  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  const installed = Boolean(props.device?.capabilities?.tiktok);
-  const numericRounds = Number(tapRounds);
-  const numericX = Number(tapX);
-  const numericY = Number(tapY);
-  const pointLeft = `${Math.max(4, Math.min(96, (numericX / 1080) * 100 || 50))}%`;
-  const pointTop = `${Math.max(4, Math.min(96, (numericY / 2400) * 100 || 40))}%`;
-
-  async function submit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    await props.runAction(
-      "tiktok-live-run",
-      () =>
-        api("/api/automations/tiktok-live", {
-          method: "POST",
-          body: JSON.stringify({
-            deviceId: props.selectedDevice,
-            idempotencyKey: crypto.randomUUID(),
-            url,
-            tapRounds: numericRounds,
-            tapX: numericX,
-            tapY: numericY,
-          }),
-        }),
-      `${numericRounds} rondas de tap tap completadas; dispositivo devuelto a inicio.`,
-    );
-  }
-
-  return (
-    <WorkspaceShell {...props} latest={latest}>
-      <div className="live-workspace-grid">
-        <div className="live-preview-column">
-          <div className="subheading">
-            <div>
-              <strong>Vista de coordenadas</strong>
-              <span>Referencia vertical 1080 × 2400</span>
-            </div>
-          </div>
-          <div className="tap-preview" aria-label={`Punto de toque X ${tapX}, Y ${tapY}`}>
-            <div className="tap-preview-top" />
-            <div className="tap-point" style={{ left: pointLeft, top: pointTop }}>
-              <span />
-            </div>
-            <div className="tap-coordinate x">X {tapX || "-"}</div>
-            <div className="tap-coordinate y">Y {tapY || "-"}</div>
-          </div>
-          <p className="helper-text">
-            El punto es orientativo. Ajusta las coordenadas según la resolución real del
-            dispositivo seleccionado.
-          </p>
-        </div>
-        <form onSubmit={submit} className="workspace-form live-form">
-          <div className="subheading">
-            <span>LIVE</span>
-            <div>
-              <strong>Sesión de tap tap</strong>
-              <small>Cada ronda ejecuta un gesto de doble toque.</small>
-            </div>
-          </div>
-          <label className="field">
-            <span>Enlace del Live de TikTok</span>
-            <input
-              type="url"
-              value={url}
-              onChange={(event) => setUrl(event.target.value)}
-              placeholder="https://www.tiktok.com/@usuario/live"
-              maxLength={2048}
-              required
-            />
-          </label>
-          <div className="number-grid">
-            <label className="field">
-              <span>Rondas</span>
-              <input
-                type="number"
-                value={tapRounds}
-                onChange={(event) => setTapRounds(event.target.value)}
-                min={1}
-                max={50}
-                step={1}
-                required
-              />
-              <small>1 a 50</small>
-            </label>
-            <label className="field">
-              <span>Coordenada X</span>
-              <input
-                type="number"
-                value={tapX}
-                onChange={(event) => setTapX(event.target.value)}
-                min={0}
-                max={5000}
-                step={1}
-                required
-              />
-              <small>Horizontal</small>
-            </label>
-            <label className="field">
-              <span>Coordenada Y</span>
-              <input
-                type="number"
-                value={tapY}
-                onChange={(event) => setTapY(event.target.value)}
-                min={0}
-                max={5000}
-                step={1}
-                required
-              />
-              <small>Vertical</small>
-            </label>
-          </div>
-          <div className="live-summary">
-            <span>Resultado configurado</span>
-            <strong>{Number.isFinite(numericRounds) ? numericRounds * 2 : 0} toques</strong>
-            <small>{tapRounds || 0} rondas × 2 toques</small>
-          </div>
-          <div className="requirement-row">
-            <Requirement ok={props.ready}>Preparación Appium</Requirement>
-            <Requirement ok={installed}>TikTok instalado</Requirement>
-          </div>
-          <button
-            className="button danger full"
-            disabled={Boolean(props.busy) || !props.ready || !installed}
-          >
-            {props.busy === "tiktok-live-run"
-              ? "Ejecutando tap tap..."
-              : `Iniciar ${tapRounds || 0} rondas`}
-          </button>
-        </form>
-      </div>
-    </WorkspaceShell>
-  );
+function navCount(state: ControlState, view: ViewId) {
+  if (view === "devices") return state.devices.filter((item) => item.connection !== "connected" || item.preparation === "failed").length;
+  if (view === "history") return state.history.filter((item) => item.status === "running" || item.status === "completed_with_issues").length;
+  const draft = state[draftKey(view)];
+  return draft.status === "draft" ? draft.urls.length : draft.assignments.length;
 }
 
 export function ControlPanel() {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [selectedDevice, setSelectedDevice] = useState("");
-  const [setupDeviceIds, setSetupDeviceIds] = useState<string[]>([]);
-  const [setupQuery, setSetupQuery] = useState("");
-  const [setupResults, setSetupResults] = useState<Record<string, SetupResult>>({});
-  const [activeAutomation, setActiveAutomation] =
-    useState<AutomationSlug>("open-social-content");
-  const [busy, setBusy] = useState<string | null>(null);
-  const [abortingAll, setAbortingAll] = useState(false);
-  const [stoppingOperation, setStoppingOperation] = useState<string | null>(null);
-  const actionController = useRef<AbortController | null>(null);
-  const abortRequested = useRef(false);
-  const [profileAlias, setProfileAlias] = useState("");
-  const [profileOrder, setProfileOrder] = useState("");
-  const [profilePort, setProfilePort] = useState("");
-  const [notice, setNotice] = useState<{
-    type: "success" | "error";
-    text: string;
-  } | null>(null);
-
-  async function loadSnapshot() {
-    try {
-      const data = await api<Snapshot>("/api/status");
-      startTransition(() => {
-        setSnapshot(data);
-        setSelectedDevice((current) =>
-          data.devices.some((device) => device.id === current)
-            ? current
-            : data.devices.find((device) => device.state === "device")?.id || "",
-        );
-        setSetupDeviceIds((current) =>
-          current.filter((id) => data.devices.some((device) => device.id === id)),
-        );
-      });
-    } catch {
-      // Keep the last useful snapshot during a transient polling failure.
-    }
-  }
-
-  const pollStatus = useEffectEvent(loadSnapshot);
+  const [state, rawDispatch] = useReducer(controlReducer, createInitialState("2026-09-03T16:20:00.000Z"));
+  const timers = useRef<number[]>([]);
 
   useEffect(() => {
-    void pollStatus();
-    const interval = window.setInterval(() => void pollStatus(), 2_000);
-    return () => window.clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    const selectFromHash = () => {
-      const slug = window.location.hash.slice(1) as AutomationSlug;
-      if (automationDefinitions.some((definition) => definition.slug === slug)) {
-        setActiveAutomation(slug);
-      }
-    };
-    const timer = window.setTimeout(selectFromHash, 0);
-    window.addEventListener("hashchange", selectFromHash);
+    rawDispatch({ type: "tick", now: new Date().toISOString() });
+    const timer = window.setInterval(() => rawDispatch({ type: "tick", now: new Date().toISOString() }), 1_000);
     return () => {
-      window.clearTimeout(timer);
-      window.removeEventListener("hashchange", selectFromHash);
+      window.clearInterval(timer);
+      timers.current.forEach(window.clearTimeout);
     };
   }, []);
 
-  const device = snapshot?.devices.find((item) => item.id === selectedDevice);
-  const orderedDevices = snapshot?.devices ?? [];
-  const normalizedSetupQuery = setupQuery.trim().toLocaleLowerCase("es");
-  const visibleSetupDevices = orderedDevices.filter((item) => {
-    if (!normalizedSetupQuery) return true;
-    return [
-      item.id,
-      item.model,
-      item.profile?.alias,
-      item.profile?.physical_order === undefined
-        ? undefined
-        : `#${item.profile.physical_order} ${item.profile.physical_order}`,
-    ].some((value) => value?.toLocaleLowerCase("es").includes(normalizedSetupQuery));
-  });
-
-  function preparationResult(item: Device): SetupResult {
-    const current = setupResults[item.id];
-    if (current?.status === "pending" || current?.status === "running") return current;
-    if (item.state !== "device") {
-      return { status: "not_ready", problem: `ADB informa estado ${item.state}.` };
-    }
-    if (!item.profile) {
-      return { status: "not_ready", problem: "Falta incorporar el perfil local." };
-    }
-    if (current) return current;
-    const persisted = snapshot?.setup.devices.find((status) => status.device_id === item.id);
-    if (persisted) {
-      return {
-        status:
-          persisted.status === "ready" &&
-          persisted.setup_revision !== snapshot?.setup.revision
-            ? "not_ready"
-            : persisted.status,
-        problem: persisted.problem?.includes("task_runs.user_id")
-          ? "La preparación anterior quedó obsoleta; vuelve a preparar este dispositivo."
-          : persisted.problem,
-      };
-    }
-    return { status: "not_ready", problem: "Falta validar este perfil con Appium." };
-  }
-
-  const activePreparationReady = device
-    ? preparationResult(device).status === "ready"
-    : false;
-  const generatingFacebookPost = snapshot?.facebookBatch?.posts.find(
-    (post) => post.status === "generating",
-  );
-  const hasActiveProcesses = Boolean(
-    busy ||
-      generatingFacebookPost ||
-      snapshot?.facebookBatch?.execution_status === "running" ||
-      snapshot?.facebookBrowser.extracting ||
-      snapshot?.operations.some((operation) =>
-        ["starting", "running"].includes(operation.status),
-      ),
-  );
-
-  function toggleSetupDevice(deviceId: string) {
-    setSetupDeviceIds((current) =>
-      current.includes(deviceId)
-        ? current.filter((id) => id !== deviceId)
-        : [...current, deviceId],
-    );
-  }
-
-  function automationReady() {
-    return activePreparationReady;
-  }
-
-  const runAction: RunAction = async (name, action, successMessage) => {
-    const controller = new AbortController();
-    actionController.current = controller;
-    setBusy(name);
-    setNotice(null);
-    try {
-      await action(controller.signal);
-      await loadSnapshot();
-      setNotice({ type: "success", text: successMessage });
-    } catch (error) {
-      await loadSnapshot().catch(() => undefined);
-      setNotice({
-        type: controller.signal.aborted ? "success" : "error",
-        text: controller.signal.aborted
-          ? "El proceso fue abortado."
-          : error instanceof Error
-            ? error.message
-            : "Ocurrió un error.",
-      });
-    } finally {
-      if (actionController.current === controller) actionController.current = null;
-      setBusy(null);
-    }
+  const later = (callback: () => void, delay: number) => {
+    timers.current.push(window.setTimeout(callback, delay));
   };
 
-  async function abortAllProcesses() {
-    if (abortingAll) return;
-    abortRequested.current = true;
-    setAbortingAll(true);
-    actionController.current?.abort();
-    try {
-      const result = await api<{
-        cancelledOperations: number;
-        stoppedGenerations: number;
-        stoppedExtractions: number;
-        cancelledBatches: number;
-        failures: string[];
-      }>("/api/processes/abort-all", { method: "POST" });
-      await loadSnapshot();
-      if (result.failures.length) {
-        setNotice({
-          type: "error",
-          text: `Se solicitó el aborto global, pero ${result.failures.length} proceso(s) requieren revisión.`,
-        });
-      } else if (
-        result.cancelledOperations ||
-        result.stoppedGenerations ||
-        result.stoppedExtractions ||
-        result.cancelledBatches
-      ) {
-        setNotice({ type: "success", text: "Se abortaron todos los procesos activos." });
-      } else {
-        setNotice({ type: "success", text: "No había procesos activos." });
-      }
-    } catch (error) {
-      await loadSnapshot().catch(() => undefined);
-      setNotice({
-        type: "error",
-        text: error instanceof Error ? error.message : "No se pudieron abortar los procesos.",
+  const dispatch: ControlDispatch = (action) => {
+    if (action.type === "start-device-preparation") {
+      rawDispatch(action);
+      action.deviceIds.forEach((deviceId, deviceIndex) => {
+        preparationSteps.slice(1).forEach((step, stepIndex) => later(
+          () => rawDispatch({ type: "advance-device-preparation", deviceId, step }),
+          350 * (stepIndex + 1) + deviceIndex * 90,
+        ));
+        later(
+          () => rawDispatch({ type: "finish-device-preparation", deviceId, failed: deviceId === "device-07" }),
+          1_650 + deviceIndex * 90,
+        );
       });
-    } finally {
-      setAbortingAll(false);
-    }
-  }
-
-  async function prepareDevices() {
-    const queue = orderedDevices.filter((item) => setupDeviceIds.includes(item.id));
-    if (!queue.length) return;
-
-    setBusy("setup");
-    setNotice(null);
-    abortRequested.current = false;
-    const pendingResults = Object.fromEntries(
-      queue.map((item) => [
-        item.id,
-        { status: "pending", problem: "En espera." } satisfies SetupResult,
-      ]),
-    );
-    setSetupResults((current) => ({ ...current, ...pendingResults }));
-    let readyCount = 0;
-
-    for (const item of queue) {
-      if (abortRequested.current) break;
-      setSetupResults((current) => ({
-        ...current,
-        [item.id]: {
-          status: "running",
-          problem: "Validando sesión Appium, jerarquía y Home.",
-        },
-      }));
-      try {
-        await api("/api/setup", {
-          method: "POST",
-          body: JSON.stringify({ deviceId: item.id }),
-        });
-        setSetupResults((current) => ({
-          ...current,
-          [item.id]: { status: "ready", problem: null },
-        }));
-        readyCount += 1;
-      } catch (error) {
-        setSetupResults((current) => ({
-          ...current,
-          [item.id]: {
-            status: "not_ready",
-            problem: error instanceof Error ? error.message : "Error desconocido.",
-          },
-        }));
-      }
-    }
-
-    await loadSnapshot();
-    setSetupResults((current) =>
-      Object.fromEntries(
-        Object.entries(current).filter(
-          ([deviceId]) => !queue.some((item) => item.id === deviceId),
-        ),
-      ),
-    );
-    const failedCount = queue.length - readyCount;
-      setNotice(
-        abortRequested.current
-          ? { type: "success", text: "La preparación fue abortada." }
-          : {
-              type: failedCount ? "error" : "success",
-              text: failedCount
-                ? `${readyCount} listos y ${failedCount} no listos. Revisa el problema de cada dispositivo.`
-                : `${readyCount} dispositivos quedaron listos.`,
-            },
-      );
-    setBusy(null);
-  }
-
-  async function stopOperation(operationId: string) {
-    setStoppingOperation(operationId);
-    setNotice(null);
-    try {
-      await api(`/api/operations/${operationId}`, { method: "DELETE" });
-      await loadSnapshot();
-      setNotice({ type: "success", text: "Operación cancelada." });
-    } catch (error) {
-      await loadSnapshot().catch(() => undefined);
-      setNotice({
-        type: "error",
-        text: error instanceof Error ? error.message : "No se pudo cancelar.",
-      });
-    } finally {
-      setStoppingOperation(null);
-    }
-  }
-
-  async function saveActiveProfile(event: FormEvent) {
-    event.preventDefault();
-    if (!device) return;
-    const hardwareId = device.profile?.hardware_id || device.capabilities?.hardwareId;
-    if (!hardwareId) {
-      setNotice({ type: "error", text: "ADB no pudo obtener la identidad física." });
       return;
     }
-    const physicalOrder = Number(
-      profileOrder || String(device.profile?.physical_order ?? ""),
-    );
-    const systemPort = Number(
-      profilePort || String(device.profile?.system_port ?? ""),
-    );
-    await runAction(
-      "profile",
-      () =>
-        api("/api/device-profiles", {
-          method: "POST",
-          body: JSON.stringify({
-            profiles: [
-              {
-                hardwareId,
-                deviceId: device.id,
-                alias: profileAlias.trim() || device.profile?.alias || device.model,
-                physicalOrder,
-                systemPort,
-              },
-            ],
-          }),
-        }),
-      "Perfil guardado. Vuelve a preparar el dispositivo si cambió.",
-    );
-    setProfileAlias("");
-    setProfileOrder("");
-    setProfilePort("");
-  }
+
+    if (action.type === "prepare-campaign") {
+      const draft = state[draftKey(action.platform)];
+      rawDispatch(action);
+      if (!draft.actions.comment) return;
+      draft.urls.forEach((url, index) => {
+        const postId = `${action.platform}-post-${index + 1}`;
+        const offset = index === 0 ? 420 : 800 + index * 380;
+        if (url.includes("fallo")) {
+          later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId, stage: "failed" }), offset);
+          return;
+        }
+        later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId, stage: "context" }), offset);
+        later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId, stage: "comments" }), offset + 520);
+      });
+      return;
+    }
+
+    if (action.type === "retry-context") {
+      rawDispatch(action);
+      later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId: action.postId, stage: "context" }), 450);
+      later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId: action.postId, stage: "comments" }), 950);
+      return;
+    }
+
+    if (action.type === "request-regenerate-post") {
+      const post = state[draftKey(action.platform)].posts.find((item) => item.id === action.postId);
+      if (!post) return;
+      const ids = post.comments.map((comment) => comment.id);
+      if (post.comments.some((comment) => comment.status === "edited")) rawDispatch(action);
+      else dispatch({ type: "start-comment-regeneration", platform: action.platform, postId: action.postId, commentIds: ids });
+      return;
+    }
+
+    if (action.type === "start-comment-regeneration") {
+      rawDispatch(action);
+      later(() => rawDispatch({ type: "finish-comment-regeneration", platform: action.platform, postId: action.postId, commentIds: action.commentIds }), 650);
+      return;
+    }
+
+    if (action.type === "start-campaign") {
+      rawDispatch(action);
+      later(() => rawDispatch({ type: "advance-running-campaign", platform: action.platform }), 900);
+      return;
+    }
+
+    if (action.type === "start-abort") {
+      timers.current.forEach(window.clearTimeout);
+      timers.current = [];
+      rawDispatch(action);
+      abortSteps.slice(1, -1).forEach((_, index) => later(() => rawDispatch({ type: "advance-abort", step: index + 1 }), 360 * (index + 1)));
+      later(() => rawDispatch({ type: "finish-abort" }), 1_950);
+      return;
+    }
+
+    rawDispatch(action);
+  };
+
+  const activeCampaigns = state.history.filter((item) => ["running", "cancellation_requested"].includes(item.status)).length;
+  const busyDevices = state.devices.filter((item) => item.activity === "busy").length;
+  const modal = state.activeModal;
+  const editedDevice = modal?.type === "edit-device" ? state.devices.find((item) => item.id === modal.deviceId) : undefined;
+  const editor = state.demoOperations.deviceEditor;
+  const regeneratePost = modal?.type === "regenerate-post" ? state[draftKey(modal.platform)].posts.find((item) => item.id === modal.postId) : undefined;
+  const abort = state.demoOperations.abort;
 
   return (
-    <main className="shell">
+    <main className="console-frame">
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">AP</span>
+        <div className="brand-block">
+          <span className="brand-mark" aria-hidden="true">FA</span>
           <div>
             <strong>Control local</strong>
-            <span>Automatizaciones con ejecución controlada</span>
+            <small>Farm Appium / estación 01</small>
           </div>
         </div>
-        <nav className="primary-nav" aria-label="Áreas del panel">
-          <a
-            href="#operar"
-            aria-current={activeAutomation !== "facebook-post-like-comment" ? "page" : undefined}
-            onClick={(event) => {
-              event.preventDefault();
-              setActiveAutomation("open-social-content");
-              window.history.replaceState(null, "", "#open-social-content");
-              document.getElementById("operar")?.scrollIntoView();
-            }}
-          >
-            Operar
-          </a>
-          <a
-            href="#operar"
-            aria-current={activeAutomation === "facebook-post-like-comment" ? "page" : undefined}
-            onClick={(event) => {
-              event.preventDefault();
-              setActiveAutomation("facebook-post-like-comment");
-              window.history.replaceState(null, "", "#facebook-post-like-comment");
-              document.getElementById("operar")?.scrollIntoView();
-            }}
-          >
-            Facebook
-          </a>
-          <a href="#dispositivos">Dispositivos</a>
-          <a href="#actividad">Actividad</a>
-        </nav>
-        <div className="system-state">
-          <span className={`status-dot ${snapshot?.health.ok ? "online" : ""}`} />
-          {snapshot
-            ? snapshot.health.ok
-              ? `Appium ${snapshot.health.version || "conectado"}`
-              : "Appium sin conexión"
-            : "Comprobando conexión"}
+        <Badge className="prototype-badge" variant="filled">MODO PROTOTIPO</Badge>
+        <div className="health-strip" aria-label="Salud simulada del runtime">
+          {state.runtimeHealth.slice(0, 3).map((service) => (
+            <div className="health-item" key={service.id} data-status={service.status}>
+              <span className="status-dot" aria-hidden="true" />
+              <span><strong>{service.label}</strong><small>{statusLabels[service.status]} · simulado</small></span>
+            </div>
+          ))}
         </div>
+        <div className="topbar-metrics">
+          <span><strong>{activeCampaigns}</strong> campañas activas</span>
+          <span><strong>{busyDevices}</strong> equipos ocupados</span>
+        </div>
+        <time className="local-clock" dateTime={state.demoOperations.now}>
+          {new Intl.DateTimeFormat("es-PE", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date(state.demoOperations.now))}
+          <small>hora local</small>
+        </time>
+        <Button color="red" variant="filled" onClick={() => dispatch({ type: "request-abort" })}>
+          Abortar todo en Farm Appium
+        </Button>
       </header>
 
-      <section className="command-deck" aria-labelledby="control-title">
-        <div className="command-deck-heading">
-          <div>
-            <p className="eyebrow">Panel local de operación</p>
-            <h1 id="control-title">Una acción clara por vez.</h1>
-            <p>
-              Elige una tarea, revisa su alcance y ejecuta solo cuando el dispositivo esté listo.
-            </p>
-          </div>
-          <div className="command-deck-controls">
-            <div className="assistant-state">
-              <div>
-                <span>Asistente de redacción</span>
-                <strong>{snapshot?.deepSeek.model || "Comprobando..."}</strong>
-                <small className={snapshot?.deepSeek.configured ? "ok-text" : "error-text"}>
-                  {snapshot?.deepSeek.configured ? "Disponible" : "No configurado"}
-                </small>
-              </div>
-              <HelpTip label="Uso del asistente de redacción">
-                <li>Genera comentarios listos con el rango configurado.</li>
-                <li>La publicación sigue requiriendo ejecutar la acción.</li>
-              </HelpTip>
-            </div>
-            <button
-              type="button"
-              className="button danger abort-all-button"
-              onClick={abortAllProcesses}
-              disabled={abortingAll || !hasActiveProcesses}
-            >
-              {abortingAll ? "Abortando..." : "Abortar todos los procesos"}
-            </button>
-          </div>
-        </div>
-        <div className="device-strip compact-device-strip">
-          <div className="device-heading">
-            <span className="section-number">01</span>
-            <div>
-              <h2>Dispositivo activo</h2>
-              <p>Este equipo se usa para las acciones individuales.</p>
-            </div>
-            <HelpTip label="Alcance del dispositivo activo">
-              <li>Inicio, abrir contenido y TikTok usan este dispositivo.</li>
-              <li>Facebook define sus participantes dentro de su propia campaña.</li>
-            </HelpTip>
-          </div>
-          <label className="device-select">
-            <span>Equipo conectado por ADB</span>
-            <select
-              value={selectedDevice}
-              onChange={(event) => setSelectedDevice(event.target.value)}
-            >
-              {orderedDevices.length ? (
-                orderedDevices.map((item) => (
-                  <option value={item.id} key={item.id}>
-                    {item.profile
-                      ? `#${item.profile.physical_order} · ${item.profile.alias}`
-                      : "Pendiente de incorporar"} · {item.id}
-                  </option>
-                ))
-              ) : (
-                <option value="">Sin dispositivos</option>
-              )}
-            </select>
-          </label>
-          <div className="device-facts compact-facts">
-            <div>
-              <span>Perfil</span>
-              <strong>
-                {device?.profile
-                  ? `#${device.profile.physical_order} · ${device.profile.alias}`
-                  : "Sin incorporar"}
-              </strong>
-            </div>
-            <div>
-              <span>Preparación</span>
-              <strong>
-                {activePreparationReady ? "Lista para ejecutar" : "Validación pendiente"}
-              </strong>
-            </div>
-            <div>
-              <span>Aplicación visible</span>
-              <strong>{device?.capabilities?.focusedPackage || "Sin lectura"}</strong>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      {notice && (
-        <div className={`notice ${notice.type}`} role={notice.type === "error" ? "alert" : "status"}>
-          <span>{notice.type === "success" ? "Listo" : "Atención"}</span>
-          {notice.text}
-          <button type="button" onClick={() => setNotice(null)} aria-label="Cerrar">
-            ×
-          </button>
-        </div>
+      {state.notice && (
+        <Alert
+          className="global-notice"
+          color={state.notice.kind === "error" ? "red" : "lime"}
+          role={state.notice.kind === "error" ? "alert" : "status"}
+          title={state.notice.title}
+          withCloseButton
+          onClose={() => dispatch({ type: "clear-notice" })}
+        >
+          {state.notice.message}
+        </Alert>
       )}
 
-      <section className="automation-console" id="operar" aria-labelledby="operations-title">
-        <div className="console-heading">
-          <div>
-            <span className="section-number">02</span>
-            <div>
-              <p className="eyebrow">
-                {activeAutomation === "facebook-post-like-comment"
-                  ? "Campaña multidispositivo"
-                  : "Operar un dispositivo"}
-              </p>
-              <h2 id="operations-title">
-                {activeAutomation === "facebook-post-like-comment"
-                  ? "Campaña Facebook"
-                  : "Elige una acción"}
-              </h2>
-            </div>
-          </div>
-          <HelpTip label="Cómo usar las automatizaciones">
-            <li>Completa solo los campos de la acción elegida.</li>
-            <li>Las acciones públicas solo ocurren al ejecutar su control.</li>
-          </HelpTip>
-        </div>
-
-        <div className="automation-layout">
-          <nav className="automation-nav" aria-label="Automatizaciones disponibles">
-            {automationDefinitions.map((definition) => {
-              const ready = automationReady();
-              const available = appAvailable(definition, device);
-              const availability = !ready
-                ? "Sin preparar"
-                : available
-                  ? "Lista para ejecutar"
-                  : "Aplicación no instalada";
-              return (
-                <button
-                  type="button"
-                  className={`automation-nav-item accent-${definition.accent} ${
-                    activeAutomation === definition.slug ? "active" : ""
-                  }`}
-                  onClick={() => {
-                    setActiveAutomation(definition.slug);
-                    window.history.replaceState(null, "", `#${definition.slug}`);
-                  }}
-                  aria-pressed={activeAutomation === definition.slug}
-                  aria-label={`${definition.title}. ${availability}.`}
-                  key={definition.slug}
-                >
-                  <span className="nav-code">{definition.code}</span>
-                  <span className="nav-copy">
-                    <small>{definition.group}</small>
-                    <strong>{definition.title}</strong>
-                    <span className="nav-status">{availability}</span>
-                  </span>
-                  <span className={`nav-state ${ready && available ? "ready" : "missing"}`} aria-hidden="true" />
-                </button>
-              );
-            })}
-          </nav>
-
-          <div className="automation-stage">
-            {automationDefinitions.map((definition) => {
-              const commonProps: WorkspaceProps = {
-                active: activeAutomation === definition.slug,
-                definition,
-                selectedDevice,
-                ready: automationReady(),
-                device,
-                snapshot,
-                busy,
-                runAction,
-              };
-              if (definition.slug === "device-home") {
-                return <HomeWorkspace {...commonProps} key={definition.slug} />;
-              }
-              if (definition.slug === "open-social-content") {
-                return <OpenContentWorkspace {...commonProps} key={definition.slug} />;
-              }
-              if (definition.slug === "facebook-post-like-comment") {
-                return <FacebookBatchWorkspace {...commonProps} key={definition.slug} />;
-              }
-              if (definition.slug === "tiktok-live-tap-tap") {
-                return <TikTokLiveWorkspace {...commonProps} key={definition.slug} />;
-              }
-              return (
-                <SocialCommentWorkspace
-                  {...commonProps}
-                  platform="tiktok"
-                  key={definition.slug}
-                />
-              );
-            })}
-          </div>
-        </div>
-      </section>
-
-      <section
-        className="device-preparation"
-        id="dispositivos"
-        aria-labelledby="device-preparation-title"
-      >
-        <header className="preparation-heading">
-          <div>
-            <p className="eyebrow">Dispositivos y diagnóstico</p>
-            <h2 id="device-preparation-title">Prepara solo los equipos que vas a usar</h2>
-            <p>La verificación se ejecuta de uno en uno y deja el resultado junto a cada equipo.</p>
-          </div>
-          <strong>{setupDeviceIds.length} seleccionados</strong>
-        </header>
-        <div className="preparation-grid">
-          <div className="setup-picker">
-            <label className="field">
-              <span>Buscar por orden, alias, modelo o serial</span>
-              <input
-                type="search"
-                value={setupQuery}
-                onChange={(event) => setSetupQuery(event.target.value)}
-                placeholder="Ej. #7, Sala norte o 988c..."
-              />
-            </label>
-            <div className="setup-picker-actions">
-              <button
-                type="button"
-                className="text-button"
-                onClick={() =>
-                  setSetupDeviceIds((current) => [
-                    ...new Set([...current, ...visibleSetupDevices.map((item) => item.id)]),
-                  ])
-                }
-                disabled={!visibleSetupDevices.length || busy === "setup"}
-              >
-                Seleccionar visibles
-              </button>
-              <button
-                type="button"
-                className="text-button danger-text"
-                onClick={() => setSetupDeviceIds([])}
-                disabled={!setupDeviceIds.length || busy === "setup"}
-              >
-                Limpiar selección
-              </button>
-            </div>
-            <div className="setup-device-list" aria-live="polite">
-              {visibleSetupDevices.length ? (
-                visibleSetupDevices.map((item) => {
-                  const result = preparationResult(item);
-                  return (
-                    <label className="setup-device-option" key={item.id}>
-                      <input
-                        type="checkbox"
-                        checked={setupDeviceIds.includes(item.id)}
-                        onChange={() => toggleSetupDevice(item.id)}
-                        disabled={busy === "setup" || !item.profile}
-                      />
-                      <span className="profile-index">
-                        {item.profile ? `#${item.profile.physical_order}` : "Nuevo"}
-                      </span>
-                      <span className="setup-device-copy">
-                        <strong>{item.profile?.alias || item.model}</strong>
-                        <small>{item.id}</small>
-                        <small className="preparation-problem">
-                          {result.problem || "Sesión Appium, jerarquía y Home verificados."}
-                        </small>
-                      </span>
-                      <span
-                        className={`pill ${
-                          result.status === "ready"
-                            ? "succeeded"
-                            : result.status === "not_ready"
-                              ? "failed"
-                              : result.status
-                        }`}
-                      >
-                        {result.status === "ready"
-                          ? "Listo"
-                          : result.status === "not_ready"
-                            ? "No listo"
-                            : result.status === "running"
-                              ? "Preparando"
-                              : "Pendiente"}
-                      </span>
-                    </label>
-                  );
-                })
-              ) : (
-                <div className="empty-state">No hay dispositivos que coincidan con la búsqueda.</div>
-              )}
-            </div>
-          </div>
-          <aside className="setup-summary" aria-live="polite">
-            <form className="profile-form" onSubmit={saveActiveProfile}>
-              <strong>Perfil del dispositivo activo</strong>
-              <label className="field">
-                <span>Alias</span>
-                <input
-                  value={profileAlias}
-                  onChange={(event) => setProfileAlias(event.target.value)}
-                  placeholder={device?.profile?.alias || device?.model || "Equipo"}
-                />
-              </label>
-              <div className="profile-fields">
-                <label className="field">
-                  <span>Orden físico</span>
-                  <input
-                    type="number"
-                    min="0"
-                    value={profileOrder}
-                    onChange={(event) => setProfileOrder(event.target.value)}
-                    placeholder={String(device?.profile?.physical_order ?? "")}
-                    required={!device?.profile}
-                  />
-                </label>
-                <label className="field">
-                  <span>systemPort</span>
-                  <input
-                    type="number"
-                    min="8200"
-                    max="8299"
-                    value={profilePort}
-                    onChange={(event) => setProfilePort(event.target.value)}
-                    placeholder={String(device?.profile?.system_port ?? "")}
-                    required={!device?.profile}
-                  />
-                </label>
-              </div>
-              <button
-                type="submit"
-                className="button secondary"
-                disabled={Boolean(busy) || !device}
-              >
-                {device?.profile ? "Actualizar perfil" : "Incorporar dispositivo"}
-              </button>
-            </form>
-            <div>
-              <span>Selección actual</span>
-              <strong>
-                {setupDeviceIds.length
-                  ? `${setupDeviceIds.length} dispositivo${setupDeviceIds.length === 1 ? "" : "s"}`
-                  : "Ningún dispositivo"}
-              </strong>
-              <p>
-                {setupDeviceIds.length
-                  ? "Se prepararán uno por uno. El resultado queda visible en cada fila."
-                  : "Marca los equipos que vas a usar y después inicia la preparación."}
-              </p>
-            </div>
-            <details className="inline-details">
-              <summary>Qué verifica la preparación</summary>
-              <ul>
-                <li>Perfil local, conexión ADB y salud Appium.</li>
-                <li>Sesión UiAutomator2, jerarquía accesible y Home.</li>
-              </ul>
-            </details>
+      <div className="console-shell">
+        <nav className="side-nav" aria-label="Navegación principal">
+          <div className="nav-label">Áreas operativas</div>
+          {navItems.map((item) => (
             <button
-              type="button"
-              className="button primary"
-              onClick={prepareDevices}
-              disabled={Boolean(busy) || !setupDeviceIds.length}
+              className="nav-item"
+              data-platform={item.id}
+              aria-current={state.activeView === item.id ? "page" : undefined}
+              key={item.id}
+              onClick={() => dispatch({ type: "navigate", view: item.id })}
             >
-              {busy === "setup"
-                ? "Preparando selección..."
-                : `Preparar ${setupDeviceIds.length || ""} dispositivo${
-                    setupDeviceIds.length === 1 ? "" : "s"
-                  }`}
+              <span>{item.index}</span>
+              <strong>{item.label}</strong>
+              <b>{navCount(state, item.id)}</b>
             </button>
-          </aside>
-        </div>
-      </section>
-
-      <section className="activity" id="actividad" aria-labelledby="activity-title">
-        <div className="activity-heading">
-          <div>
-            <p className="eyebrow">Ejecuciones recientes</p>
-            <h2 id="activity-title">Actividad</h2>
+          ))}
+          <div className="nav-footnote">
+            <span className="status-dot" aria-hidden="true" />
+            <p><strong>Solo demostración</strong>Ningún control ejecuta acciones reales.</p>
           </div>
-          <span>
-            SQLite · {snapshot ? new Date(snapshot.polledAt).toLocaleTimeString("es-PE") : "--:--"}
-          </span>
-        </div>
-        <div className="activity-list">
-          {snapshot?.operations.length ? (
-            snapshot.operations.slice(0, 8).map((operation) => (
-              <article className="activity-row" key={operation.id}>
-                <span className={`activity-icon ${operation.status}`} />
-                <div>
-                  <strong>{friendlyAction(operation.kind)}</strong>
-                  <span>{operation.device_id}</span>
-                  {operation.error && <small className="activity-error">{operation.error}</small>}
-                </div>
-                <time>{new Date(operation.created_at).toLocaleString("es-PE")}</time>
-                <span className={`pill ${operation.status}`}>
-                  {friendlyStatus(operation.status)}
-                </span>
-                {["starting", "running"].includes(operation.status) && (
-                  <button
-                    type="button"
-                    className="text-button danger-text"
-                    onClick={() => stopOperation(operation.id)}
-                    disabled={stoppingOperation === operation.id}
-                  >
-                    {stoppingOperation === operation.id ? "Deteniendo..." : "Detener"}
-                  </button>
-                )}
-              </article>
-            ))
-          ) : (
-            <div className="empty-state">La primera ejecución aparecerá aquí.</div>
+        </nav>
+
+        <section className="view-stage">
+          {state.activeView === "devices" && <DevicesView state={state} dispatch={dispatch} />}
+          {state.activeView === "facebook" && (
+            <CampaignView
+              platform="facebook"
+              label="Facebook"
+              accent="facebook"
+              allowedHosts="facebook.com · fb.watch"
+              requiredCapability="Sesión Facebook preparada"
+              experimentalActions={[]}
+              state={state}
+              dispatch={dispatch}
+            />
           )}
-        </div>
-      </section>
+          {state.activeView === "tiktok" && (
+            <CampaignView
+              platform="tiktok"
+              label="TikTok"
+              accent="tiktok"
+              allowedHosts="tiktok.com"
+              requiredCapability="Aplicación TikTok preparada"
+              experimentalActions={["tap_tap"]}
+              state={state}
+              dispatch={dispatch}
+            />
+          )}
+          {state.activeView === "history" && <HistoryView state={state} dispatch={dispatch} />}
+        </section>
+      </div>
+
+      <Drawer opened={modal?.type === "edit-device"} onClose={() => dispatch({ type: "close-modal" })} position="right" size="md" title="Editar dispositivo">
+        {editedDevice && editor && (
+          <Stack gap="md">
+            <div className="drawer-ident">
+              <span>HARDWARE ID</span>
+              <code>{editedDevice.hardwareId}</code>
+            </div>
+            <TextInput label="Alias" value={editor.alias} error={editor.errors.alias} onChange={(event) => dispatch({ type: "update-device-editor", field: "alias", value: event.currentTarget.value })} />
+            <NumberInput label="Orden físico" min={1} value={editor.order} error={editor.errors.order} onChange={(value) => dispatch({ type: "update-device-editor", field: "order", value: Number(value) || 0 })} />
+            <TextInput label="Serial ADB" value={editor.serial} error={editor.errors.serial} onChange={(event) => dispatch({ type: "update-device-editor", field: "serial", value: event.currentTarget.value })} />
+            <NumberInput label="systemPort" min={8200} max={8299} value={editor.systemPort} error={editor.errors.systemPort} onChange={(value) => dispatch({ type: "update-device-editor", field: "systemPort", value: Number(value) || 0 })} />
+            <dl className="detail-list">
+              <div><dt>Última preparación</dt><dd>{formatDate(editedDevice.lastPreparation)}</dd></div>
+              <div><dt>Verificación Facebook</dt><dd>{formatDate(editedDevice.lastPlatformCheck.facebook)}</dd></div>
+              <div><dt>Verificación TikTok</dt><dd>{formatDate(editedDevice.lastPlatformCheck.tiktok)}</dd></div>
+            </dl>
+            <Alert color="yellow">Cambiar serial o puerto marca la preparación como desactualizada.</Alert>
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Cancelar</Button>
+              <Button onClick={() => dispatch({ type: "save-device" })}>Guardar cambios</Button>
+            </Group>
+          </Stack>
+        )}
+      </Drawer>
+
+      <Modal opened={modal?.type === "retire-device"} onClose={() => dispatch({ type: "close-modal" })} title="Retirar dispositivo ocupado">
+        <Stack>
+          <Text>El dispositivo está ocupado por Farm Appium. La campaña actual no se cancelará silenciosamente.</Text>
+          <Text size="sm" c="dimmed">Se marcará “Retirar al finalizar” y sus asignaciones históricas se conservarán.</Text>
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Conservar</Button>
+            <Button color="red" onClick={() => dispatch({ type: "confirm-device-retirement" })}>Retirar al finalizar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal opened={modal?.type === "start-campaign"} onClose={() => dispatch({ type: "close-modal" })} title="Confirmar inicio simulado">
+        {modal?.type === "start-campaign" && (
+          <Stack>
+            <Alert color="red" title="Efectos públicos futuros">En la implementación real esta acción podrá publicar likes y comentarios. Este prototipo no realizará ninguna solicitud.</Alert>
+            <Text>Se añadirá una campaña simulada al historial y algunos trabajos avanzarán visualmente.</Text>
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Volver a revisión</Button>
+              <Button onClick={() => dispatch({ type: "start-campaign", platform: modal.platform })}>Iniciar campaña simulada</Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
+
+      <Modal opened={modal?.type === "regenerate-post"} onClose={() => dispatch({ type: "close-modal" })} title="Sobrescribir comentarios editados">
+        {modal?.type === "regenerate-post" && regeneratePost && (
+          <Stack>
+            <Text>{regeneratePost.comments.filter((item) => item.status === "edited").length} comentarios tienen edición manual.</Text>
+            <Text size="sm" c="dimmed">Regenerar todos reemplazará esas versiones solo en esta publicación.</Text>
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Conservar ediciones</Button>
+              <Button color="red" onClick={() => dispatch({ type: "start-comment-regeneration", platform: modal.platform, postId: modal.postId, commentIds: regeneratePost.comments.map((item) => item.id) })}>Regenerar y sobrescribir</Button>
+            </Group>
+          </Stack>
+        )}
+      </Modal>
+
+      <Modal opened={modal?.type === "abort-all"} onClose={() => dispatch({ type: "close-modal" })} title="Abortar todo en Farm Appium" size="lg" closeOnClickOutside={!abort.active} closeOnEscape={!abort.active}>
+        <Stack>
+          {!abort.active && abort.step === 0 && (
+            <>
+              <Alert color="red" title="Solo recursos propios de Farm Appium">GenFarmer no será cerrado, sondeado ni administrado. Los resultados existentes se conservarán.</Alert>
+              <dl className="abort-impact">
+                <div><dt>Campañas afectadas</dt><dd>{activeCampaigns}</dd></div>
+                <div><dt>Dispositivos en uso</dt><dd>{busyDevices}</dd></div>
+                <div><dt>Tareas demo</dt><dd>Extracción y generación</dd></div>
+              </dl>
+              <Text size="sm">Se detendrán nuevos trabajos, se cerrarán únicamente sesiones propias y se simulará Home por dispositivo.</Text>
+              <Group justify="flex-end">
+                <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>No abortar</Button>
+                <Button color="red" onClick={() => dispatch({ type: "start-abort" })}>Confirmar aborto</Button>
+              </Group>
+            </>
+          )}
+          {(abort.active || abort.step > 0) && (
+            <>
+              <ol className="abort-sequence">
+                {abortSteps.map((step, index) => <li key={step} data-active={index === abort.step} data-done={index < abort.step}>{step}</li>)}
+              </ol>
+              {Object.entries(abort.deviceCleanup).map(([id, cleanup]) => {
+                const device = state.devices.find((item) => item.id === id);
+                return <div className="cleanup-row" key={id}><span>{device?.alias ?? id}</span><Badge color={cleanup === "cleanup_unknown" || cleanup === "failed" ? "red" : "gray"}>{cleanup.replaceAll("_", " ")}</Badge></div>;
+              })}
+              {!abort.active && <Button onClick={() => dispatch({ type: "close-modal" })}>Cerrar resumen</Button>}
+            </>
+          )}
+        </Stack>
+      </Modal>
     </main>
   );
 }

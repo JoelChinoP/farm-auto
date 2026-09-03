@@ -1,0 +1,13 @@
+flowchart LR
+  O[Operador local] --> UI[Panel Next.js]
+  UI --> API[API local]
+  API --> DB[(SQLite)]
+  API --> ADB[ADB]
+  API --> APPIUM[Appium UiAutomator2]
+  ADB --> ANDROID[Telefonos Android]
+  APPIUM --> ANDROID
+  API --> BROWSER[Playwright y Edge]
+  BROWSER --> FACEBOOK[Facebook web]
+  API --> LLM[DeepSeek]
+  ANDROID --> TIKTOK[TikTok movil]
+  ANDROID --> FBM[Facebook movil]

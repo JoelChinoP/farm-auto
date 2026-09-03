@@ -1,43 +1,44 @@
 {
-  "name": "farm-automation-control-panel",
+  "name": "farm-appium",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
-    "appium:server": "appium server --address 127.0.0.1 --port 4723 --use-drivers=uiautomator2",
-    "appium:doctor": "appium driver doctor uiautomator2",
-    "lint": "eslint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node --test --experimental-strip-types test/**/*.test.ts",
-    "test:e2e:appium": "node --test --test-concurrency=1 --experimental-strip-types e2e/appium/smoke/**/*.test.ts",
-    "test:e2e:appium:destructive": "node --test --test-concurrency=1 --experimental-strip-types e2e/appium/destructive/**/*.test.ts",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build"
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "appium:server": "appium server --address 127.0.0.1 --port 4723 --use-drivers=uiautomator2",
+    "appium:doctor": "appium driver doctor uiautomator2"
   },
   "dependencies": {
-    "appium": "3.7.0",
-    "appium-uiautomator2-driver": "8.5.0",
-    "better-sqlite3": "^13.0.3",
-    "dotenv": "^17.4.2",
-    "next": "16.3.3",
-    "openai": "^7.6.0",
-    "playwright-core": "^1.62.1",
+    "@mantine/core": "9.6.0",
+    "@mantine/hooks": "9.6.0",
+    "better-sqlite3": "13.0.3",
+    "next": "16.3.4",
     "react": "19.2.8",
-    "react-dom": "19.2.8",
-    "webdriverio": "9.31.1",
-    "zod": "^4.4.3"
+    "react-dom": "19.2.8"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/better-sqlite3": "^9.6.0",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.3.3",
-    "tailwindcss": "^4",
-    "typescript": "^5"
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.5",
+    "appium": "3.7.0",
+    "appium-uiautomator2-driver": "8.5.2",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.4",
+    "typescript": "5.9.3"
+  },
+  "allowScripts": {
+    "better-sqlite3@13.0.3": true,
+    "appium@3.7.0": true,
+    "unrs-resolver": false
   }
 }

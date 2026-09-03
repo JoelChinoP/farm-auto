@@ -1,0 +1,59 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "share": "disabled",
+  "autoupdate": "notify",
+  "snapshot": true,
+  "instructions": ["AGENTS.md"],
+  "plugin": ["@dietrichgebert/ponytail@4.9.0"],
+  "mcp": {
+    "context7": {
+      "type": "remote",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
+      },
+      "enabled": true,
+      "timeout": 15000
+    },
+    "android": {
+      "type": "local",
+      "command": ["npx", "-y", "android-mcp-server@1.3.0"],
+      "environment": {
+        "ANDROID_HOME": "{env:ANDROID_HOME}",
+        "JAVA_HOME": "{env:JAVA_HOME}"
+      },
+      "enabled": true,
+      "timeout": 120000
+    },
+    "appium": {
+      "type": "local",
+      "command": ["npx", "-y", "appium-mcp@1.92.13"],
+      "environment": {
+        "ANDROID_HOME": "{env:ANDROID_HOME}",
+        "JAVA_HOME": "{env:JAVA_HOME}",
+        "NO_UI": "true",
+        "REMOTE_SERVER_URL_ALLOW_REGEX": "^https?://(127\\.0\\.0\\.1|localhost|\\[::1\\])(?::[0-9]+)?(?:/.*)?$"
+      },
+      "enabled": true,
+      "timeout": 120000
+    },
+    "playwright": {
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "@playwright/mcp@0.0.80",
+        "--headless",
+        "--output-dir",
+        ".artifacts/playwright"
+      ],
+      "cwd": ".",
+      "enabled": true,
+      "timeout": 120000
+    }
+  },
+  "permission": "allow",
+  "experimental": {
+    "mcp_timeout": 120000
+  }
+}

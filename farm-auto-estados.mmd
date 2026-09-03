@@ -1,0 +1,56 @@
+stateDiagram-v2
+  [*] --> Starting
+  Starting --> Running
+  Starting --> Cancelled
+  Starting --> Failed
+  Running --> Succeeded
+  Running --> Cancelled
+  Running --> Failed
+
+  state "Borrador" as Draft {
+    [*] --> Approved
+    Approved --> Sending
+    Sending --> Sent
+    Sending --> OutcomeUnknown
+    Sending --> Approved: fallo seguro
+    Sending --> Failed
+  }
+
+  state "Asignacion Facebook" as Assignment {
+    [*] --> Pending
+    Pending --> Generating
+    Generating --> ApprovedAssignment
+    Generating --> FailedAssignment
+    ApprovedAssignment --> SendingAssignment
+    SendingAssignment --> SentAssignment
+    SendingAssignment --> OutcomeUnknownAssignment
+    OutcomeUnknownAssignment --> SentAssignment: reconciliar sent
+    OutcomeUnknownAssignment --> ApprovedAssignment: reconciliar not_sent
+  }
+
+  state "Post Facebook" as Post {
+    [*] --> Queued
+    Queued --> Extracting
+    Extracting --> ContextReady
+    ContextReady --> GeneratingPost
+    GeneratingPost --> ApprovedPost
+    GeneratingPost --> PartialFailed
+    ApprovedPost --> RunningPost
+    RunningPost --> CompletedPost
+    RunningPost --> OutcomeUnknownPost
+    OutcomeUnknownPost --> CompletedPost: reconciliar sent
+    OutcomeUnknownPost --> ApprovedPost: reconciliar not_sent
+    Queued --> SkippedPost
+    ContextReady --> SkippedPost
+    PartialFailed --> SkippedPost
+  }
+
+  state "Batch Facebook" as Batch {
+    [*] --> ActiveIdle
+    ActiveIdle --> ActiveRunning
+    ActiveRunning --> ActiveIdle: siguiente slot o ronda
+    ActiveRunning --> BlockedForReconciliation
+    BlockedForReconciliation --> ActiveIdle: outcomes resueltos
+    ActiveIdle --> CompletedBatch: sin slots pendientes
+    ActiveIdle --> CancelledBatch
+  }

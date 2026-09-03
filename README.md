@@ -1,61 +1,62 @@
-## Runtime local en Windows
+# Farm Appium
 
-Requisitos del sistema:
+Base local para reconstruir el panel descrito en `ANALISIS_FARM_AUTO.md`.
 
-- Node.js 24 y npm 10 o superior.
-- JDK compatible con Android SDK y `JAVA_HOME` configurado.
-- Android SDK, Platform Tools y `ANDROID_HOME` o `ANDROID_SDK_ROOT`.
-- Dispositivos con depuración USB autorizada.
-- `ADB_PATH` configurado o `adb.exe` disponible en `PATH`.
-- `APPIUM_HOME` sin definir.
-- Microsoft Edge instalado para la sesión persistente de Facebook.
+## Inicio
 
-Instalación y diagnóstico:
-
-```powershell
-npm ci
+```bash
+npm install
 npm run appium:doctor
-npm run build
+npm run dev
 ```
 
-Appium y Next.js son procesos independientes. Inícialos en terminales separadas desde la raíz del proyecto:
+Appium se ejecuta aparte cuando comiencen las automatizaciones:
 
-```powershell
+```bash
 npm run appium:server
 ```
 
-```powershell
-npm start
+## OpenCode
+
+`opencode.json` habilita permisos sin confirmacion y configura:
+
+- Ponytail 4.9.0.
+- Context7 remoto.
+- Android MCP sobre ADB.
+- Appium MCP oficial con UiAutomator2.
+- Playwright MCP para verificar el panel web.
+
+OpenCode reenvia `ANDROID_HOME` y `JAVA_HOME` desde el entorno del proceso con `{env:...}`. No hay rutas absolutas dependientes del sistema operativo. `adb` debe estar en `PATH`; `ADB_PATH` puede definirse para el runtime si hace falta.
+
+`CAPABILITIES_CONFIG` y `SCREENSHOTS_DIR` son opcionales para Appium MCP. Si se usan, deben definirse en el entorno con rutas validas para la maquina; `.appium/capabilities.json` sirve como base. Reinicia OpenCode despues de cambiar la configuracion, plugins, MCPs o skills.
+
+## Estructura inicial
+
+```text
+.opencode/skills/       instrucciones especializadas para agentes
+.appium/                capacidades MCP locales
+src/app/                UI y route handlers Next.js
+src/lib/                configuracion, SQLite y cola
+test/                   pruebas unitarias sin framework adicional
+data/                   SQLite local ignorado por Git
 ```
 
-Appium escucha únicamente en `127.0.0.1:4723`. Next.js no inicia ni detiene ese proceso.
+La cola usa SQLite; no se agrega Redis, un worker ni WebdriverIO hasta que exista el primer proceso real que deba consumirlos.
 
-## Configuración
+## Convivencia con GenFarmer en Windows
 
-Crea `.env` a partir de `.env.example`. Las variables del proceso Windows tienen prioridad sobre ese archivo.
+En Windows, GenFarmer es una herramienta externa de inspeccion y comandos ADB. Farm Appium no inicia, cierra, reinicia, sondea ni administra su proceso. Nunca ejecuta `adb kill-server`; toda operacion ADB usa `-s <serial>`. Solo cierra sesiones Appium creadas por Farm Appium y utiliza un `systemPort` exclusivo por dispositivo.
 
-La redacción usa `COMMENT_GENERATION_PROMPT` como instrucción base. `COMMENT_MIN_WORDS` y `COMMENT_MAX_WORDS` fijan el rango de cada comentario (3 a 15 palabras por defecto). En una publicación con varios dispositivos, todos sus comentarios se solicitan a DeepSeek en una sola llamada y se guardan directamente como listos para ejecutar, sin una etapa de revisión o aprobación.
+- Next.js y Appium permanecen en loopback.
+- La integracion futura usara `appium:suppressKillServer=true`.
+- Nunca se ejecutara `taskkill` por nombre ni se cerraran procesos Edge o Chrome ajenos.
+- La UI solo afirmara `Disponible para Farm Appium`, no disponibilidad global.
+- Los puertos Appium deben reservarse sin colisionar con GenFarmer.
+- El aborto global solo afecta campañas, tareas y sesiones propias.
+- GenFarmer puede permanecer abierto durante toda la operacion.
 
-Los dispositivos se incorporan desde el panel con identidad física, alias, orden y un `systemPort` único entre `8200` y `8299`. La preparación valida ADB, salud Appium, sesión UiAutomator2, jerarquía accesible y Home.
+## Verificacion
 
-La extracción de contexto de Facebook usa Playwright con un perfil persistente de Edge. Playwright se ejecuta en modo headless para comprobar la sesión y leer publicaciones; Edge solo aparece cuando Facebook requiere iniciar o renovar sesión y se cierra automáticamente al detectar el login. Playwright expande `Ver más` y obtiene únicamente el texto de la publicación; Appium sigue reservado para likes y comentarios móviles. El perfil se guarda fuera del repositorio en `%LOCALAPPDATA%\farm-auto\facebook-browser-profile` por defecto; `FACEBOOK_BROWSER_PROFILE_PATH` permite cambiarlo.
-
-## Verificación
-
-```powershell
-npm run lint
-npm run typecheck
-npm test
-npm run build
+```bash
+npm run check
 ```
-
-Los E2E físicos no forman parte de `npm test`:
-
-```powershell
-$env:RUN_APPIUM_E2E="1"
-npm run test:e2e:appium
-```
-
-El smoke se ejecuta de forma secuencial sobre `APPIUM_DEVICE_IDS`, emparejando cada dispositivo con el `systemPort` en la misma posición de `APPIUM_SYSTEM_PORTS`. La configuración local validada usa `ce10171ab4d3543f04`/`8298` y `988a9838544a4b5a37`/`8299`; no ejecutes el smoke mientras Appium Inspector tenga una sesión abierta sobre alguno de ellos.
-
-Las pruebas con efectos públicos también requieren `RUN_APPIUM_DESTRUCTIVE=1` y las variables de contenido controlado declaradas en `e2e/appium/destructive/controlled/social.test.ts`.
