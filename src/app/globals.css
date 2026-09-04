@@ -21,7 +21,7 @@
 }
 
 html {
-  min-width: 1180px;
+  min-width: 0;
   background: #cbc7bc;
 }
 
@@ -237,7 +237,7 @@ code,
 
 .console-shell {
   display: grid;
-  grid-template-columns: 216px minmax(0, 1fr);
+  grid-template-columns: 184px minmax(0, 1fr);
   min-height: calc(100vh - 76px);
 }
 
@@ -252,7 +252,7 @@ code,
 }
 
 .nav-label {
-  padding: 20px 18px 12px;
+  padding: 18px 14px 10px;
   color: var(--muted);
   font-size: 0.62rem;
   letter-spacing: 0.09em;
@@ -260,12 +260,12 @@ code,
 }
 
 .nav-item {
-  min-height: 68px;
+  min-height: 60px;
   display: grid;
-  grid-template-columns: 28px 1fr auto;
-  gap: 7px;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 9px;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 12px;
   border: 0;
   border-top: 1px solid var(--line);
   color: var(--ink);
@@ -284,7 +284,7 @@ code,
 }
 
 .nav-item[aria-current="page"] {
-  padding-left: 19px;
+  padding-left: 16px;
   background: var(--ink);
   color: var(--paper);
 }
@@ -297,18 +297,44 @@ code,
   box-shadow: inset 3px 0 var(--tiktok-cyan), inset 7px 0 var(--tiktok-pink);
 }
 
-.nav-item span {
-  color: var(--muted);
-  font: 0.66rem Consolas, monospace;
+.nav-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  color: var(--line-dark);
 }
 
-.nav-item[aria-current="page"] span {
+.nav-icon svg {
+  width: 19px;
+  height: 19px;
+}
+
+.nav-copy {
+  min-width: 0;
+}
+
+.nav-copy small,
+.nav-copy strong {
+  display: block;
+}
+
+.nav-copy small {
+  color: var(--muted);
+  font: 0.56rem Consolas, monospace;
+}
+
+.nav-item[aria-current="page"] .nav-icon,
+.nav-item[aria-current="page"] .nav-copy small {
   color: #c5c6bd;
 }
 
-.nav-item strong {
-  font-size: 0.86rem;
+.nav-copy strong {
+  overflow: hidden;
+  font-size: 0.76rem;
   letter-spacing: 0.025em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nav-item b {
@@ -323,7 +349,7 @@ code,
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  margin: auto 16px 18px;
+  margin: auto 12px 14px;
   padding-top: 14px;
   border-top: 1px solid var(--line);
 }
@@ -1445,6 +1471,158 @@ code,
 
   .metric-rail > div {
     min-height: 68px;
+  }
+}
+
+@media (max-width: 900px) {
+  .console-frame {
+    width: 100%;
+    border-inline: 0;
+  }
+
+  .topbar {
+    position: static;
+    min-height: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 0 10px 10px 0;
+  }
+
+  .brand-block {
+    flex: 1 1 210px;
+    min-height: 58px;
+  }
+
+  .brand-mark {
+    width: 58px;
+  }
+
+  .health-strip,
+  .topbar-metrics {
+    display: none;
+  }
+
+  .local-clock {
+    margin-left: auto;
+  }
+
+  .topbar > .mantine-Button-root {
+    width: 100%;
+  }
+
+  .console-shell {
+    display: block;
+    min-height: 0;
+  }
+
+  .side-nav {
+    position: sticky;
+    z-index: 10;
+    top: 0;
+    height: auto;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-dark);
+  }
+
+  .nav-label,
+  .nav-footnote {
+    display: none;
+  }
+
+  .nav-item {
+    min-width: 142px;
+    flex: 1 0 auto;
+    border-top: 0;
+    border-right: 1px solid var(--line);
+  }
+
+  .nav-item:last-of-type {
+    border-bottom: 0;
+  }
+
+  .view-heading {
+    min-height: 0;
+    padding: 24px 20px;
+  }
+
+  .work-section,
+  .campaign-config,
+  .pipeline-section,
+  .planning-section,
+  .review-section {
+    padding: 22px 20px 26px;
+  }
+
+  .metric-rail {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .metric-rail > div:nth-child(3) {
+    border-right: 0;
+  }
+
+  .config-grid,
+  .planning-grid,
+  .review-grid,
+  .import-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .schedule-controls,
+  .review-summary {
+    border-right: 0;
+    border-bottom: 1px solid var(--line-dark);
+  }
+
+  .post-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .post-list {
+    max-height: 300px;
+    overflow: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line-dark);
+  }
+}
+
+@media (max-width: 560px) {
+  .view-heading,
+  .section-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .view-heading h1 {
+    font-size: clamp(2.4rem, 14vw, 3.5rem);
+  }
+
+  .campaign-state,
+  .refresh-stamp {
+    padding-left: 0;
+    border-left: 0;
+    text-align: left;
+  }
+
+  .metric-rail {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .metric-rail > div:nth-child(3) {
+    border-right: 1px solid var(--line);
+  }
+
+  .impact-bar,
+  .schedule-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .impact-bar > div {
+    border-right: 0;
+    border-bottom: 1px solid #565a50;
   }
 }
 

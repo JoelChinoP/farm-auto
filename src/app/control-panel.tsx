@@ -94,6 +94,7 @@ function validateDeviceEditor(state: ControlState) {
   return { editor, errors, deviceId: modal.deviceId };
 }
 
+// ponytail: the prototype keeps transitions in memory; split by domain when persisted runtime services replace this demo state.
 function controlReducer(state: ControlState, action: ControlAction): ControlState {
   switch (action.type) {
     case "tick":
@@ -633,6 +634,21 @@ function navCount(state: ControlState, view: ViewId) {
   return draft.status === "draft" ? draft.urls.length : draft.assignments.length;
 }
 
+function NavIcon({ view }: { view: ViewId }) {
+  const common = { fill: "none", stroke: "currentColor", strokeWidth: 1.8, strokeLinecap: "round" as const, strokeLinejoin: "round" as const };
+
+  if (view === "devices") {
+    return <svg viewBox="0 0 24 24"><rect {...common} x="6" y="2.5" width="12" height="19" rx="2" /><path {...common} d="M10 18.5h4" /></svg>;
+  }
+  if (view === "facebook") {
+    return <svg viewBox="0 0 24 24"><path {...common} d="M5 5.5h14v10H9l-4 3v-13Z" /><path {...common} d="M10 9h4M10 12h2" /></svg>;
+  }
+  if (view === "tiktok") {
+    return <svg viewBox="0 0 24 24"><path {...common} d="M14 4v10.5a3.5 3.5 0 1 1-2-3.16V7.5c2.6 0 4.6.64 6 2" /></svg>;
+  }
+  return <svg viewBox="0 0 24 24"><circle {...common} cx="12" cy="12" r="8" /><path {...common} d="M12 7v5l3 2" /></svg>;
+}
+
 export function ControlPanel() {
   const [state, rawDispatch] = useReducer(controlReducer, createInitialState("2026-09-03T16:20:00.000Z"));
   const timers = useRef<number[]>([]);
@@ -787,8 +803,8 @@ export function ControlPanel() {
               key={item.id}
               onClick={() => dispatch({ type: "navigate", view: item.id })}
             >
-              <span>{item.index}</span>
-              <strong>{item.label}</strong>
+              <span className="nav-icon" aria-hidden="true"><NavIcon view={item.id} /></span>
+              <span className="nav-copy"><small>{item.index}</small><strong>{item.label}</strong></span>
               <b>{navCount(state, item.id)}</b>
             </button>
           ))}
