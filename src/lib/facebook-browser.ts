@@ -31,6 +31,16 @@ function isFacebookPostTarget(value: string) {
     || (url.pathname === "/photo.php" && url.searchParams.has("fbid"));
 }
 
+export function isAllowedFacebookTargetRedirect(requestedValue: string, finalValue: string) {
+  const requested = normalizeFacebookUrl(requestedValue);
+  const final = normalizeFacebookUrl(finalValue);
+  if (requested.normalizedUrl === final.normalizedUrl) return true;
+  const requestedUrl = new URL(requested.sourceUrl);
+  const resolvesTarget = requestedUrl.hostname.toLowerCase() === "fb.watch"
+    || /^\/share\/[pvr]\/[^/]+\/?$/iu.test(requestedUrl.pathname);
+  return resolvesTarget && isFacebookPostTarget(final.sourceUrl);
+}
+
 export function buildFacebookPostContext(messages: string[], metadata = "", maxLength = 5_000) {
   const seen = new Set<string>();
   const useful = (messages.length ? messages : [metadata]).flatMap((raw) => {
@@ -259,12 +269,8 @@ export class FacebookBrowser {
       if (pathname.startsWith("/checkpoint")) {
         throw new FacebookError("FACEBOOK_INTERVENTION_REQUIRED", "Facebook requiere resolver un checkpoint manualmente.", 409);
       }
-      if (new URL(requestedUrl.sourceUrl).hostname.toLowerCase() !== "fb.watch"
-        && requestedUrl.normalizedUrl !== normalizedFinalUrl.normalizedUrl) {
-        throw new FacebookError("FACEBOOK_TARGET_REDIRECTED", "Facebook redirigio a una publicacion distinta.", 422);
-      }
-      if (new URL(requestedUrl.sourceUrl).hostname.toLowerCase() === "fb.watch" && !isFacebookPostTarget(finalUrl)) {
-        throw new FacebookError("FACEBOOK_TARGET_REDIRECTED", "El enlace corto no resolvio a una publicacion identificable.", 422);
+      if (!isAllowedFacebookTargetRedirect(requestedUrl.sourceUrl, finalUrl)) {
+        throw new FacebookError("FACEBOOK_TARGET_REDIRECTED", "El enlace no resolvio a la publicacion esperada.", 422);
       }
       const contextText = await readPostContext(page);
       signal?.throwIfAborted();

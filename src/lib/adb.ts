@@ -308,6 +308,18 @@ export class AdbClient {
     return parseForeground(result.stdout);
   }
 
+  async waitForForeground(serial: string, packageName: string, options: AdbCommandOptions = {}) {
+    let elapsed = 0;
+    while (true) {
+      const foreground = await this.getForeground(serial, options);
+      if (foreground?.packageName === packageName) return foreground;
+      if (elapsed >= this.homeTimeoutMs) throw new Error(`Android no confirmo ${packageName} en foreground en ${serial}.`);
+      const wait = Math.min(this.homePollIntervalMs, this.homeTimeoutMs - elapsed);
+      await this.sleep(wait, options.signal);
+      elapsed += wait;
+    }
+  }
+
   async resolveLauncher(serial: string, options: AdbCommandOptions = {}) {
     const result = await this.execute(serial, [
       "shell",
@@ -328,18 +340,7 @@ export class AdbClient {
   async goHome(serial: string, options: AdbCommandOptions = {}) {
     const launcher = await this.resolveLauncher(serial, options);
     await this.execute(serial, ["shell", "input", "keyevent", "KEYCODE_HOME"], options);
-
-    let elapsed = 0;
-    while (true) {
-      const foreground = await this.getForeground(serial, options);
-      if (foreground?.packageName === launcher.packageName) return foreground;
-      if (elapsed >= this.homeTimeoutMs) break;
-
-      const wait = Math.min(this.homePollIntervalMs, this.homeTimeoutMs - elapsed);
-      await this.sleep(wait, options.signal);
-      elapsed += wait;
-    }
-    throw new Error(`Android no confirmo Home en ${serial}.`);
+    return this.waitForForeground(serial, launcher.packageName, options);
   }
 
   async openSafeUrl(serial: string, url: string, options: AdbCommandOptions = {}) {

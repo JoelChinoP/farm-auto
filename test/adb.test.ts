@@ -189,6 +189,33 @@ test("presses Home and polls until the resolved launcher is foreground", async (
   }
 });
 
+test("waits for a delayed safe URL handler to reach foreground", async () => {
+  const database = createDatabase();
+  let checks = 0;
+  const mock = recordingExecutor((args) => {
+    if (args.slice(2).join(" ") === "shell dumpsys window windows") {
+      checks += 1;
+      return { stdout: `mCurrentFocus=Window{42 u0 ${checks === 1 ? "com.sec.android.app.launcher/.Launcher" : "com.android.chrome/.Main"}}\n` };
+    }
+    return {};
+  });
+  const client = new AdbClient({
+    database,
+    executor: mock.executor,
+    homeTimeoutMs: 100,
+    homePollIntervalMs: 10,
+    sleep: async () => {},
+  });
+
+  try {
+    const foreground = await client.waitForForeground("serial-1", "com.android.chrome");
+    assert.equal(foreground.packageName, "com.android.chrome");
+    assert.equal(checks, 2);
+  } finally {
+    database.close();
+  }
+});
+
 test("opens only the fixed safe URL with ACTION_VIEW", async () => {
   const database = createDatabase();
   const mock = recordingExecutor();

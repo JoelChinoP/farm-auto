@@ -4,6 +4,7 @@ import test from "node:test";
 
 import type Database from "better-sqlite3";
 
+import { isAllowedFacebookTargetRedirect } from "../src/lib/facebook-browser.ts";
 import { openDatabase } from "../src/lib/database.ts";
 import {
   claimRuntimeOwnership,
@@ -103,6 +104,21 @@ test("normalizes only safe Facebook URLs and detects canonical duplicates", () =
     ...campaignRequest(["device-1"]),
     urls: ["https://facebook.com/post/1", "https://www.facebook.com/post/1/"],
   }), (error) => error instanceof FacebookError && error.code === "DUPLICATE_FACEBOOK_URL");
+});
+
+test("allows official Facebook share links to resolve to identifiable canonical posts", () => {
+  assert.equal(isAllowedFacebookTargetRedirect(
+    "https://www.facebook.com/share/p/short-id/",
+    "https://www.facebook.com/example/posts/canonical-id",
+  ), true);
+  assert.equal(isAllowedFacebookTargetRedirect(
+    "https://www.facebook.com/share/r/short-id/",
+    "https://www.facebook.com/reel/canonical-id",
+  ), true);
+  assert.equal(isAllowedFacebookTargetRedirect(
+    "https://www.facebook.com/example/posts/one",
+    "https://www.facebook.com/example/posts/two",
+  ), false);
 });
 
 test("creates one stable post per URL and the exact post by device product", () => {

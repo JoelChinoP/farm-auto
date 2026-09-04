@@ -20,6 +20,7 @@ import {
 import { getOperation, stableJson } from "./operations.ts";
 
 type FacebookAction = "like" | "comment";
+const STRUCTURAL_SELECTOR = "@accessibility";
 
 export type FacebookMobileDriver = {
   openPost(sessionId: string, deviceId: string, url: string, signal?: AbortSignal): Promise<void>;
@@ -73,6 +74,7 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   readonly #appium: AppiumClient;
   readonly #commentResourceIds: { composer: string; editor: string; submit: string; result: string };
   readonly #targets = new Map<string, { text: string; containerResourceId: string; urlResourceId: string; url: string }>();
+  readonly #devices = new Map<string, string>();
   readonly #commentSurfaces = new Map<string, string>();
 
   constructor(
@@ -123,6 +125,13 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   }
 
   async #commentComposer(sessionId: string, signal?: AbortSignal) {
+    if (this.#commentResourceIds.composer === STRUCTURAL_SELECTOR) {
+      return this.#waitFor(async () => {
+        const editors = await this.#appium.findElements(sessionId, "xpath", "//android.widget.EditText", { signal });
+        if (editors.length > 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "Hay mas de un compositor de comentarios.", 422);
+        return editors[0] ?? null;
+      }, "la estructura del compositor de comentarios", signal);
+    }
     return this.#waitFor(async () => {
       const composers = await this.#appium.findElements(sessionId, "id", this.#commentResourceIds.composer, { signal });
       if (composers.length > 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "Hay mas de un compositor de comentarios.", 422);
@@ -132,6 +141,7 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
 
   async #commentEditors(sessionId: string, signal?: AbortSignal) {
     const composer = await this.#commentComposer(sessionId, signal);
+    if (this.#commentResourceIds.editor === STRUCTURAL_SELECTOR) return [composer];
     return this.#appium.findElementsFromElement(
       sessionId,
       composer.elementId,
@@ -142,6 +152,18 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   }
 
   async #commentSurface(sessionId: string, signal?: AbortSignal) {
+    if (this.#commentResourceIds.result === STRUCTURAL_SELECTOR) {
+      return this.#waitFor(async () => {
+        const surfaces = await this.#appium.findElements(
+          sessionId,
+          "xpath",
+          "//androidx.recyclerview.widget.RecyclerView[.//*[@text != '' or @content-desc != '']]",
+          { signal },
+        );
+        if (surfaces.length > 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "Hay mas de una superficie de comentarios.", 422);
+        return surfaces[0] ?? null;
+      }, "la superficie de comentarios de la publicacion objetivo", signal);
+    }
     return this.#waitFor(async () => {
       const surfaces = await this.#appium.findElements(sessionId, "id", this.#commentResourceIds.result, { signal });
       if (surfaces.length > 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "Hay mas de una superficie de comentarios.", 422);
@@ -159,6 +181,17 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
     const target = this.#target(sessionId);
     const targetText = visibleText(target.text);
     const locator = `.//*[contains(normalize-space(@text), ${xpathLiteral(targetText)}) or contains(normalize-space(@content-desc), ${xpathLiteral(targetText)})]`;
+    if (target.containerResourceId === STRUCTURAL_SELECTOR && target.urlResourceId === STRUCTURAL_SELECTOR) {
+      const structuralLocator = /\/(?:reel|share\/r)\//iu.test(new URL(target.url).pathname)
+        ? `//androidx.recyclerview.widget.RecyclerView[${locator}]`
+        : `${locator}/ancestor::android.view.ViewGroup[.//android.widget.Button[normalize-space(@text) = 'Comentar' or normalize-space(@content-desc) = 'Comentar' or contains(normalize-space(@text), 'comentarios') or contains(normalize-space(@content-desc), 'comentarios') or normalize-space(@text) = 'Comment' or normalize-space(@content-desc) = 'Comment' or contains(normalize-space(@text), 'comments') or contains(normalize-space(@content-desc), 'comments')]][1]`;
+      return this.#waitFor(async () => {
+        const found = await this.#appium.findElements(sessionId, "xpath", structuralLocator, { signal });
+        const containers = [...new Map(found.map((element) => [element.elementId, element])).values()];
+        if (containers.length > 1) throw new FacebookError("FACEBOOK_TARGET_AMBIGUOUS", "Mas de una publicacion coincide con la referencia.", 422);
+        return containers[0] ?? null;
+      }, "el contenedor estructural de la publicacion exacta", signal);
+    }
     return this.#waitFor(async () => {
       const containers = await this.#appium.findElements(sessionId, "id", target.containerResourceId, { signal });
       const matches: AppiumElement[] = [];
@@ -208,6 +241,7 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   }
 
   async openPost(sessionId: string, deviceId: string, url: string, signal?: AbortSignal) {
+    this.#devices.set(sessionId, deviceId);
     await this.#appium.activateApp(sessionId, FACEBOOK_APP_PACKAGE, { signal });
     await this.#appium.executeScript(sessionId, "mobile: deepLink", [{ url, package: FACEBOOK_APP_PACKAGE }], { signal });
     await this.#waitFor(async () => {
@@ -226,6 +260,39 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
     targetText: string,
     signal?: AbortSignal,
   ) {
+    if (accountResourceId === STRUCTURAL_SELECTOR
+      && postContainerResourceId === STRUCTURAL_SELECTOR
+      && postUrlResourceId === STRUCTURAL_SELECTOR) {
+      const deviceId = this.#devices.get(sessionId);
+      if (!deviceId) throw new FacebookError("FACEBOOK_ACCOUNT_MISMATCH", "No se pudo vincular la sesion con el dispositivo controlado.", 422);
+      await this.#adb.execute(deviceId, ["shell", "am", "force-stop", FACEBOOK_APP_PACKAGE], { signal });
+      await this.#adb.execute(deviceId, ["shell", "am", "start", "-n", `${FACEBOOK_APP_PACKAGE}/.LoginActivity`], { signal });
+      await this.#adb.waitForForeground(deviceId, FACEBOOK_APP_PACKAGE, { signal });
+      let profileButtons = await this.#appium.findElements(sessionId, "accessibility id", "Ir al perfil", { signal });
+      if (!profileButtons.length) {
+        await this.#appium.findElements(
+          sessionId,
+          "-android uiautomator",
+          'new UiScrollable(new UiSelector().resourceId("android:id/list")).scrollToBeginning(10)',
+          { signal },
+        );
+        profileButtons = await this.#appium.findElements(sessionId, "accessibility id", "Ir al perfil", { signal });
+      }
+      if (profileButtons.length !== 1) throw new FacebookError("FACEBOOK_ACCOUNT_AMBIGUOUS", "No existe un unico acceso al perfil de la cuenta activa.", 422);
+      await this.#appium.clickElement(sessionId, profileButtons[0].elementId, { signal });
+      await this.#waitFor(async () => {
+        const accounts = await this.#appium.findElements(
+          sessionId,
+          "xpath",
+          `//*[normalize-space(@text) = ${xpathLiteral(visibleText(account))} or normalize-space(@content-desc) = ${xpathLiteral(visibleText(account))}]`,
+          { signal },
+        );
+        if (accounts.length > 1) throw new FacebookError("FACEBOOK_ACCOUNT_AMBIGUOUS", "El indicador de cuenta activa es ambiguo.", 422);
+        return accounts[0] ?? null;
+      }, "el indicador estable de la cuenta controlada", signal);
+      await this.#appium.executeScript(sessionId, "mobile: deepLink", [{ url: postUrl, package: FACEBOOK_APP_PACKAGE }], { signal });
+      await this.#adb.waitForForeground(deviceId, FACEBOOK_APP_PACKAGE, { signal });
+    } else {
     await this.#waitFor(async () => {
       const accounts = await this.#appium.findElements(sessionId, "id", accountResourceId, { signal });
       if (accounts.length > 1) throw new FacebookError("FACEBOOK_ACCOUNT_AMBIGUOUS", "El indicador de cuenta activa es ambiguo.", 422);
@@ -239,6 +306,7 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
       }
       return true;
     }, "el indicador estable de la cuenta controlada", signal);
+    }
     this.#targets.set(sessionId, {
       text: targetText,
       containerResourceId: postContainerResourceId,
@@ -248,7 +316,57 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
     await this.#postContainer(sessionId, signal);
   }
 
+  async #structuralButtons(sessionId: string, parentElementId: string, signal?: AbortSignal) {
+    const buttons = await this.#appium.findElementsFromElement(sessionId, parentElementId, "xpath", ".//android.widget.Button", { signal });
+    return Promise.all(buttons.map(async (element) => {
+      const [text, description] = await Promise.all([
+        this.#appium.getElementText(sessionId, element.elementId, { signal }),
+        this.#appium.getElementAttribute(sessionId, element.elementId, "content-desc", { signal }),
+      ]);
+      return { element, label: visibleText(description || text || "") };
+    }));
+  }
+
+  async #structuralLike(sessionId: string, signal?: AbortSignal) {
+    const container = await this.#postContainer(sessionId, signal);
+    const buttons = await this.#structuralButtons(sessionId, container.elementId, signal);
+    let matches = buttons.filter(({ label }) => {
+      const value = normalized(label);
+      return value.includes("me gusta") || /(^|\s)like(\s|$)/u.test(value);
+    });
+    if (!matches.length) {
+      const reactions = await this.#appium.findElementsFromElement(
+        sessionId,
+        container.elementId,
+        "xpath",
+        ".//android.widget.Button[(contains(@content-desc, 'reacciones') or contains(@content-desc, 'reactions')) and .//android.view.ViewGroup]",
+        { signal },
+      );
+      matches = await Promise.all(reactions.map(async (element) => ({
+        element,
+        label: visibleText(await this.#appium.getElementAttribute(sessionId, element.elementId, "content-desc", { signal }) ?? ""),
+      })));
+    }
+    if (matches.length !== 1) throw new FacebookError("FACEBOOK_LIKE_STATE_AMBIGUOUS", "No existe un unico control Like verificable en la publicacion objetivo.", 422);
+    const label = normalized(matches[0].label);
+    const [selected, checked] = await Promise.all([
+      this.#appium.getElementAttribute(sessionId, matches[0].element.elementId, "selected", { signal }),
+      this.#appium.getElementAttribute(sessionId, matches[0].element.elementId, "checked", { signal }),
+    ]);
+    const active = selected === "true"
+      || checked === "true"
+      || label.includes("presionado")
+      || label.includes("pressed")
+      || label.includes("ya no me gusta")
+      || label.includes("unlike")
+      || label.includes("remove like")
+      || label.includes("quitar me gusta");
+    return { element: matches[0].element, active };
+  }
+
   async readLikeState(sessionId: string, signal?: AbortSignal) {
+    const target = this.#target(sessionId);
+    if (target.containerResourceId === STRUCTURAL_SELECTOR) return (await this.#structuralLike(sessionId, signal)).active;
     const container = await this.#postContainer(sessionId, signal);
     const active = await this.#elementsForLabels(sessionId, appConfig.facebookLikeActiveLabels, signal, container.elementId);
     const inactive = await this.#elementsForLabels(sessionId, appConfig.facebookLikeInactiveLabels, signal, container.elementId);
@@ -262,6 +380,8 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   }
 
   async prepareLike(sessionId: string, signal?: AbortSignal) {
+    const target = this.#target(sessionId);
+    if (target.containerResourceId === STRUCTURAL_SELECTOR) return (await this.#structuralLike(sessionId, signal)).element.elementId;
     const container = await this.#postContainer(sessionId, signal);
     return (await this.#uniqueLabelElement(sessionId, appConfig.facebookLikeInactiveLabels, "el boton Like de la publicacion objetivo", signal, container.elementId)).elementId;
   }
@@ -284,6 +404,26 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
 
   async openCommentComposer(sessionId: string, signal?: AbortSignal) {
     const container = await this.#postContainer(sessionId, signal);
+    if (this.#commentResourceIds.composer === STRUCTURAL_SELECTOR) {
+      const existing = await this.#appium.findElements(sessionId, "xpath", "//android.widget.EditText", { signal });
+      if (existing.length > 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "Hay mas de un compositor de comentarios.", 422);
+      if (existing.length === 1) {
+        this.#commentSurfaces.set(sessionId, (await this.#commentSurface(sessionId, signal)).elementId);
+        return;
+      }
+      const buttons = await this.#structuralButtons(sessionId, container.elementId, signal);
+      const exact = buttons.filter(({ label }) => ["comentar", "comment", "agregar un comentario", "add a comment"].includes(normalized(label)));
+      const fallback = buttons.filter(({ label }) => {
+        const value = normalized(label);
+        return value.includes("comentario") || value.includes("comment");
+      });
+      const triggers = exact.length ? exact : fallback;
+      if (triggers.length !== 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "No existe un unico acceso a comentarios en la publicacion objetivo.", 422);
+      await this.#appium.clickElement(sessionId, triggers[0].element.elementId, { signal });
+      await this.#commentComposer(sessionId, signal);
+      this.#commentSurfaces.set(sessionId, (await this.#commentSurface(sessionId, signal)).elementId);
+      return;
+    }
     const trigger = await this.#uniqueLabelElement(sessionId, appConfig.facebookCommentLabels, "el compositor de comentarios de la publicacion objetivo", signal, container.elementId);
     const existing = await this.#appium.findElements(sessionId, "id", this.#commentResourceIds.composer, { signal });
     const existingSurfaces = await this.#appium.findElements(sessionId, "id", this.#commentResourceIds.result, { signal });
@@ -313,6 +453,15 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   }
 
   async prepareCommentSubmit(sessionId: string, signal?: AbortSignal) {
+    if (this.#commentResourceIds.submit === STRUCTURAL_SELECTOR) {
+      const submits = [
+        ...await this.#appium.findElements(sessionId, "accessibility id", "Enviar", { signal }),
+        ...await this.#appium.findElements(sessionId, "accessibility id", "Send", { signal }),
+      ];
+      const unique = [...new Map(submits.map((element) => [element.elementId, element])).values()];
+      if (unique.length !== 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "No existe un unico boton para publicar dentro del compositor.", 422);
+      return unique[0].elementId;
+    }
     const composer = await this.#commentComposer(sessionId, signal);
     const submits = await this.#appium.findElementsFromElement(
       sessionId,
@@ -332,6 +481,15 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   async confirmCommentVisible(sessionId: string, text: string, signal?: AbortSignal) {
     const surfaceId = this.#commentSurfaces.get(sessionId);
     if (!surfaceId) throw new FacebookError("FACEBOOK_TARGET_NOT_VERIFIED", "La superficie de comentarios no fue abierta desde la publicacion objetivo.", 422);
+    if (this.#commentResourceIds.composer === STRUCTURAL_SELECTOR) {
+      await this.#waitFor(async () => {
+        const sent = await this.#exactTextElements(sessionId, surfaceId, text, signal);
+        const editors = await this.#appium.findElements(sessionId, "xpath", "//android.widget.EditText", { signal });
+        const drafts = await Promise.all(editors.map((element) => this.#appium.getElementText(sessionId, element.elementId, { signal })));
+        return sent.length === 1 && !drafts.includes(text) ? true : null;
+      }, "la visibilidad del comentario enviado", signal);
+      return;
+    }
     await this.#waitFor(async () => {
       const composers = await this.#appium.findElements(sessionId, "id", this.#commentResourceIds.composer, { signal });
       if (composers.length > 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "Hay mas de un compositor de comentarios.", 422);

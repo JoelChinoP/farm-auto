@@ -444,15 +444,15 @@ export async function refreshDeviceInventory(
     ON CONFLICT(device_id) DO UPDATE SET
       connection = excluded.connection,
       model = excluded.model,
-      ro_serialno = NULL,
-      android_id = NULL,
-      hardware_id = NULL,
-      packages_json = '[]',
-      foreground_package = NULL,
-      foreground_activity = NULL,
-      launcher_package = NULL,
-      observed_at = excluded.observed_at,
-      error = excluded.error
+      ro_serialno = CASE WHEN excluded.connection = 'connected' THEN ro_serialno ELSE NULL END,
+      android_id = CASE WHEN excluded.connection = 'connected' THEN android_id ELSE NULL END,
+      hardware_id = CASE WHEN excluded.connection = 'connected' THEN hardware_id ELSE NULL END,
+      packages_json = CASE WHEN excluded.connection = 'connected' THEN packages_json ELSE '[]' END,
+      foreground_package = CASE WHEN excluded.connection = 'connected' THEN foreground_package ELSE NULL END,
+      foreground_activity = CASE WHEN excluded.connection = 'connected' THEN foreground_activity ELSE NULL END,
+      launcher_package = CASE WHEN excluded.connection = 'connected' THEN launcher_package ELSE NULL END,
+      observed_at = CASE WHEN excluded.connection = 'connected' THEN observed_at ELSE excluded.observed_at END,
+      error = CASE WHEN excluded.connection = 'connected' THEN error ELSE excluded.error END
   `);
   const now = Date.now();
   const persist = () => {
@@ -856,10 +856,7 @@ export async function prepareDevice(
     assertRuntimeOwnership(database, owner);
     const safeUrlHandler = await dependencies.adb.resolveSafeUrlHandler(profile.deviceId, { signal: dependencies.signal });
     await dependencies.adb.openSafeUrl(profile.deviceId, SAFE_ADB_URL, { signal: dependencies.signal });
-    const foreground = await dependencies.adb.getForeground(profile.deviceId, { signal: dependencies.signal });
-    if (!foreground || foreground.packageName !== safeUrlHandler.packageName) {
-      throw new Error("ADB no pudo confirmar el handler de la URL segura en foreground.");
-    }
+    const foreground = await dependencies.adb.waitForForeground(profile.deviceId, safeUrlHandler.packageName, { signal: dependencies.signal });
 
     assertRuntimeOwnership(database, owner);
     const cleanup = await cleanupSession(

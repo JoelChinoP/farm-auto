@@ -557,6 +557,37 @@ test("persists complete inventory for connected allowlisted devices", async () =
   });
 });
 
+test("keeps the last validated identity while a connected refresh is still inspecting", async () => {
+  await withDatabase(async (database) => {
+    upsertDeviceProfile(database, {
+      hardwareId: HARDWARE_ID,
+      deviceId: SERIAL,
+      alias: "Equipo 1",
+      physicalOrder: 1,
+      systemPort: 8200,
+    });
+    await refreshDeviceInventory(database, createAdb(database).client);
+    let releaseInspection!: () => void;
+    const inspectionBlocked = new Promise<void>((resolve) => { releaseInspection = resolve; });
+    const adb = new AdbClient({
+      database,
+      executor: async (_file, args) => {
+        if (args.join(" ") === "devices -l") return { stdout: `List of devices attached\n${SERIAL} device model:SM-G950U\n`, stderr: "" };
+        await inspectionBlocked;
+        throw new Error("inspection stopped");
+      },
+    });
+    const refresh = refreshDeviceInventory(database, adb);
+    await new Promise((resolve) => setImmediate(resolve));
+    const duringRefresh = database.prepare("SELECT hardware_id, packages_json FROM device_observations WHERE device_id = ?")
+      .get(SERIAL) as { hardware_id: string | null; packages_json: string };
+    assert.equal(duringRefresh.hardware_id, HARDWARE_ID);
+    assert.deepEqual(JSON.parse(duringRefresh.packages_json), ["com.android.chrome", "com.sec.android.app.launcher"]);
+    releaseInspection();
+    await refresh;
+  });
+});
+
 test("updates a stable hardware profile to a new ADB transport and invalidates readiness", async () => {
   await withDatabase(async (database) => {
     const { job, operation } = setupPreparation(database);
