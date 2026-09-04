@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { EFFECT_PHASES } from "./domain.ts";
 import type { EffectPhase } from "./domain.ts";
+import { completeDeviceRetirementIfIdle } from "./device-runtime.ts";
 import { IdempotencyConflictError, stableJson } from "./operations.ts";
 
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled" | "outcome_unknown";
@@ -101,6 +102,17 @@ function assertRuntimeOwner(database: Database.Database, workerId: string, now: 
 }
 
 function syncOperationForJob(database: Database.Database, job: Job, now: number) {
+  if (job.kind === "assignment.execute" && job.assignmentId) {
+    const scheduleStatus = job.status === "pending"
+      ? "pending"
+      : job.status === "running"
+        ? "claimed"
+        : job.status === "cancelled"
+          ? "cancelled"
+          : "completed";
+    database.prepare("UPDATE schedules SET status = ?, updated_at = ? WHERE assignment_id = ?")
+      .run(scheduleStatus, now, job.assignmentId);
+  }
   if (!job.operationId) return;
   database.prepare(`
     UPDATE operations
@@ -115,6 +127,11 @@ function syncOperationForJob(database: Database.Database, job: Job, now: number)
     ["pending", "running"].includes(job.status) ? null : now,
     job.operationId,
   );
+  if (!["pending", "running"].includes(job.status)) {
+    const operation = database.prepare("SELECT device_id FROM operations WHERE id = ?")
+      .get(job.operationId) as { device_id: string | null } | undefined;
+    if (operation?.device_id) completeDeviceRetirementIfIdle(database, operation.device_id, now);
+  }
 }
 
 export function enqueueJob<T>(
@@ -211,6 +228,7 @@ export function claimNextJob<T = unknown>(
   database: Database.Database,
   workerId: string,
   now = Date.now(),
+  options: { excludeKinds?: string[] } = {},
 ) {
   return database.transaction(() => {
     const owner = assertRuntimeOwner(database, workerId, now);
@@ -222,19 +240,49 @@ export function claimNextJob<T = unknown>(
           SELECT candidate.id FROM jobs AS candidate
            WHERE candidate.status = 'pending'
              AND candidate.cancellation_requested_at IS NULL
-             AND candidate.effect_phase IN ('none', 'before_effect')
-             AND candidate.available_at <= ?
-             AND (
-               candidate.operation_id IS NULL OR EXISTS (
-                 SELECT 1 FROM operations
-                 WHERE operations.id = candidate.operation_id AND operations.status = 'pending'
-               )
-             )
-          ORDER BY candidate.priority DESC, candidate.available_at, candidate.created_at
+              AND candidate.effect_phase IN ('none', 'before_effect')
+              AND candidate.available_at <= ?
+              AND candidate.kind NOT IN (SELECT value FROM json_each(?))
+              AND (
+                candidate.operation_id IS NULL OR EXISTS (
+                  SELECT 1 FROM operations
+                  WHERE operations.id = candidate.operation_id AND operations.status = 'pending'
+                )
+              )
+              AND (
+                candidate.campaign_id IS NULL OR NOT EXISTS (
+                  SELECT 1 FROM campaigns
+                  WHERE campaigns.id = candidate.campaign_id
+                    AND campaigns.status IN ('cancellation_requested', 'cancelled', 'cancelled_with_cleanup_errors')
+                )
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM jobs active
+                JOIN operations active_operation ON active_operation.id = active.operation_id
+                JOIN operations candidate_operation ON candidate_operation.id = candidate.operation_id
+                WHERE active.status = 'running'
+                  AND active.id != candidate.id
+                  AND active_operation.device_id = candidate_operation.device_id
+              )
+              AND (
+                candidate.kind != 'assignment.execute' OR NOT EXISTS (
+                  SELECT 1 FROM jobs earlier
+                  JOIN assignments earlier_assignment ON earlier_assignment.id = earlier.assignment_id
+                  JOIN posts earlier_post ON earlier_post.id = earlier_assignment.post_id
+                  JOIN assignments candidate_assignment ON candidate_assignment.id = candidate.assignment_id
+                  JOIN posts candidate_post ON candidate_post.id = candidate_assignment.post_id
+                  WHERE earlier.kind = 'assignment.execute'
+                    AND earlier.status IN ('pending', 'running')
+                    AND earlier.campaign_id = candidate.campaign_id
+                    AND earlier_assignment.device_id = candidate_assignment.device_id
+                    AND earlier_post.position < candidate_post.position
+                )
+              )
+           ORDER BY candidate.priority DESC, candidate.available_at, candidate.created_at
          LIMIT 1
        ) AND status = 'pending'
        RETURNING *`,
-    ).get(owner, now, now, now) as JobRow | undefined;
+    ).get(owner, now, now, now, stableJson(options.excludeKinds ?? [])) as JobRow | undefined;
     if (!row) return null;
     const job = mapJob<T>(row);
     syncOperationForJob(database, job, now);
@@ -294,6 +342,7 @@ export function failJob(
   workerId: string,
   error: unknown,
   retryDelayMs = 0,
+  allowRetry = true,
 ) {
   const message = error instanceof Error ? error.message : String(error);
   const now = Date.now();
@@ -317,7 +366,7 @@ export function failJob(
       throw new Error("El job no pertenece a este worker o ya termino.");
     }
 
-    const retry = current.effect_phase === "none" || current.effect_phase === "before_effect"
+    const retry = allowRetry && (current.effect_phase === "none" || current.effect_phase === "before_effect")
       ? current.cancellation_requested_at === null && current.attempts < current.max_attempts
       : false;
     const status: JobStatus = current.effect_phase === "effect_possible"
@@ -359,6 +408,9 @@ export function recoverStaleJobs(
       `UPDATE jobs
        SET status = CASE
               WHEN effect_phase = 'effect_possible' THEN 'outcome_unknown'
+              WHEN effect_phase = 'effect_confirmed'
+                AND result_json IS NOT NULL
+                AND COALESCE(json_extract(result_json, '$.domainCommitted'), 0) = 1 THEN 'succeeded'
               WHEN effect_phase = 'effect_confirmed' THEN 'failed'
               WHEN cancellation_requested_at IS NOT NULL THEN 'cancelled'
               WHEN attempts < max_attempts THEN 'pending'

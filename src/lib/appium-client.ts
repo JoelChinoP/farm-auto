@@ -25,6 +25,10 @@ export interface AppiumSession {
   capabilities: Record<string, unknown>;
 }
 
+export const APPIUM_ELEMENT_KEY = "element-6066-11e4-a52e-4f735466cecf";
+export type AppiumLocatorStrategy = "accessibility id" | "id" | "-android uiautomator" | "xpath";
+export type AppiumElement = { elementId: string };
+
 export class AppiumClientError extends Error {
   readonly code: string;
   readonly status?: number;
@@ -193,6 +197,146 @@ export class AppiumClient {
     return screenshot;
   }
 
+  async activateApp(sessionId: string, appId: string, options: AppiumRequestOptions = {}) {
+    this.#assertOwns(sessionId);
+    if (!appId.trim()) throw new AppiumClientError("APPIUM_APP_ID_INVALID", "Appium requires an app id");
+    await this.#request(`/session/${encodeURIComponent(sessionId)}/appium/device/activate_app`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ appId }),
+    }, options);
+  }
+
+  async executeScript(sessionId: string, script: string, args: unknown[], options: AppiumRequestOptions = {}) {
+    this.#assertOwns(sessionId);
+    if (!script.trim() || !Array.isArray(args)) {
+      throw new AppiumClientError("APPIUM_SCRIPT_INVALID", "Appium script and args are required");
+    }
+    return this.#request(`/session/${encodeURIComponent(sessionId)}/execute/sync`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ script, args }),
+    }, options);
+  }
+
+  async findElements(
+    sessionId: string,
+    using: AppiumLocatorStrategy,
+    value: string,
+    options: AppiumRequestOptions = {},
+  ): Promise<AppiumElement[]> {
+    this.#assertOwns(sessionId);
+    if (!value.trim()) throw new AppiumClientError("APPIUM_LOCATOR_INVALID", "Appium locator cannot be empty");
+    const result = await this.#request(`/session/${encodeURIComponent(sessionId)}/elements`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ using, value }),
+    }, options);
+    if (!Array.isArray(result)) {
+      throw new AppiumClientError("APPIUM_ELEMENTS_INVALID", "Appium returned an invalid element collection");
+    }
+    return result.map((element) => {
+      const elementId = isRecord(element) && typeof element[APPIUM_ELEMENT_KEY] === "string"
+        ? element[APPIUM_ELEMENT_KEY]
+        : null;
+      if (!elementId) throw new AppiumClientError("APPIUM_ELEMENT_INVALID", "Appium returned an invalid element");
+      return { elementId };
+    });
+  }
+
+  async findElementsFromElement(
+    sessionId: string,
+    elementId: string,
+    using: AppiumLocatorStrategy,
+    value: string,
+    options: AppiumRequestOptions = {},
+  ): Promise<AppiumElement[]> {
+    this.#assertOwns(sessionId);
+    this.#assertElementId(elementId);
+    if (!value.trim()) throw new AppiumClientError("APPIUM_LOCATOR_INVALID", "Appium locator cannot be empty");
+    const result = await this.#request(
+      `/session/${encodeURIComponent(sessionId)}/element/${encodeURIComponent(elementId)}/elements`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ using, value }),
+      },
+      options,
+    );
+    if (!Array.isArray(result)) {
+      throw new AppiumClientError("APPIUM_ELEMENTS_INVALID", "Appium returned an invalid element collection");
+    }
+    return result.map((element) => {
+      const childId = isRecord(element) && typeof element[APPIUM_ELEMENT_KEY] === "string"
+        ? element[APPIUM_ELEMENT_KEY]
+        : null;
+      if (!childId) throw new AppiumClientError("APPIUM_ELEMENT_INVALID", "Appium returned an invalid element");
+      return { elementId: childId };
+    });
+  }
+
+  async clickElement(sessionId: string, elementId: string, options: AppiumRequestOptions = {}) {
+    this.#assertOwns(sessionId);
+    this.#assertElementId(elementId);
+    await this.#request(`/session/${encodeURIComponent(sessionId)}/element/${encodeURIComponent(elementId)}/click`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }, options);
+  }
+
+  async clearElement(sessionId: string, elementId: string, options: AppiumRequestOptions = {}) {
+    this.#assertOwns(sessionId);
+    this.#assertElementId(elementId);
+    await this.#request(`/session/${encodeURIComponent(sessionId)}/element/${encodeURIComponent(elementId)}/clear`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
+    }, options);
+  }
+
+  async setElementValue(sessionId: string, elementId: string, text: string, options: AppiumRequestOptions = {}) {
+    this.#assertOwns(sessionId);
+    this.#assertElementId(elementId);
+    await this.#request(`/session/${encodeURIComponent(sessionId)}/element/${encodeURIComponent(elementId)}/value`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text, value: [...text] }),
+    }, options);
+  }
+
+  async getElementText(sessionId: string, elementId: string, options: AppiumRequestOptions = {}) {
+    this.#assertOwns(sessionId);
+    this.#assertElementId(elementId);
+    const value = await this.#request(
+      `/session/${encodeURIComponent(sessionId)}/element/${encodeURIComponent(elementId)}/text`,
+      { method: "GET" },
+      options,
+    );
+    if (typeof value !== "string") throw new AppiumClientError("APPIUM_ELEMENT_TEXT_INVALID", "Appium returned invalid element text");
+    return value;
+  }
+
+  async getElementAttribute(
+    sessionId: string,
+    elementId: string,
+    attribute: string,
+    options: AppiumRequestOptions = {},
+  ) {
+    this.#assertOwns(sessionId);
+    this.#assertElementId(elementId);
+    if (!attribute.trim()) throw new AppiumClientError("APPIUM_ATTRIBUTE_INVALID", "Appium attribute cannot be empty");
+    const value = await this.#request(
+      `/session/${encodeURIComponent(sessionId)}/element/${encodeURIComponent(elementId)}/attribute/${encodeURIComponent(attribute)}`,
+      { method: "GET" },
+      options,
+    );
+    if (value !== null && typeof value !== "string") {
+      throw new AppiumClientError("APPIUM_ATTRIBUTE_INVALID", "Appium returned an invalid element attribute");
+    }
+    return value;
+  }
+
   async deleteSession(sessionId: string, options: AppiumRequestOptions = {}) {
     this.#assertOwns(sessionId);
     await this.#request(`/session/${encodeURIComponent(sessionId)}`, {
@@ -208,6 +352,10 @@ export class AppiumClient {
         `Appium session ${JSON.stringify(sessionId)} is not owned by Farm Appium`,
       );
     }
+  }
+
+  #assertElementId(elementId: string) {
+    if (!elementId.trim()) throw new AppiumClientError("APPIUM_ELEMENT_INVALID", "Appium element id cannot be empty");
   }
 
   async #request(path: string, init: RequestInit, options: AppiumRequestOptions) {

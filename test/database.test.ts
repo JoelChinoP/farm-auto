@@ -80,13 +80,66 @@ function createVersion1Database(filename: string) {
   database.close();
 }
 
+function createLegacyVersion11Database(filename: string) {
+  const database = new Database(filename);
+  database.exec(`
+    CREATE TABLE device_profiles (
+      hardware_id TEXT PRIMARY KEY, device_id TEXT UNIQUE, alias TEXT,
+      physical_order INTEGER UNIQUE, system_port INTEGER UNIQUE,
+      created_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE device_locks (device_id TEXT PRIMARY KEY, operation_id TEXT, acquired_at TEXT);
+    CREATE TABLE operations (
+      id TEXT PRIMARY KEY, kind TEXT, idempotency_key TEXT UNIQUE,
+      request_fingerprint TEXT, device_id TEXT, status TEXT, result_json TEXT,
+      error TEXT, created_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE message_drafts (
+      id TEXT PRIMARY KEY, kind TEXT, platform TEXT, context TEXT, intent TEXT,
+      tone TEXT, text TEXT, status TEXT, approved_at TEXT, sent_at TEXT,
+      error TEXT, created_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE facebook_batches (id TEXT PRIMARY KEY, status TEXT, created_at TEXT, updated_at TEXT);
+    CREATE TABLE facebook_posts (
+      id TEXT PRIMARY KEY, batch_id TEXT, position INTEGER, url TEXT,
+      extracted_context TEXT, context TEXT, status TEXT, error TEXT,
+      created_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE facebook_assignments (
+      id TEXT PRIMARY KEY, post_id TEXT, device_id TEXT, intent TEXT, tone TEXT,
+      draft_id TEXT, status TEXT, error TEXT, created_at TEXT, updated_at TEXT
+    );
+    CREATE TABLE facebook_rotation_slots (
+      batch_id TEXT, post_id TEXT, device_id TEXT, round_index INTEGER,
+      sequence_index INTEGER, scheduled_at TEXT, opened_at TEXT, open_error TEXT
+    );
+    PRAGMA user_version = 11;
+  `);
+  const createdAt = "2026-09-02T10:00:00.000Z";
+  database.prepare("INSERT INTO device_profiles VALUES (?, ?, ?, ?, ?, ?, ?)")
+    .run("a".repeat(64), "legacy-serial", "Equipo legacy", 1, 8200, createdAt, createdAt);
+  database.prepare("INSERT INTO facebook_batches VALUES (?, ?, ?, ?)")
+    .run("legacy-campaign", "active", createdAt, createdAt);
+  database.prepare("INSERT INTO facebook_posts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("legacy-post", "legacy-campaign", 0, "https://www.facebook.com/legacy/posts/1", "Contexto legacy", "Contexto editado", "context_ready", null, createdAt, createdAt);
+  database.prepare("INSERT INTO message_drafts VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("legacy-draft", "facebook", "facebook", "Contexto editado", "Afinidad", "Cercano", "Comentario legacy", "sent", createdAt, createdAt, null, createdAt, createdAt);
+  database.prepare("INSERT INTO facebook_assignments VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("legacy-assignment", "legacy-post", "legacy-serial", "Afinidad", "Cercano", "legacy-draft", "sent", null, createdAt, createdAt);
+  database.prepare("INSERT INTO facebook_rotation_slots VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    .run("legacy-campaign", "legacy-post", "legacy-serial", 0, 0, createdAt, createdAt, null);
+  database.close();
+}
+
 test("creates the complete schema from an empty database and persists every phase 1 entity", async () => {
   await withDirectory((_directory, filename) => {
     let database = openDatabase(filename);
     assert.equal(database.pragma("user_version", { simple: true }), DATABASE_VERSION);
     const expectedTables = [
       "appium_sessions",
+      "assignment_action_results",
       "assignments",
+      "browser_profile_locks",
       "campaigns",
       "checkpoints",
       "comments",
@@ -94,9 +147,13 @@ test("creates the complete schema from an empty database and persists every phas
       "device_observations",
       "device_preparations",
       "device_profiles",
+      "device_retirements",
       "evidence",
+      "facebook_campaign_manifests",
+      "facebook_device_identities",
       "jobs",
       "operations",
+      "post_context_versions",
       "posts",
       "runtime_ownership",
       "schedules",
@@ -108,14 +165,19 @@ test("creates the complete schema from an empty database and persists every phas
     const now = 1;
     database.prepare("INSERT INTO device_profiles VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("hardware-1", "serial-1", "Equipo 1", 1, 8200, now, now);
-    database.prepare("INSERT INTO campaigns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run("campaign-1", "facebook", "draft", 1, 1, null, now, now, null);
+    database.prepare("INSERT INTO campaigns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("campaign-1", "facebook", "draft", 1, 1, null, now, now, null, 1);
     database.prepare(`
       INSERT INTO posts (
         id, campaign_id, position, source_url, normalized_url, status,
         context_status, created_at, updated_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run("post-1", "campaign-1", 1, "https://www.facebook.com/post/1", "https://www.facebook.com/post/1", "queued", "queued", now, now);
+    database.prepare(`
+      INSERT INTO post_context_versions (
+        id, post_id, version, context, context_hash, source, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run("context-1", "post-1", 1, "Contexto", "a".repeat(64), "manual", now);
     database.prepare(`
       INSERT INTO assignments (id, campaign_id, post_id, device_id, status, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -126,6 +188,16 @@ test("creates the complete schema from an empty database and persists every phas
     `).run("comment-1", "assignment-1", 1, "Afinidad", "Cercano", "Texto", "ready", "manual", now, now);
     database.prepare("INSERT INTO schedules VALUES (?, ?, ?, ?, ?, ?)")
       .run("schedule-1", "assignment-1", now, "pending", now, now);
+    database.prepare("INSERT INTO facebook_device_identities VALUES (?, ?, ?, ?, ?)")
+      .run("serial-1", "Cuenta controlada", "b".repeat(64), now, now);
+    database.prepare("INSERT INTO device_retirements VALUES (?, ?, ?, ?)")
+      .run("serial-1", "pending", now, null);
+    database.prepare(`
+      INSERT INTO facebook_campaign_manifests (
+        campaign_id, campaign_revision, scheduled_at, posts_json, devices_json,
+        assignments_json, allow_shared_accounts, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("campaign-1", 1, now, "[]", "[]", "[]", 0, now);
 
     const operation = createOperation(database, {
       kind: "device.prepare",
@@ -142,6 +214,8 @@ test("creates the complete schema from an empty database and persists every phas
       .run("serial-1", operation.id, "worker-1", now, now + 1);
     database.prepare("INSERT INTO runtime_ownership VALUES (?, ?, ?, ?, ?)")
       .run(1, "worker-1", 1, now, now + 1);
+    database.prepare("INSERT INTO browser_profile_locks VALUES (?, ?, ?, ?)")
+      .run("profile-1", "worker-1", now, now + 1);
     database.prepare(`
       INSERT INTO device_observations (
         device_id, connection, packages_json, observed_at
@@ -166,6 +240,12 @@ test("creates the complete schema from an empty database and persists every phas
     }).operation;
     database.prepare("INSERT INTO checkpoints VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("checkpoint-1", execution.id, "assignment-1", "before_like", 1, "{}", now);
+    database.prepare(`
+      INSERT INTO assignment_action_results (
+        id, assignment_id, operation_id, checkpoint_id, action, status,
+        created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'like', 'pending', ?, ?)
+    `).run("action-1", "assignment-1", execution.id, "checkpoint-1", now, now);
     database.prepare("INSERT INTO evidence VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("evidence-1", execution.id, "checkpoint-1", "metadata", "artifacts/metadata.json", "{}", now);
     database.close();
@@ -214,10 +294,37 @@ test("backs up and migrates an existing version 2 database", async () => {
         id, device_id, operation_id, status, step, created_at, updated_at, completed_at, setup_revision
       ) VALUES ('legacy-ready', 'serial-1', ?, 'ready', 'legacy', 1, 1, 1, 1)
     `).run(operation.id);
+    database.prepare(`
+      INSERT INTO campaigns (
+        id, platform, status, like_enabled, comment_enabled, created_at, updated_at
+      ) VALUES ('legacy-campaign', 'facebook', 'draft', 1, 1, 1, 1)
+    `).run();
+    database.prepare(`
+      INSERT INTO posts (
+        id, campaign_id, position, source_url, normalized_url, status,
+        context_status, context, context_source, created_at, updated_at
+      ) VALUES (
+        'legacy-post', 'legacy-campaign', 1, 'https://facebook.com/post/1',
+        'https://www.facebook.com/post/1', 'context_ready', 'edited',
+        'Contexto conservado', 'manual', 1, 1
+      )
+    `).run();
     database.close();
 
     const version2 = new Database(filename);
     version2.exec(`
+      DROP TABLE facebook_campaign_manifests;
+      DROP TABLE facebook_device_identities;
+      DROP TABLE device_retirements;
+      DROP TABLE assignment_action_results;
+      DROP INDEX post_context_versions_post_idx;
+      DROP TABLE post_context_versions;
+      DROP TABLE browser_profile_locks;
+      ALTER TABLE comments DROP COLUMN error;
+      ALTER TABLE posts DROP COLUMN context_version;
+      ALTER TABLE posts DROP COLUMN error;
+      ALTER TABLE posts DROP COLUMN final_url;
+      ALTER TABLE campaigns DROP COLUMN revision;
       DROP TABLE appium_sessions;
       DROP TABLE device_observations;
       DROP TABLE runtime_ownership;
@@ -233,12 +340,48 @@ test("backs up and migrates an existing version 2 database", async () => {
     assert.ok((database.prepare("PRAGMA table_info(device_preparations)").all() as Array<{ name: string }>)
       .some((column) => column.name === "setup_revision"));
     assert.equal((database.prepare("SELECT status FROM device_preparations").get() as { status: string }).status, "not_ready");
+    const migratedContext = database.prepare(`
+      SELECT p.context_version, v.context, v.source
+      FROM posts p JOIN post_context_versions v ON v.post_id = p.id
+      WHERE p.id = 'legacy-post'
+    `).get() as { context_version: number; context: string; source: string };
+    assert.deepEqual(migratedContext, { context_version: 1, context: "Contexto conservado", source: "manual" });
     database.close();
 
     const backups = readdirSync(directory).filter((name) => name.endsWith(".backup"));
     assert.equal(backups.length, 1);
     const backup = new Database(join(directory, backups[0]));
     assert.equal(backup.pragma("user_version", { simple: true }), 2);
+    backup.close();
+  });
+});
+
+test("backs up and imports the persisted legacy version 11 database", async () => {
+  await withDirectory((directory, filename) => {
+    createLegacyVersion11Database(filename);
+    const database = openDatabase(filename);
+    assert.equal(database.pragma("user_version", { simple: true }), DATABASE_VERSION);
+    assert.equal((database.prepare("SELECT alias FROM device_profiles").get() as { alias: string }).alias, "Equipo legacy");
+    assert.deepEqual(
+      database.prepare("SELECT status, comment_enabled FROM campaigns WHERE id = 'legacy-campaign'").get(),
+      { status: "completed_with_issues", comment_enabled: 1 },
+    );
+    assert.deepEqual(
+      database.prepare("SELECT status, scheduled_at, actual_at FROM assignments WHERE id = 'legacy-assignment'").get(),
+      { status: "sent", scheduled_at: Date.parse("2026-09-02T10:00:00.000Z"), actual_at: Date.parse("2026-09-02T10:00:00.000Z") },
+    );
+    assert.deepEqual(
+      database.prepare("SELECT text, status FROM comments").get(),
+      { text: "Comentario legacy", status: "ready" },
+    );
+    assert.equal((database.prepare("SELECT position FROM posts").get() as { position: number }).position, 1);
+    assert.ok(database.prepare("SELECT 1 FROM legacy_operations").get() === undefined);
+    database.close();
+
+    const backups = readdirSync(directory).filter((name) => name.endsWith(".backup"));
+    assert.equal(backups.length, 1);
+    const backup = new Database(join(directory, backups[0]));
+    assert.equal(backup.pragma("user_version", { simple: true }), 11);
     backup.close();
   });
 });

@@ -44,9 +44,9 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
 
       <div className="config-grid">
         <article className="config-card device-picker">
-          <div className="card-index"><span>A</span><div><strong>Dispositivos</strong><small>{draft.selectedDeviceIds.length} seleccionados</small></div></div>
+          <div className="card-index"><span>A</span><div><strong>Dispositivos</strong><small>{platform === "tiktok" ? "Exactamente uno" : `${draft.selectedDeviceIds.length} seleccionados`}</small></div></div>
           <Group gap="xs">
-            <Button size="compact-sm" variant="light" onClick={() => dispatch({ type: "set-campaign-devices", platform, deviceIds: eligible.map((item) => item.id) })}>Seleccionar elegibles</Button>
+            <Button size="compact-sm" variant="light" disabled={!eligible.length} onClick={() => dispatch({ type: "set-campaign-devices", platform, deviceIds: platform === "tiktok" ? [eligible[0].id] : eligible.map((item) => item.id) })}>{platform === "tiktok" ? "Usar primer elegible" : "Seleccionar elegibles"}</Button>
             <Button size="compact-sm" variant="subtle" onClick={() => dispatch({ type: "set-campaign-devices", platform, deviceIds: [] })}>Limpiar selección</Button>
           </Group>
           <div className="device-choice-list">
@@ -62,7 +62,7 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
                       type: "set-campaign-devices",
                       platform,
                       deviceIds: event.currentTarget.checked
-                        ? [...draft.selectedDeviceIds, device.id]
+                        ? platform === "tiktok" ? [device.id] : [...draft.selectedDeviceIds, device.id]
                         : draft.selectedDeviceIds.filter((id) => id !== device.id),
                     })}
                     aria-label={`${checked ? "Deseleccionar" : "Seleccionar"} ${device.alias}`}
@@ -77,12 +77,12 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
         </article>
 
         <article className="config-card url-builder">
-          <div className="card-index"><span>B</span><div><strong>Publicaciones</strong><small>1–10 URLs · {allowedHosts}</small></div></div>
+          <div className="card-index"><span>B</span><div><strong>Publicaciones</strong><small>{platform === "tiktok" ? "1 URL" : "1–10 URLs"} · {allowedHosts}</small></div></div>
           <Textarea
             label={`URLs de ${label}`}
-            description="Una URL HTTPS por línea"
-            minRows={5}
-            maxRows={10}
+            description={platform === "tiktok" ? "Una única URL HTTPS" : "Una URL HTTPS por línea"}
+            minRows={platform === "tiktok" ? 3 : 5}
+            maxRows={platform === "tiktok" ? 3 : 10}
             autosize
             value={draft.urlInput}
             onChange={(event) => dispatch({ type: "set-campaign-urls", platform, value: event.currentTarget.value })}
@@ -114,7 +114,7 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
           <div className="card-index"><span>C</span><div><strong>Acciones</strong><small>Selecciones independientes</small></div></div>
           <label className="action-choice">
             <Checkbox checked={draft.actions.like} onChange={() => dispatch({ type: "toggle-campaign-action", platform, action: "like" })} />
-            <span><strong>Like</strong><small>Disponible para la simulación</small></span>
+            <span><strong>Like</strong><small>Se ejecutará tras la confirmación final</small></span>
             <Badge color="lime">Disponible</Badge>
           </label>
           <label className="action-choice">
@@ -144,16 +144,16 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
           ) : (
             <>
               <div className="distribution-head"><span>Intención</span><span>Tono</span><span>Cantidad</span><span /></div>
-              {draft.distribution.map((row) => (
+              {draft.distribution.slice(0, platform === "tiktok" ? 1 : undefined).map((row) => (
                 <div className="distribution-row" key={row.id}>
                   <TextInput aria-label="Intención" value={row.intention} onChange={(event) => dispatch({ type: "update-distribution", platform, id: row.id, field: "intention", value: event.currentTarget.value })} />
                   <Select aria-label="Tono" value={row.tone} data={toneOptions} allowDeselect={false} onChange={(value) => dispatch({ type: "update-distribution", platform, id: row.id, field: "tone", value: value as Tone })} />
-                  <NumberInput aria-label="Cantidad" min={0} value={row.count} onChange={(value) => dispatch({ type: "update-distribution", platform, id: row.id, field: "count", value: Number(value) || 0 })} />
-                  <Button aria-label="Eliminar intención" color="red" variant="subtle" disabled={draft.distribution.length === 1} onClick={() => dispatch({ type: "remove-distribution", platform, id: row.id })}>×</Button>
+                  <NumberInput aria-label="Cantidad" min={platform === "tiktok" ? 1 : 0} max={platform === "tiktok" ? 1 : undefined} disabled={platform === "tiktok"} value={row.count} onChange={(value) => dispatch({ type: "update-distribution", platform, id: row.id, field: "count", value: Number(value) || 0 })} />
+                  <Button aria-label="Eliminar intención" color="red" variant="subtle" disabled={platform === "tiktok" || draft.distribution.length === 1} onClick={() => dispatch({ type: "remove-distribution", platform, id: row.id })}>×</Button>
                 </div>
               ))}
               <Group justify="space-between">
-                <Button size="compact-sm" variant="light" onClick={() => dispatch({ type: "add-distribution", platform })}>Agregar intención</Button>
+                {platform !== "tiktok" && <Button size="compact-sm" variant="light" onClick={() => dispatch({ type: "add-distribution", platform })}>Agregar intención</Button>}
                 <Button size="compact-sm" variant="default" onClick={() => dispatch({ type: "update-distribution", platform, id: draft.distribution[0].id, field: "count", value: draft.selectedDeviceIds.length })}>Aplicar como predeterminado</Button>
               </Group>
               {distributionTotal !== draft.selectedDeviceIds.length && <Text className="inline-error" role="alert">La suma debe coincidir con los {draft.selectedDeviceIds.length} dispositivos seleccionados.</Text>}
@@ -163,10 +163,10 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
       </div>
 
       <div className="impact-bar">
-        <div><span>IMPACTO</span><strong>{draft.selectedDeviceIds.length} dispositivos × {draft.urls.length} publicaciones = {assignmentCount} ejecuciones</strong></div>
+        <div><span>IMPACTO</span><strong>{platform === "tiktok" ? "1 dispositivo × 1 publicación" : `${draft.selectedDeviceIds.length} dispositivos × ${draft.urls.length} publicaciones = ${assignmentCount} ejecuciones`}</strong></div>
         <div><span>COMENTARIOS PREVISTOS</span><strong>{draft.actions.comment ? assignmentCount : 0}</strong></div>
         <div><span>ACCIONES POR EJECUCIÓN</span><strong>{[draft.actions.like && "Like", draft.actions.comment && "Comentario"].filter(Boolean).join(" + ") || "Ninguna"}</strong></div>
-        <Button size="lg" disabled={!campaignCanPrepare(state, platform) || draft.status === "running"} onClick={() => dispatch({ type: "prepare-campaign", platform })}>Preparar campaña</Button>
+        <Button size="lg" disabled={!campaignCanPrepare(state, platform) || draft.status !== "draft"} onClick={() => dispatch({ type: "prepare-campaign", platform })}>Preparar campaña</Button>
       </div>
     </section>
   );

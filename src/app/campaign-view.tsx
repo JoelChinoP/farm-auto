@@ -25,14 +25,18 @@ export function CampaignView({ platform, label, accent, allowedHosts, requiredCa
     <div className="view-content campaign-view" data-accent={accent}>
       <header className="view-heading campaign-heading">
         <div>
-          <span className="section-code">{platform === "facebook" ? "02" : "03"} / CONSTRUCTOR COMPARTIDO</span>
+          <span className="section-code">{platform === "facebook" ? "02 / CONSTRUCTOR N×M" : "03 / TIKTOK POST 1×1"}</span>
           <Title order={1}>{label}</Title>
-          <Text>Todos los equipos seleccionados procesan todas las publicaciones.</Text>
+          <Text>{platform === "facebook" ? "Todos los equipos seleccionados procesan todas las publicaciones." : "Un dispositivo controlado procesa una publicación verificada."}</Text>
         </div>
         <div className="campaign-state"><span>ESTADO DE CAMPAÑA</span><Badge size="lg" variant="light">{statusLabels[draft.status]}</Badge><small>{requiredCapability}</small></div>
       </header>
 
-      <Alert className="prototype-ribbon" color={platform === "facebook" ? "blue" : "cyan"}>MODO PROTOTIPO · no se ejecutarán acciones reales ni solicitudes HTTP.</Alert>
+      <Alert className="prototype-ribbon" color={platform === "facebook" ? "blue" : "cyan"}>
+        {platform === "facebook"
+          ? "FASE 5 · plan N×M persistente, secuencia por dispositivo y confirmación pública explícita."
+          : "FASE 6 · contexto manual persistente, adaptador TikTok propio y confirmación pública explícita."}
+      </Alert>
       <CampaignSetup platform={platform} label={label} allowedHosts={allowedHosts} experimentalActions={experimentalActions} draft={draft} state={state} dispatch={dispatch} />
       {draft.posts.length > 0 && <><CampaignPipeline platform={platform} draft={draft} state={state} dispatch={dispatch} /><CampaignPlanningReview platform={platform} label={label} draft={draft} state={state} dispatch={dispatch} /></>}
     </div>

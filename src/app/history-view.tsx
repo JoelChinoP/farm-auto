@@ -58,7 +58,7 @@ export function HistoryView({ state, dispatch }: HistoryViewProps) {
           <Title order={1}>Historial</Title>
           <Text>Resultados preservados, incidencias por asignación y cleanup verificable.</Text>
         </div>
-        <div className="refresh-stamp"><span>REGISTROS DE DEMOSTRACIÓN</span><strong>{state.history.length} campañas</strong></div>
+        <div className="refresh-stamp"><span>REGISTROS PERSISTIDOS</span><strong>{state.history.length} campañas</strong></div>
       </header>
 
       <section className="metric-rail history-metrics" aria-label="Resumen histórico">
@@ -94,10 +94,10 @@ export function HistoryView({ state, dispatch }: HistoryViewProps) {
             <tbody>
               {campaigns.map((campaign) => (
                 <tr key={campaign.id} data-unknown={hasUnknown(campaign)}>
-                  <td><strong><span className={`platform-pip ${campaign.platform}`} />{campaign.id}</strong><small>{campaign.platform === "facebook" ? "Facebook" : "TikTok"}</small></td>
+                  <td><strong><span className={`platform-pip ${campaign.platform}`} />{campaign.id}</strong><small>{campaign.platform === "facebook" ? "Facebook" : campaign.mode === "live" ? "TikTok Live" : "TikTok post"}</small></td>
                   <td>{formatDate(campaign.startedAt)}</td>
                   <td><strong>{campaign.deviceIds.length} × {campaign.postUrls.length}</strong><small>{campaign.totalAssignments} ejecuciones</small></td>
-                  <td>{[campaign.actions.like && "Like", campaign.actions.comment && "Comentario"].filter(Boolean).join(" + ")}</td>
+                  <td>{campaign.mode === "live" ? "Tap tap" : [campaign.actions.like && "Like", campaign.actions.comment && "Comentario"].filter(Boolean).join(" + ")}</td>
                   <td><strong>{campaign.completedAssignments}/{campaign.totalAssignments}</strong><small>ejecuciones completadas</small></td>
                   <td><Badge color={campaignColor(campaign)} variant="light">{hasUnknown(campaign) ? "Resultado incierto" : statusLabels[campaign.status]}</Badge></td>
                   <td><Button size="compact-sm" variant="default" onClick={() => dispatch({ type: "open-history", campaignId: campaign.id })}>Abrir detalle</Button></td>
@@ -113,20 +113,20 @@ export function HistoryView({ state, dispatch }: HistoryViewProps) {
         {detail && (
           <div className="history-detail">
             <div className="detail-hero">
-              <div><span>RESULTADO GENERAL</span><Title order={2}>{hasUnknown(detail) ? "Requiere reconciliación manual" : statusLabels[detail.status]}</Title></div>
-              <Badge size="lg" color={campaignColor(detail)}>{detail.platform === "facebook" ? "Facebook" : "TikTok"}</Badge>
+              <div><span>RESULTADO GENERAL</span><Title order={2}>{hasUnknown(detail) ? detail.mode === "live" ? "Ronda incierta bloqueada" : "Requiere reconciliación manual" : statusLabels[detail.status]}</Title></div>
+              <Badge size="lg" color={campaignColor(detail)}>{detail.platform === "facebook" ? "Facebook" : detail.mode === "live" ? "TikTok Live" : "TikTok post"}</Badge>
             </div>
             {hasUnknown(detail) && (
               <Alert color="red" title="Resultado público no verificable">
-                No se ofrece reintento automático. Un futuro control permitirá revisar el estado manualmente sin repetir la acción.
+                {detail.mode === "live" ? "No se ofrece reintento automático para una ronda que pudo ejecutarse." : "No se ofrece reintento automático. Marca lo observado para desbloquear una nueva confirmación explícita."}
               </Alert>
             )}
             {detail.cancellationReason && <Alert color="yellow" title="Motivo de cancelación">{detail.cancellationReason}</Alert>}
             <dl className="detail-list wide">
               <div><dt>Inicio</dt><dd>{formatDate(detail.startedAt, true)}</dd></div>
               <div><dt>Plataforma</dt><dd>{detail.platform}</dd></div>
-              <div><dt>Alcance original</dt><dd>{detail.deviceIds.length} dispositivos × {detail.postUrls.length} publicaciones</dd></div>
-              <div><dt>Acciones</dt><dd>{[detail.actions.like && "Like", detail.actions.comment && "Comentario"].filter(Boolean).join(" + ")}</dd></div>
+              <div><dt>Alcance original</dt><dd>{detail.mode === "live" ? "1 dispositivo × 1 Live" : `${detail.deviceIds.length} dispositivos × ${detail.postUrls.length} publicaciones`}</dd></div>
+              <div><dt>Acciones</dt><dd>{detail.mode === "live" ? "Tap tap calibrado" : [detail.actions.like && "Like", detail.actions.comment && "Comentario"].filter(Boolean).join(" + ")}</dd></div>
             </dl>
 
             <Accordion multiple defaultValue={["assignments"]} variant="contained">
@@ -150,10 +150,10 @@ export function HistoryView({ state, dispatch }: HistoryViewProps) {
                           <tr key={assignment.id} data-unknown={assignment.status === "outcome_unknown"}>
                             <td><strong>{assignment.deviceAlias}</strong><small>{assignment.deviceSerial}</small><small title={assignment.postUrl}>{assignment.postUrl}</small></td>
                             <td><span>Plan {formatDate(assignment.plannedAt)}</span><small>Real {formatDate(assignment.actualAt)}</small></td>
-                            <td><Badge color={assignment.likeResult === "ok" ? "lime" : assignment.likeResult === "not_requested" ? "gray" : "red"}>Like: {resultLabel(assignment.likeResult)}</Badge><Badge color={assignment.commentResult === "ok" ? "lime" : assignment.commentResult === "not_requested" ? "gray" : "red"}>Comentario: {resultLabel(assignment.commentResult)}</Badge>{assignment.comment && <small>“{assignment.comment}”</small>}{assignment.error && <Text c="red" size="xs">{assignment.error}</Text>}</td>
+                            <td><Badge color={assignment.likeResult === "ok" ? "lime" : assignment.likeResult === "not_requested" ? "gray" : "red"}>Like: {resultLabel(assignment.likeResult)}</Badge><Badge color={assignment.commentResult === "ok" ? "lime" : assignment.commentResult === "not_requested" ? "gray" : "red"}>Comentario: {resultLabel(assignment.commentResult)}</Badge>{detail.mode === "live" && <Badge color="pink">Rondas: {assignment.confirmedRounds ?? 0}/{assignment.requestedRounds ?? 0}</Badge>}{assignment.comment && <small>“{assignment.comment}”</small>}{assignment.error && <Text c="red" size="xs">{assignment.error}</Text>}{["approved", "scheduled", "running"].includes(assignment.status) && assignment.operationId && <Button mt="xs" size="compact-xs" color="red" variant="light" onClick={() => dispatch({ type: "cancel-assignment", operationId: assignment.operationId! })}>Cancelar asignación</Button>}{assignment.status === "outcome_unknown" && assignment.uncertainAction === "live_round" && <Alert color="red" mt="xs">Ronda Live incierta: no se reintentará.</Alert>}{assignment.status === "outcome_unknown" && assignment.uncertainAction && assignment.uncertainAction !== "live_round" && assignment.operationId && <Group gap="xs" mt="xs"><Button size="compact-xs" color="red" onClick={() => dispatch({ type: "reconcile-assignment", platform: detail.platform, assignmentId: assignment.id, operationId: assignment.operationId!, action: assignment.uncertainAction as "like" | "comment", resolution: "sent" })}>Marcar enviado</Button><Button size="compact-xs" variant="default" onClick={() => dispatch({ type: "reconcile-assignment", platform: detail.platform, assignmentId: assignment.id, operationId: assignment.operationId!, action: assignment.uncertainAction as "like" | "comment", resolution: "not_sent" })}>Marcar no enviado</Button></Group>}</td>
                             <td>{assignment.attempts}</td>
                             <td><Badge color={assignment.cleanup === "home_confirmed" ? "lime" : assignment.cleanup === "session_closed" ? "blue" : "red"}>{assignment.cleanup.replaceAll("_", " ")}</Badge></td>
-                            <td><div className="evidence-placeholder">Screenshot<br /><span>No disponible en demo</span></div><div className="evidence-placeholder">Page source<br /><span>No disponible en demo</span></div></td>
+                            <td>{assignment.checkpoints?.map((checkpoint) => <div className="evidence-placeholder" key={checkpoint.id}>Checkpoint {checkpoint.phase.replaceAll("_", " ")} #{checkpoint.sequence}</div>)}{assignment.evidence?.length ? assignment.evidence.map((evidence) => <div className="evidence-placeholder" key={evidence.path}>{evidence.kind.replaceAll("_", " ")}<br /><span title={evidence.path}>{evidence.path}</span></div>) : !assignment.checkpoints?.length && <div className="evidence-placeholder">Sin evidencia</div>}</td>
                           </tr>
                         ))}
                       </tbody>
@@ -163,7 +163,7 @@ export function HistoryView({ state, dispatch }: HistoryViewProps) {
               </Accordion.Item>
             </Accordion>
             <Group justify="space-between" mt="lg">
-              <Text size="xs" c="dimmed">Datos ficticios · sin persistencia</Text>
+              <Text size="xs" c="dimmed">SQLite local · checkpoints y evidencias conservados</Text>
               <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Cerrar detalle</Button>
             </Group>
           </div>

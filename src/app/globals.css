@@ -1288,6 +1288,20 @@ code,
   background: var(--panel);
 }
 
+.tiktok-live {
+  box-shadow: inset 4px 0 var(--tiktok-cyan), inset 9px 0 var(--tiktok-pink);
+}
+
+.tiktok-live-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  margin-top: 16px;
+  padding: 20px;
+  border: 1px solid var(--line-dark);
+  background: var(--panel);
+}
+
 .review-summary {
   padding: 18px;
   border-right: 1px solid var(--line-dark);
@@ -1567,6 +1581,7 @@ code,
   .config-grid,
   .planning-grid,
   .review-grid,
+  .tiktok-live-grid,
   .import-grid {
     grid-template-columns: 1fr;
   }
@@ -1596,6 +1611,19 @@ code,
     flex-direction: column;
   }
 
+  .section-toolbar > .mantine-Group-root,
+  .section-toolbar .device-search {
+    width: 100%;
+  }
+
+  .section-toolbar > .mantine-Group-root {
+    flex-wrap: wrap !important;
+  }
+
+  .section-toolbar > .mantine-Group-root > .mantine-Button-root {
+    flex: 1 1 100%;
+  }
+
   .view-heading h1 {
     font-size: clamp(2.4rem, 14vw, 3.5rem);
   }
@@ -1618,6 +1646,18 @@ code,
   .impact-bar,
   .schedule-controls {
     grid-template-columns: 1fr;
+  }
+
+  .distribution-head {
+    display: none;
+  }
+
+  .distribution-row {
+    grid-template-columns: 1fr;
+  }
+
+  .distribution-row .mantine-Button-root {
+    width: 100%;
   }
 
   .impact-bar > div {

@@ -32,6 +32,7 @@ type SessionRow = {
   created_at: number;
   updated_at: number;
   closed_at: number | null;
+  operation_kind?: string;
 };
 
 type PrepareDependencies = {
@@ -50,7 +51,9 @@ export class CleanupUnknownError extends Error {
   }
 }
 
-const CURRENT_SETUP_REVISION = 1;
+class EvidencePersistenceError extends Error {}
+
+export const CURRENT_SETUP_REVISION = 1;
 
 function messageOf(error: unknown) {
   return error instanceof Error ? error.message : String(error);
@@ -156,6 +159,8 @@ export function upsertDeviceProfile(
       database.prepare("UPDATE device_locks SET device_id = ? WHERE device_id = ?").run(deviceId, existing.deviceId);
       database.prepare("DELETE FROM device_observations WHERE device_id = ?").run(existing.deviceId);
       database.prepare("UPDATE appium_sessions SET device_id = ? WHERE device_id = ?").run(deviceId, existing.deviceId);
+      database.prepare("UPDATE facebook_device_identities SET device_id = ? WHERE device_id = ?").run(deviceId, existing.deviceId);
+      database.prepare("UPDATE device_retirements SET device_id = ? WHERE device_id = ?").run(deviceId, existing.deviceId);
       database.prepare("UPDATE device_profiles SET device_id = ? WHERE device_id = ?").run(deviceId, existing.deviceId);
       existing.deviceId = deviceId;
     }
@@ -190,8 +195,51 @@ export function upsertDeviceProfile(
   }).immediate();
 }
 
+export async function registerConnectedDevices(
+  database: Database.Database,
+  adb: AdbClient,
+  serials: string[],
+  signal?: AbortSignal,
+) {
+  const deviceIds = serials.map((serial) => serial.trim());
+  if (!deviceIds.length || deviceIds.length > 100 || deviceIds.some((serial) => !serial || /[\u0000-\u001f\u007f]/.test(serial))) {
+    throw new TypeError("La lista debe incluir entre 1 y 100 seriales ADB validos.");
+  }
+  if (new Set(deviceIds).size !== deviceIds.length) throw new TypeError("Los seriales ADB no pueden repetirse.");
+  const inspections = [] as AdbDeviceInspection[];
+  for (const deviceId of deviceIds) inspections.push(await adb.inspectUnregisteredDevice(deviceId, { signal }));
+
+  return database.transaction(() => {
+    const profiles = database.prepare("SELECT * FROM device_profiles").all() as Array<Parameters<typeof mapProfile>[0]>;
+    const usedPorts = new Set(profiles.map((profile) => profile.system_port));
+    let nextOrder = Math.max(0, ...profiles.map((profile) => profile.physical_order));
+    return inspections.map((inspection) => {
+      const existingRow = profiles.find((profile) => profile.device_id === inspection.deviceId || profile.hardware_id === inspection.hardwareId);
+      const existing = existingRow ? mapProfile(existingRow) : null;
+      if (existing && database.prepare("SELECT 1 FROM device_retirements WHERE device_id = ?").get(existing.deviceId)) {
+        throw new Error(`El dispositivo ${inspection.deviceId} tiene un retiro registrado.`);
+      }
+      let systemPort = existing?.systemPort;
+      if (systemPort === undefined) {
+        systemPort = Array.from({ length: 100 }, (_, index) => 8200 + index).find((port) => !usedPorts.has(port));
+        if (systemPort === undefined) throw new Error("No quedan systemPort disponibles entre 8200 y 8299.");
+        usedPorts.add(systemPort);
+      }
+      const profile = upsertDeviceProfile(database, {
+        hardwareId: inspection.hardwareId,
+        deviceId: inspection.deviceId,
+        alias: existing?.alias ?? `Equipo ${++nextOrder}`,
+        physicalOrder: existing?.physicalOrder ?? nextOrder,
+        systemPort,
+      });
+      persistInspection(database, inspection, Date.now());
+      return profile;
+    });
+  }).immediate();
+}
+
 export function listDeviceSnapshots(database: Database.Database) {
-  return database.prepare(`
+  const rows = database.prepare(`
     SELECT
       p.hardware_id AS hardwareId,
       p.device_id AS deviceId,
@@ -200,6 +248,8 @@ export function listDeviceSnapshots(database: Database.Database) {
       p.system_port AS systemPort,
       o.connection,
       o.model,
+      o.hardware_id AS observedHardwareId,
+      o.packages_json AS packagesJson,
       o.foreground_package AS foregroundPackage,
       o.foreground_activity AS foregroundActivity,
       o.observed_at AS observedAt,
@@ -208,17 +258,69 @@ export function listDeviceSnapshots(database: Database.Database) {
       pr.step AS preparationStep,
       pr.error AS preparationError,
       pr.updated_at AS preparationUpdatedAt,
+      r.status AS retirementStatus,
+      fi.account_label AS facebookAccount,
+      fi.account_fingerprint AS facebookAccountFingerprint,
       CASE WHEN l.device_id IS NULL THEN 'available' ELSE 'busy' END AS farmAvailability
     FROM device_profiles p
     LEFT JOIN device_observations o ON o.device_id = p.device_id
     LEFT JOIN device_locks l ON l.device_id = p.device_id
+    LEFT JOIN device_retirements r ON r.device_id = p.device_id
+    LEFT JOIN facebook_device_identities fi ON fi.device_id = p.device_id
     LEFT JOIN device_preparations pr ON pr.id = (
       SELECT id FROM device_preparations
       WHERE device_id = p.device_id AND setup_revision = ${CURRENT_SETUP_REVISION}
       ORDER BY updated_at DESC LIMIT 1
     )
+    WHERE r.status IS NULL OR r.status = 'pending'
     ORDER BY p.physical_order, p.device_id
-  `).all();
+  `).all() as Array<Record<string, unknown> & { packagesJson: string | null }>;
+  return rows.map(({ packagesJson, ...row }) => ({
+    ...row,
+    packages: packagesJson ? JSON.parse(packagesJson) as unknown[] : [],
+  }));
+}
+
+export function requestDeviceRetirement(database: Database.Database, deviceId: string, now = Date.now()) {
+  const normalizedDeviceId = deviceId.trim();
+  if (!normalizedDeviceId) throw new TypeError("deviceId es obligatorio.");
+  return database.transaction(() => {
+    if (!getDeviceProfile(database, normalizedDeviceId)) throw new Error("El dispositivo no existe.");
+    database.prepare(`
+      INSERT INTO device_retirements (device_id, status, requested_at, completed_at)
+      VALUES (?, 'pending', ?, NULL)
+      ON CONFLICT(device_id) DO UPDATE SET
+        status = device_retirements.status
+    `).run(normalizedDeviceId, now);
+    completeDeviceRetirementIfIdle(database, normalizedDeviceId, now);
+    return database.prepare("SELECT * FROM device_retirements WHERE device_id = ?").get(normalizedDeviceId) as {
+      device_id: string;
+      status: "pending" | "completed";
+      requested_at: number;
+      completed_at: number | null;
+    };
+  }).immediate();
+}
+
+export function completeDeviceRetirementIfIdle(
+  database: Database.Database,
+  deviceId: string,
+  now = Date.now(),
+) {
+  return database.prepare(`
+    UPDATE device_retirements SET status = 'completed', completed_at = ?
+    WHERE device_id = ? AND status = 'pending'
+      AND NOT EXISTS (
+        SELECT 1 FROM jobs j JOIN operations o ON o.id = j.operation_id
+        WHERE o.device_id = device_retirements.device_id AND j.status IN ('pending', 'running')
+      )
+      AND NOT EXISTS (SELECT 1 FROM device_locks WHERE device_id = device_retirements.device_id)
+      AND NOT EXISTS (
+        SELECT 1 FROM appium_sessions
+        WHERE device_id = device_retirements.device_id
+          AND status IN ('starting', 'active', 'closing', 'outcome_unknown')
+      )
+  `).run(now, deviceId).changes === 1;
 }
 
 export function claimRuntimeOwnership(
@@ -286,9 +388,11 @@ export function releaseDeviceLock(
   operationId: string,
   owner: string,
 ) {
-  return database.prepare(`
+  const released = database.prepare(`
     DELETE FROM device_locks WHERE device_id = ? AND operation_id = ? AND owner = ?
   `).run(deviceId, operationId, owner).changes === 1;
+  completeDeviceRetirementIfIdle(database, deviceId);
+  return released;
 }
 
 function persistInspection(database: Database.Database, inspection: AdbDeviceInspection, now: number) {
@@ -500,6 +604,27 @@ export function getOwnedAppiumSessionIds(database: Database.Database) {
   `).all() as Array<{ appium_session_id: string }>).map((row) => row.appium_session_id);
 }
 
+type CapturedSessionEvidence = {
+  screenshot?: Buffer;
+  pageSource?: string;
+  failures: Record<string, string>;
+};
+
+async function captureSessionEvidence(appium: AppiumClient, sessionId: string, signal: AbortSignal): Promise<CapturedSessionEvidence> {
+  const captured: CapturedSessionEvidence = { failures: {} };
+  try {
+    captured.screenshot = await appium.getScreenshot(sessionId, { signal });
+  } catch (error) {
+    captured.failures.screenshot = messageOf(error);
+  }
+  try {
+    captured.pageSource = await appium.getPageSource(sessionId, { signal });
+  } catch (error) {
+    captured.failures.pageSource = messageOf(error);
+  }
+  return captured;
+}
+
 async function saveFailureEvidence(
   database: Database.Database,
   operationId: string,
@@ -509,13 +634,28 @@ async function saveFailureEvidence(
   artifactsPath: string,
   error: unknown,
   signal: AbortSignal,
+  checkpointId: string | null = null,
+  metadataDetails: Record<string, unknown> = {},
+  captured?: CapturedSessionEvidence,
 ) {
   const directory = join(artifactsPath, operationId, randomUUID());
   await mkdir(directory, { recursive: true });
   const failures: Record<string, string> = {};
   const evidence: Array<{ kind: "metadata" | "screenshot" | "page_source"; path: string }> = [];
 
-  if (sessionId) {
+  if (captured) {
+    Object.assign(failures, captured.failures);
+    if (captured.screenshot) {
+      const screenshotPath = join(directory, "screenshot.png");
+      await writeFile(screenshotPath, captured.screenshot);
+      evidence.push({ kind: "screenshot", path: screenshotPath });
+    }
+    if (captured.pageSource) {
+      const sourcePath = join(directory, "page-source.xml");
+      await writeFile(sourcePath, captured.pageSource, "utf8");
+      evidence.push({ kind: "page_source", path: sourcePath });
+    }
+  } else if (sessionId) {
     try {
       const screenshotPath = join(directory, "screenshot.png");
       await writeFile(screenshotPath, await appium.getScreenshot(sessionId, { signal }));
@@ -537,6 +677,8 @@ async function saveFailureEvidence(
     deviceId,
     sessionId,
     error: messageOf(error),
+    checkpointId,
+    ...metadataDetails,
     captureErrors: failures,
     createdAt: new Date().toISOString(),
   };
@@ -548,10 +690,10 @@ async function saveFailureEvidence(
   const insert = database.prepare(`
     INSERT OR IGNORE INTO evidence (
       id, operation_id, checkpoint_id, kind, path, metadata_json, created_at
-    ) VALUES (?, ?, NULL, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   database.transaction(() => {
-    for (const item of evidence) insert.run(randomUUID(), operationId, item.kind, item.path, stableJson(metadata), now);
+    for (const item of evidence) insert.run(randomUUID(), operationId, checkpointId, item.kind, item.path, stableJson(metadata), now);
   })();
 }
 
@@ -853,6 +995,294 @@ export async function prepareDevice(
   }
 }
 
+export type DeviceAutomationDependencies = {
+  adb: AdbClient;
+  appium: AppiumClient;
+  requiredPackage: string;
+  artifactsPath?: string;
+  cleanupTimeoutMs?: number;
+  signal?: AbortSignal;
+  leaseSignal?: AbortSignal;
+};
+
+function markDeviceRecoveryRequired(database: Database.Database, deviceId: string, message: string, now: number) {
+  database.prepare(`
+    UPDATE device_preparations
+    SET status = 'recovery_required', step = 'Cleanup incierto', error = ?,
+        updated_at = ?, completed_at = ?
+    WHERE id = (
+      SELECT id FROM device_preparations
+      WHERE device_id = ? AND setup_revision = ?
+      ORDER BY updated_at DESC LIMIT 1
+    )
+  `).run(message, now, now, deviceId, CURRENT_SETUP_REVISION);
+}
+
+export async function runOwnedDeviceAutomation<T>(
+  database: Database.Database,
+  operationId: string,
+  owner: string,
+  dependencies: DeviceAutomationDependencies,
+  run: (sessionId: string, inspection: AdbDeviceInspection) => Promise<T>,
+) {
+  const operation = database.prepare(`
+    SELECT device_id AS deviceId FROM operations
+    WHERE id = ? AND kind = 'assignment.execute' AND status = 'running'
+  `).get(operationId) as { deviceId: string | null } | undefined;
+  if (!operation?.deviceId) throw new Error("La ejecucion no tiene un dispositivo valido.");
+  const profile = getDeviceProfile(database, operation.deviceId);
+  if (!profile) throw new Error("El dispositivo no esta permitido.");
+  const locked = withRuntimeOwnership(database, owner, () => acquireDeviceLock(
+    database,
+    profile.deviceId,
+    operationId,
+    owner,
+    Date.now(),
+    appConfig.workerLeaseMs,
+  ));
+  if (!locked) throw new Error("El dispositivo ya esta ocupado por Farm Appium.");
+
+  let session: SessionRow | null = null;
+  let appiumSessionId: string | null = null;
+  try {
+    const inspection = await dependencies.adb.inspectDevice(profile.deviceId, { signal: dependencies.signal });
+    if (!inspection.packages.includes(dependencies.requiredPackage)) {
+      throw new Error(`El paquete ${dependencies.requiredPackage} no esta instalado.`);
+    }
+    session = withRuntimeOwnership(database, owner, () => {
+      const preparation = database.prepare(`
+        SELECT status FROM device_preparations
+        WHERE device_id = ? AND setup_revision = ?
+        ORDER BY updated_at DESC LIMIT 1
+      `).get(profile.deviceId, CURRENT_SETUP_REVISION) as { status: string } | undefined;
+      if (preparation?.status !== "ready") throw new Error("El dispositivo ya no esta preparado.");
+      persistInspection(database, inspection, Date.now());
+      const reserved = reserveSession(database, operationId, profile.deviceId, profile.systemPort, owner, Date.now());
+      updateOperationRuntime(database, operationId, "starting", "pending", Date.now());
+      return reserved;
+    });
+
+    let created;
+    try {
+      created = await dependencies.appium.createSession({
+        udid: profile.deviceId,
+        systemPort: profile.systemPort,
+        timeoutMs: appConfig.appiumTimeoutMs,
+        signal: dependencies.signal,
+      });
+    } catch (error) {
+      assertRuntimeOwnership(database, owner);
+      const returnedSessionId = sessionIdFromCreationError(error);
+      if (returnedSessionId) {
+        appiumSessionId = returnedSessionId;
+        withRuntimeOwnership(database, owner, () => {
+          updateSession(database, session!.id, {
+            appiumSessionId,
+            status: "active",
+            cleanupStatus: "pending",
+            error: messageOf(error),
+          }, Date.now());
+          updateOperationRuntime(database, operationId, "active", "pending", Date.now());
+        });
+        throw error;
+      }
+      if (sessionCreationDefinitelyFailed(error)) {
+        withRuntimeOwnership(database, owner, () => {
+          updateSession(database, session!.id, {
+            status: "failed",
+            cleanupStatus: "not_required",
+            error: messageOf(error),
+            closed: true,
+          }, Date.now());
+          updateOperationRuntime(database, operationId, "failed", "not_required", Date.now());
+          releaseDeviceLock(database, profile.deviceId, operationId, owner);
+        });
+        throw error;
+      }
+      const cleanupSignal = dependencies.leaseSignal
+        ? AbortSignal.any([dependencies.leaseSignal, AbortSignal.timeout(dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs)])
+        : AbortSignal.timeout(dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs);
+      const evidenceError = await trySaveFailureEvidence(
+        database,
+        operationId,
+        profile.deviceId,
+        dependencies.appium,
+        null,
+        dependencies.artifactsPath ?? appConfig.artifactsPath,
+        error,
+        cleanupSignal,
+        null,
+        { stage: "create_session" },
+      );
+      const failure = [messageOf(error), evidenceError].filter(Boolean).join("; ");
+      withRuntimeOwnership(database, owner, () => {
+        updateSession(database, session!.id, {
+          status: "outcome_unknown",
+          cleanupStatus: "outcome_unknown",
+          error: failure,
+        }, Date.now());
+        updateOperationRuntime(database, operationId, "outcome_unknown", "outcome_unknown", Date.now());
+        markDeviceRecoveryRequired(database, profile.deviceId, failure, Date.now());
+      });
+      throw new CleanupUnknownError("No se pudo determinar si Appium creo la sesion.", { cause: error });
+    }
+
+    appiumSessionId = created.sessionId;
+    withRuntimeOwnership(database, owner, () => {
+      updateSession(database, session!.id, {
+        appiumSessionId,
+        status: "active",
+        cleanupStatus: "pending",
+      }, Date.now());
+      updateOperationRuntime(database, operationId, "active", "pending", Date.now());
+    });
+    await dependencies.appium.getPageSource(appiumSessionId, { signal: dependencies.signal });
+    const result = await run(appiumSessionId, inspection);
+    const action = database.prepare(`
+      SELECT checkpoint_id, action FROM assignment_action_results
+      WHERE operation_id = ? AND checkpoint_id IS NOT NULL
+      ORDER BY updated_at DESC LIMIT 1
+    `).get(operationId) as { checkpoint_id: string; action: string } | undefined;
+    const evidenceSignal = AbortSignal.timeout(dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs);
+    const preCleanupEvidence = await captureSessionEvidence(dependencies.appium, appiumSessionId, evidenceSignal);
+    const preCleanupEvidenceError = await trySaveFailureEvidence(
+      database,
+      operationId,
+      profile.deviceId,
+      dependencies.appium,
+      appiumSessionId,
+      dependencies.artifactsPath ?? appConfig.artifactsPath,
+      "Estado posterior al efecto publico antes del cleanup",
+      AbortSignal.timeout(dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs),
+      action?.checkpoint_id ?? null,
+      { stage: "before_cleanup", action: action?.action ?? null },
+      preCleanupEvidence,
+    );
+    const cleanup = await cleanupSession(
+      dependencies.adb,
+      dependencies.appium,
+      profile.deviceId,
+      appiumSessionId,
+      dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs,
+      false,
+      dependencies.leaseSignal,
+    );
+    assertRuntimeOwnership(database, owner);
+    if (cleanup.errors.length) {
+      if (preCleanupEvidenceError) cleanup.errors.push(preCleanupEvidenceError);
+      const cleanupSignal = dependencies.leaseSignal
+        ? AbortSignal.any([dependencies.leaseSignal, AbortSignal.timeout(dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs)])
+        : AbortSignal.timeout(dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs);
+      const evidenceError = await trySaveFailureEvidence(
+        database,
+        operationId,
+        profile.deviceId,
+        dependencies.appium,
+        cleanup.sessionClosed ? null : appiumSessionId,
+        dependencies.artifactsPath ?? appConfig.artifactsPath,
+        cleanup.errors.join("; "),
+        cleanupSignal,
+        action?.checkpoint_id ?? null,
+        { stage: "cleanup", action: action?.action ?? null },
+      );
+      if (evidenceError) cleanup.errors.push(evidenceError);
+      const failure = cleanup.errors.join("; ");
+      withRuntimeOwnership(database, owner, () => {
+        updateSession(database, session!.id, {
+          status: cleanup.sessionClosed ? "closed" : "outcome_unknown",
+          cleanupStatus: "outcome_unknown",
+          error: failure,
+          closed: cleanup.sessionClosed,
+        }, Date.now());
+        updateOperationRuntime(database, operationId, cleanup.sessionClosed ? "closed" : "outcome_unknown", "outcome_unknown", Date.now());
+        markDeviceRecoveryRequired(database, profile.deviceId, failure, Date.now());
+      });
+      throw new CleanupUnknownError("El cleanup del dispositivo quedo incierto.");
+    }
+    withRuntimeOwnership(database, owner, () => {
+      updateSession(database, session!.id, {
+        status: "closed",
+        cleanupStatus: "home_confirmed",
+        closed: true,
+        ...(preCleanupEvidenceError ? { error: preCleanupEvidenceError } : {}),
+      }, Date.now());
+      updateOperationRuntime(database, operationId, "closed", "home_confirmed", Date.now());
+      releaseDeviceLock(database, profile.deviceId, operationId, owner);
+    });
+    if (preCleanupEvidenceError) throw new EvidencePersistenceError(preCleanupEvidenceError);
+    return result;
+  } catch (error) {
+    try {
+      assertRuntimeOwnership(database, owner);
+    } catch {
+      throw new CleanupUnknownError("El worker perdio el lease; el nuevo owner debe ejecutar recovery.", { cause: error });
+    }
+    if (error instanceof EvidencePersistenceError) throw error;
+    if (!session) {
+      withRuntimeOwnership(database, owner, () => releaseDeviceLock(database, profile.deviceId, operationId, owner));
+      throw error;
+    }
+    if (!appiumSessionId || error instanceof CleanupUnknownError) throw error;
+
+    const action = database.prepare(`
+      SELECT checkpoint_id, action FROM assignment_action_results
+      WHERE operation_id = ? AND status = 'effect_possible'
+      ORDER BY updated_at DESC LIMIT 1
+    `).get(operationId) as { checkpoint_id: string | null; action: string } | undefined;
+    const cleanupTimeoutMs = dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs;
+    const cleanupSignal = dependencies.leaseSignal
+      ? AbortSignal.any([dependencies.leaseSignal, AbortSignal.timeout(cleanupTimeoutMs)])
+      : AbortSignal.timeout(cleanupTimeoutMs);
+    const evidenceError = await trySaveFailureEvidence(
+      database,
+      operationId,
+      profile.deviceId,
+      dependencies.appium,
+      appiumSessionId,
+      dependencies.artifactsPath ?? appConfig.artifactsPath,
+      error,
+      cleanupSignal,
+      action?.checkpoint_id ?? null,
+      { action: action?.action ?? null, stage: "automation" },
+    );
+    const cleanup = await cleanupSession(
+      dependencies.adb,
+      dependencies.appium,
+      profile.deviceId,
+      appiumSessionId,
+      cleanupTimeoutMs,
+      false,
+      dependencies.leaseSignal,
+    );
+    if (cleanup.errors.length) {
+      if (evidenceError) cleanup.errors.push(evidenceError);
+      const failure = cleanup.errors.join("; ");
+      withRuntimeOwnership(database, owner, () => {
+        updateSession(database, session!.id, {
+          status: cleanup.sessionClosed ? "closed" : "outcome_unknown",
+          cleanupStatus: "outcome_unknown",
+          error: failure,
+          closed: cleanup.sessionClosed,
+        }, Date.now());
+        updateOperationRuntime(database, operationId, cleanup.sessionClosed ? "closed" : "outcome_unknown", "outcome_unknown", Date.now());
+        markDeviceRecoveryRequired(database, profile.deviceId, failure, Date.now());
+      });
+      throw new CleanupUnknownError("El cleanup del dispositivo quedo incierto.", { cause: error });
+    }
+    withRuntimeOwnership(database, owner, () => {
+      updateSession(database, session!.id, {
+        status: "failed",
+        cleanupStatus: "home_confirmed",
+        error: [messageOf(error), evidenceError].filter(Boolean).join("; "),
+        closed: true,
+      }, Date.now());
+      updateOperationRuntime(database, operationId, "closed", "home_confirmed", Date.now());
+      releaseDeviceLock(database, profile.deviceId, operationId, owner);
+    });
+    throw error;
+  }
+}
+
 export async function recoverOwnedSessions(
   database: Database.Database,
   owner: string,
@@ -864,10 +1294,11 @@ export async function recoverOwnedSessions(
 ) {
   assertRuntimeOwnership(database, owner);
   const sessions = database.prepare(`
-    SELECT * FROM appium_sessions
-    WHERE status IN ('starting', 'active', 'closing', 'outcome_unknown')
-       OR cleanup_status = 'outcome_unknown'
-    ORDER BY created_at
+    SELECT s.*, o.kind AS operation_kind FROM appium_sessions s
+    JOIN operations o ON o.id = s.operation_id
+    WHERE s.status IN ('starting', 'active', 'closing', 'outcome_unknown')
+       OR s.cleanup_status = 'outcome_unknown'
+    ORDER BY s.created_at
   `).all() as SessionRow[];
 
   for (const session of sessions) {
@@ -880,11 +1311,48 @@ export async function recoverOwnedSessions(
           error: session.error ?? "Sesion interrumpida antes de persistir el ID de Appium",
         }, now);
         updateOperationRuntime(database, session.operation_id, "outcome_unknown", "outcome_unknown", now);
-        setPreparation(database, session.device_id, session.operation_id, "recovery_required", "Sesion Appium incierta", session.error, now);
+        if (session.operation_kind === "device.prepare") {
+          setPreparation(database, session.device_id, session.operation_id, "recovery_required", "Sesion Appium incierta", session.error, now);
+        } else {
+          markDeviceRecoveryRequired(database, session.device_id, session.error ?? "Sesion Appium incierta", now);
+        }
       });
       continue;
     }
     const alreadyClosed = session.status === "closed";
+    const recoveryAction = session.operation_kind === "assignment.execute"
+      ? database.prepare(`
+          SELECT action, status, checkpoint_id FROM assignment_action_results
+          WHERE operation_id = ?
+          ORDER BY CASE status WHEN 'effect_possible' THEN 0 ELSE 1 END, updated_at DESC
+          LIMIT 1
+        `).get(session.operation_id) as { action: string; status: string; checkpoint_id: string | null } | undefined
+      : undefined;
+    let recoveryEvidenceError: string | null = null;
+    if (session.operation_kind === "assignment.execute" && !alreadyClosed) {
+      const capturedKinds = (database.prepare(`
+        SELECT COUNT(DISTINCT kind) AS total FROM evidence
+        WHERE operation_id = ? AND checkpoint_id IS ? AND kind IN ('screenshot', 'page_source')
+      `).get(session.operation_id, recoveryAction?.checkpoint_id ?? null) as { total: number }).total;
+      if (capturedKinds < 2) {
+        const evidenceTimeout = AbortSignal.timeout(cleanupTimeoutMs);
+        const evidenceSignal = signal ? AbortSignal.any([signal, evidenceTimeout]) : evidenceTimeout;
+        recoveryEvidenceError = await trySaveFailureEvidence(
+          database,
+          session.operation_id,
+          session.device_id,
+          appium,
+          session.appium_session_id,
+          artifactsPath,
+          recoveryAction?.status === "effect_possible"
+            ? "Worker interrumpido despues de un posible efecto publico"
+            : "Worker interrumpido con una sesion de ejecucion activa",
+          evidenceSignal,
+          recoveryAction?.checkpoint_id ?? null,
+          { stage: "recovery_before_cleanup", action: recoveryAction?.action ?? null },
+        );
+      }
+    }
     const cleanup = await cleanupSession(
       adb,
       appium,
@@ -895,6 +1363,7 @@ export async function recoverOwnedSessions(
       signal,
     );
     if (cleanup.errors.length) {
+      if (recoveryEvidenceError) cleanup.errors.push(recoveryEvidenceError);
       const evidenceTimeout = AbortSignal.timeout(cleanupTimeoutMs);
       const evidenceSignal = signal ? AbortSignal.any([signal, evidenceTimeout]) : evidenceTimeout;
       const evidenceError = await trySaveFailureEvidence(
@@ -906,6 +1375,8 @@ export async function recoverOwnedSessions(
         artifactsPath,
         cleanup.errors.join("; "),
         evidenceSignal,
+        recoveryAction?.checkpoint_id ?? null,
+        { stage: "recovery_cleanup", action: recoveryAction?.action ?? null },
       );
       if (evidenceError) cleanup.errors.push(evidenceError);
       const now = Date.now();
@@ -917,26 +1388,38 @@ export async function recoverOwnedSessions(
           closed: cleanup.sessionClosed,
         }, now);
         updateOperationRuntime(database, session.operation_id, cleanup.sessionClosed ? "closed" : "outcome_unknown", "outcome_unknown", now);
-        setPreparation(database, session.device_id, session.operation_id, "recovery_required", "Cleanup incierto", cleanup.errors.join("; "), now);
+        if (session.operation_kind === "device.prepare") {
+          setPreparation(database, session.device_id, session.operation_id, "recovery_required", "Cleanup incierto", cleanup.errors.join("; "), now);
+        } else {
+          markDeviceRecoveryRequired(database, session.device_id, cleanup.errors.join("; "), now);
+        }
       });
       continue;
     }
     const now = Date.now();
     withRuntimeOwnership(database, owner, () => {
-      updateSession(database, session.id, { status: "closed", cleanupStatus: "home_confirmed", closed: true }, now);
+      updateSession(database, session.id, {
+        status: "closed",
+        cleanupStatus: "home_confirmed",
+        closed: true,
+        ...(recoveryEvidenceError ? { error: recoveryEvidenceError } : {}),
+      }, now);
       updateOperationRuntime(database, session.operation_id, "closed", "home_confirmed", now);
-      setPreparation(database, session.device_id, session.operation_id, "failed", "Sesion recuperada tras reinicio", null, now);
+      if (session.operation_kind === "device.prepare") {
+        setPreparation(database, session.device_id, session.operation_id, "failed", "Sesion recuperada tras reinicio", null, now);
+      }
       releaseDeviceLock(database, session.device_id, session.operation_id, session.owner);
     });
   }
 
   const orphanLocks = database.prepare(`
-    SELECT l.device_id, l.operation_id, l.owner
+    SELECT l.device_id, l.operation_id, l.owner, o.kind AS operation_kind
     FROM device_locks l
+    JOIN operations o ON o.id = l.operation_id
     LEFT JOIN appium_sessions s ON s.operation_id = l.operation_id
       AND (s.status IN ('starting', 'active', 'closing', 'outcome_unknown') OR s.cleanup_status = 'outcome_unknown')
     WHERE s.id IS NULL
-  `).all() as Array<{ device_id: string; operation_id: string; owner: string }>;
+  `).all() as Array<{ device_id: string; operation_id: string; owner: string; operation_kind: string }>;
   for (const lock of orphanLocks) {
     try {
       const timeoutSignal = AbortSignal.timeout(cleanupTimeoutMs);
@@ -946,14 +1429,20 @@ export async function recoverOwnedSessions(
       const now = Date.now();
       withRuntimeOwnership(database, owner, () => {
         updateOperationRuntime(database, lock.operation_id, "closed", "home_confirmed", now);
-        setPreparation(database, lock.device_id, lock.operation_id, "failed", "Lock recuperado tras reinicio", null, now);
+        if (lock.operation_kind === "device.prepare") {
+          setPreparation(database, lock.device_id, lock.operation_id, "failed", "Lock recuperado tras reinicio", null, now);
+        }
         releaseDeviceLock(database, lock.device_id, lock.operation_id, lock.owner);
       });
     } catch (error) {
       const now = Date.now();
       withRuntimeOwnership(database, owner, () => {
         updateOperationRuntime(database, lock.operation_id, "failed", "outcome_unknown", now);
-        setPreparation(database, lock.device_id, lock.operation_id, "recovery_required", "Home incierto durante recovery", messageOf(error), now);
+        if (lock.operation_kind === "device.prepare") {
+          setPreparation(database, lock.device_id, lock.operation_id, "recovery_required", "Home incierto durante recovery", messageOf(error), now);
+        } else {
+          markDeviceRecoveryRequired(database, lock.device_id, messageOf(error), now);
+        }
       });
     }
   }

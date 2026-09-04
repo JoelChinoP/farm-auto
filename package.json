@@ -24,6 +24,7 @@
     "@mantine/hooks": "9.6.0",
     "better-sqlite3": "13.0.3",
     "next": "16.3.4",
+    "playwright-core": "^1.61.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },

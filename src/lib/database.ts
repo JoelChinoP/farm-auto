@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -19,7 +19,7 @@ import {
   SESSION_STATUSES,
 } from "./domain.ts";
 
-export const DATABASE_VERSION = 3;
+export const DATABASE_VERSION = 12;
 
 function sqlValues(values: readonly string[]) {
   return values.map((value) => `'${value}'`).join(", ");
@@ -343,6 +343,360 @@ function migrateToVersion3(database: Database.Database) {
   `);
 }
 
+function migrateToVersion4(database: Database.Database) {
+  database.exec(`
+    ALTER TABLE campaigns
+      ADD COLUMN revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1);
+
+    ALTER TABLE posts ADD COLUMN final_url TEXT;
+    ALTER TABLE posts ADD COLUMN error TEXT;
+    ALTER TABLE posts
+      ADD COLUMN context_version INTEGER NOT NULL DEFAULT 0 CHECK (context_version >= 0);
+    ALTER TABLE comments ADD COLUMN error TEXT;
+
+    CREATE TABLE post_context_versions (
+      id TEXT PRIMARY KEY,
+      post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE RESTRICT,
+      version INTEGER NOT NULL CHECK (version >= 1),
+      context TEXT NOT NULL CHECK (length(trim(context)) >= 2),
+      context_hash TEXT NOT NULL CHECK (length(context_hash) = 64),
+      source TEXT NOT NULL CHECK (source IN ('extracted', 'cache', 'manual')),
+      final_url TEXT,
+      extractor_version TEXT,
+      created_at INTEGER NOT NULL,
+      UNIQUE (post_id, version)
+    );
+
+    CREATE TABLE browser_profile_locks (
+      profile_path TEXT PRIMARY KEY,
+      owner TEXT NOT NULL CHECK (length(trim(owner)) > 0),
+      acquired_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL CHECK (expires_at > acquired_at)
+    );
+
+    CREATE INDEX post_context_versions_post_idx
+      ON post_context_versions (post_id, version DESC);
+  `);
+
+  const existingContexts = database.prepare(`
+    SELECT id, context, context_hash, context_source, extractor_version, extracted_at, updated_at
+    FROM posts WHERE length(trim(COALESCE(context, ''))) >= 2
+  `).all() as Array<{
+    id: string;
+    context: string;
+    context_hash: string | null;
+    context_source: "extracted" | "cache" | "manual" | null;
+    extractor_version: string | null;
+    extracted_at: number | null;
+    updated_at: number;
+  }>;
+  const insertVersion = database.prepare(`
+    INSERT INTO post_context_versions (
+      id, post_id, version, context, context_hash, source, extractor_version, created_at
+    ) VALUES (?, ?, 1, ?, ?, ?, ?, ?)
+  `);
+  for (const post of existingContexts) {
+    const contextHash = post.context_hash?.length === 64
+      ? post.context_hash
+      : createHash("sha256").update(post.context).digest("hex");
+    insertVersion.run(
+      randomUUID(),
+      post.id,
+      post.context,
+      contextHash,
+      post.context_source ?? "manual",
+      post.extractor_version,
+      post.extracted_at ?? post.updated_at,
+    );
+    database.prepare("UPDATE posts SET context_hash = ?, context_version = 1 WHERE id = ?")
+      .run(contextHash, post.id);
+  }
+}
+
+function migrateToVersion5(database: Database.Database) {
+  database.exec(`
+    CREATE TABLE assignment_action_results (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE RESTRICT,
+      operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE RESTRICT,
+      checkpoint_id TEXT,
+      action TEXT NOT NULL CHECK (action IN ('like', 'comment')),
+      status TEXT NOT NULL CHECK (status IN (
+        'pending', 'effect_possible', 'confirmed', 'failed',
+        'outcome_unknown', 'cancelled', 'reconciled_not_sent'
+      )),
+      result TEXT CHECK (result IS NULL OR result IN (
+        'already_active', 'activated', 'sent', 'preserved', 'not_sent'
+      )),
+      comment_id TEXT REFERENCES comments(id) ON DELETE RESTRICT,
+      comment_version INTEGER CHECK (comment_version IS NULL OR comment_version >= 1),
+      text_hash TEXT CHECK (text_hash IS NULL OR length(text_hash) = 64),
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      FOREIGN KEY (operation_id, assignment_id)
+        REFERENCES operations(id, assignment_id) ON DELETE RESTRICT,
+      FOREIGN KEY (checkpoint_id, operation_id)
+        REFERENCES checkpoints(id, operation_id) ON DELETE RESTRICT,
+      UNIQUE (operation_id, action)
+    );
+
+    CREATE INDEX assignment_action_results_assignment_idx
+      ON assignment_action_results (assignment_id, action, created_at DESC);
+    CREATE INDEX assignment_action_results_status_idx
+      ON assignment_action_results (status, updated_at);
+  `);
+}
+
+function migrateToVersion6(database: Database.Database) {
+  database.exec(`
+    CREATE TABLE facebook_device_identities (
+      device_id TEXT PRIMARY KEY REFERENCES device_profiles(device_id) ON DELETE RESTRICT,
+      account_label TEXT NOT NULL CHECK (length(trim(account_label)) > 0),
+      account_fingerprint TEXT NOT NULL CHECK (length(account_fingerprint) = 64),
+      verified_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX facebook_device_identities_fingerprint_idx
+      ON facebook_device_identities (account_fingerprint, device_id);
+
+    CREATE TABLE device_retirements (
+      device_id TEXT PRIMARY KEY REFERENCES device_profiles(device_id) ON DELETE RESTRICT,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
+      requested_at INTEGER NOT NULL,
+      completed_at INTEGER
+    );
+
+    CREATE TABLE facebook_campaign_manifests (
+      campaign_id TEXT PRIMARY KEY REFERENCES campaigns(id) ON DELETE RESTRICT,
+      campaign_revision INTEGER NOT NULL CHECK (campaign_revision >= 1),
+      scheduled_at INTEGER NOT NULL,
+      posts_json TEXT NOT NULL CHECK (json_valid(posts_json)),
+      devices_json TEXT NOT NULL CHECK (json_valid(devices_json)),
+      assignments_json TEXT NOT NULL CHECK (json_valid(assignments_json)),
+      allow_shared_accounts INTEGER NOT NULL DEFAULT 0 CHECK (allow_shared_accounts IN (0, 1)),
+      created_at INTEGER NOT NULL
+    );
+
+    CREATE TRIGGER facebook_campaign_manifests_immutable_update
+    BEFORE UPDATE ON facebook_campaign_manifests
+    BEGIN
+      SELECT RAISE(ABORT, 'El manifiesto de ejecucion Facebook es inmutable.');
+    END;
+
+    CREATE TRIGGER facebook_campaign_manifests_immutable_delete
+    BEFORE DELETE ON facebook_campaign_manifests
+    BEGIN
+      SELECT RAISE(ABORT, 'El manifiesto de ejecucion Facebook es inmutable.');
+    END;
+  `);
+}
+
+function hasTable(database: Database.Database, name: string) {
+  return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+}
+
+function legacyTimestamp(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function migrateLegacyToVersion12(database: Database.Database) {
+  database.exec(`
+    ALTER TABLE device_profiles RENAME TO legacy_device_profiles;
+    ALTER TABLE device_locks RENAME TO legacy_device_locks;
+    ALTER TABLE operations RENAME TO legacy_operations;
+  `);
+  migrateToVersion1(database);
+  migrateToVersion2(database);
+  migrateToVersion3(database);
+  migrateToVersion4(database);
+  migrateToVersion5(database);
+  migrateToVersion6(database);
+
+  const insertProfile = database.prepare(`
+    INSERT INTO device_profiles (
+      hardware_id, device_id, alias, physical_order, system_port, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+  const legacyProfiles = database.prepare("SELECT * FROM legacy_device_profiles ORDER BY physical_order").all() as Array<{
+    hardware_id: string;
+    device_id: string;
+    alias: string;
+    physical_order: number;
+    system_port: number;
+    created_at: unknown;
+    updated_at: unknown;
+  }>;
+  for (const profile of legacyProfiles) {
+    insertProfile.run(
+      profile.hardware_id,
+      profile.device_id,
+      profile.alias,
+      profile.physical_order,
+      profile.system_port,
+      legacyTimestamp(profile.created_at),
+      legacyTimestamp(profile.updated_at),
+    );
+  }
+
+  const legacyDrafts = database.prepare("SELECT * FROM message_drafts").all() as Array<{
+    id: string;
+    text: string;
+    status: string;
+    created_at: unknown;
+    updated_at: unknown;
+  }>;
+  const draftById = new Map(legacyDrafts.map((draft) => [draft.id, draft]));
+  const legacyAssignments = database.prepare("SELECT * FROM facebook_assignments").all() as Array<{
+    id: string;
+    post_id: string;
+    device_id: string;
+    intent: string;
+    tone: string;
+    draft_id: string | null;
+    status: string;
+    error: string | null;
+    created_at: unknown;
+    updated_at: unknown;
+  }>;
+  const assignmentsByPost = Map.groupBy(legacyAssignments, (assignment) => assignment.post_id);
+  const legacySlots = database.prepare("SELECT * FROM facebook_rotation_slots").all() as Array<{
+    post_id: string;
+    device_id: string;
+    scheduled_at: unknown;
+    opened_at: unknown;
+  }>;
+  const slotByAssignment = new Map(legacySlots.map((slot) => [`${slot.post_id}:${slot.device_id}`, slot]));
+  const legacyPosts = database.prepare("SELECT * FROM facebook_posts ORDER BY batch_id, position").all() as Array<{
+    id: string;
+    batch_id: string;
+    position: number;
+    url: string;
+    extracted_context: string | null;
+    context: string | null;
+    status: string;
+    error: string | null;
+    created_at: unknown;
+    updated_at: unknown;
+  }>;
+  const postsByCampaign = Map.groupBy(legacyPosts, (post) => post.batch_id);
+  const insertCampaign = database.prepare(`
+    INSERT INTO campaigns (
+      id, platform, status, like_enabled, comment_enabled, cancellation_reason,
+      created_at, updated_at, completed_at
+    ) VALUES (?, 'facebook', ?, 1, ?, ?, ?, ?, ?)
+  `);
+  const insertPost = database.prepare(`
+    INSERT INTO posts (
+      id, campaign_id, position, source_url, normalized_url, status, context_status,
+      context, context_hash, context_source, context_version, error, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertContext = database.prepare(`
+    INSERT INTO post_context_versions (
+      id, post_id, version, context, context_hash, source, created_at
+    ) VALUES (?, ?, 1, ?, ?, ?, ?)
+  `);
+  const insertAssignment = database.prepare(`
+    INSERT INTO assignments (
+      id, campaign_id, post_id, device_id, status, scheduled_at, actual_at,
+      created_at, updated_at, completed_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertComment = database.prepare(`
+    INSERT INTO comments (
+      id, assignment_id, version, intention, tone, text, status, stale, source,
+      error, created_at, updated_at
+    ) VALUES (?, ?, 1, ?, ?, ?, ?, 0, 'generated', ?, ?, ?)
+  `);
+  const legacyCampaigns = database.prepare("SELECT * FROM facebook_batches ORDER BY created_at").all() as Array<{
+    id: string;
+    status: string;
+    created_at: unknown;
+    updated_at: unknown;
+  }>;
+  for (const campaign of legacyCampaigns) {
+    const campaignPosts = postsByCampaign.get(campaign.id) ?? [];
+    const hasComments = campaignPosts.some((post) => (assignmentsByPost.get(post.id) ?? []).some((assignment) => assignment.draft_id));
+    const status = campaign.status === "completed" ? "completed" : campaign.status === "cancelled" ? "cancelled" : "completed_with_issues";
+    const updatedAt = legacyTimestamp(campaign.updated_at);
+    insertCampaign.run(
+      campaign.id,
+      status,
+      Number(hasComments),
+      campaign.status === "active" ? "Campana legacy importada; requiere crear un plan nuevo." : null,
+      legacyTimestamp(campaign.created_at),
+      updatedAt,
+      updatedAt,
+    );
+    for (const [postIndex, post] of campaignPosts.entries()) {
+      const context = post.context?.trim() || post.extracted_context?.trim() || null;
+      const contextHash = context ? createHash("sha256").update(context).digest("hex") : null;
+      const source = context ? post.context?.trim() ? "manual" : "extracted" : null;
+      const postStatus = ["queued", "extracting", "generating", "running", "completed", "partial_failed", "outcome_unknown", "cancelled"].includes(post.status)
+        ? post.status
+        : context ? "ready" : "queued";
+      const createdAt = legacyTimestamp(post.created_at);
+      const updatedPostAt = legacyTimestamp(post.updated_at);
+      insertPost.run(
+        post.id,
+        campaign.id,
+        postIndex + 1,
+        post.url,
+        post.url,
+        postStatus,
+        context ? "ready" : "queued",
+        context,
+        contextHash,
+        source,
+        context ? 1 : 0,
+        post.error,
+        createdAt,
+        updatedPostAt,
+      );
+      if (context && contextHash && source) insertContext.run(randomUUID(), post.id, context, contextHash, source, updatedPostAt);
+      for (const assignment of assignmentsByPost.get(post.id) ?? []) {
+        const slot = slotByAssignment.get(`${post.id}:${assignment.device_id}`);
+        const assignmentStatus = ["pending", "generating", "draft", "approved", "running", "sent", "failed", "outcome_unknown", "cancelled"].includes(assignment.status)
+          ? assignment.status
+          : "failed";
+        const assignmentUpdatedAt = legacyTimestamp(assignment.updated_at);
+        insertAssignment.run(
+          assignment.id,
+          campaign.id,
+          post.id,
+          assignment.device_id,
+          assignmentStatus,
+          slot?.scheduled_at ? legacyTimestamp(slot.scheduled_at) : null,
+          slot?.opened_at ? legacyTimestamp(slot.opened_at) : null,
+          legacyTimestamp(assignment.created_at),
+          assignmentUpdatedAt,
+          ["sent", "failed", "outcome_unknown", "cancelled"].includes(assignmentStatus) ? assignmentUpdatedAt : null,
+        );
+        const draft = assignment.draft_id ? draftById.get(assignment.draft_id) : null;
+        if (draft) {
+          const commentStatus = draft.status === "failed" || draft.status === "outcome_unknown" ? draft.status : "ready";
+          insertComment.run(
+            randomUUID(),
+            assignment.id,
+            assignment.intent,
+            assignment.tone,
+            draft.text,
+            commentStatus,
+            assignment.error,
+            legacyTimestamp(draft.created_at),
+            legacyTimestamp(draft.updated_at),
+          );
+        }
+      }
+    }
+  }
+}
+
 export function openDatabase(filename: string) {
   if (filename !== ":memory:") mkdirSync(dirname(filename), { recursive: true });
 
@@ -353,6 +707,7 @@ export function openDatabase(filename: string) {
     database.pragma("busy_timeout = 5000");
 
     const observedVersion = database.pragma("user_version", { simple: true }) as number;
+    const legacyDatabase = hasTable(database, "facebook_batches") && !hasTable(database, "campaigns");
     if (observedVersion > DATABASE_VERSION) {
       throw new Error(`La base usa la version ${observedVersion}; esta app soporta ${DATABASE_VERSION}.`);
     }
@@ -364,9 +719,15 @@ export function openDatabase(filename: string) {
       if (currentVersion > DATABASE_VERSION) {
         throw new Error(`La base usa la version ${currentVersion}; esta app soporta ${DATABASE_VERSION}.`);
       }
-      if (currentVersion < 1) migrateToVersion1(database);
-      if (currentVersion < 2) migrateToVersion2(database);
-      if (currentVersion < 3) migrateToVersion3(database);
+      if (legacyDatabase) migrateLegacyToVersion12(database);
+      else {
+        if (currentVersion < 1) migrateToVersion1(database);
+        if (currentVersion < 2) migrateToVersion2(database);
+        if (currentVersion < 3) migrateToVersion3(database);
+        if (currentVersion < 4) migrateToVersion4(database);
+        if (currentVersion < 5) migrateToVersion5(database);
+        if (currentVersion < 6) migrateToVersion6(database);
+      }
       if (currentVersion < DATABASE_VERSION) database.pragma(`user_version = ${DATABASE_VERSION}`);
     }).immediate();
 

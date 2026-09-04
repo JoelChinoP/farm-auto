@@ -21,6 +21,7 @@ import {
   CleanupUnknownError,
   getDeviceProfile,
   prepareDevice,
+  registerConnectedDevices,
   recoverOwnedSessions,
   refreshDeviceInventory,
   releaseDeviceLock,
@@ -99,6 +100,21 @@ function setupPreparation(database: Database.Database, systemPort = 8200) {
   claimNextJob(database, "worker-1");
   return { job, operation };
 }
+
+test("registers a connected ADB device with verified identity and a persistent port", async () => {
+  await withDatabase(async (database) => {
+    const adb = createAdb(database);
+    const [registered] = await registerConnectedDevices(database, adb.client, [SERIAL]);
+    assert.equal(registered.hardwareId, HARDWARE_ID);
+    assert.equal(registered.deviceId, SERIAL);
+    assert.equal(registered.systemPort, 8200);
+    assert.equal((database.prepare("SELECT connection FROM device_observations WHERE device_id = ?").get(SERIAL) as { connection: string }).connection, "connected");
+
+    const [repeated] = await registerConnectedDevices(database, adb.client, [SERIAL]);
+    assert.deepEqual(repeated, registered);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_profiles").get() as { total: number }).total, 1);
+  });
+});
 
 test("prepares one allowlisted device and confirms owned-session cleanup", async () => {
   await withDatabase(async (database, directory) => {
@@ -561,6 +577,7 @@ test("updates a stable hardware profile to a new ADB transport and invalidates r
       appium,
     });
     completeJob(database, job.id, "worker-1", result);
+    database.prepare("INSERT INTO device_retirements VALUES (?, 'completed', 1, 1)").run(SERIAL);
 
     const updated = upsertDeviceProfile(database, {
       hardwareId: HARDWARE_ID,
@@ -575,6 +592,7 @@ test("updates a stable hardware profile to a new ADB transport and invalidates r
     assert.equal((database.prepare("SELECT status FROM device_preparations").get() as { status: string }).status, "not_ready");
     assert.equal((database.prepare("SELECT device_id FROM operations").get() as { device_id: string }).device_id, "serial-2");
     assert.equal((database.prepare("SELECT device_id FROM appium_sessions").get() as { device_id: string }).device_id, "serial-2");
+    assert.equal((database.prepare("SELECT device_id FROM device_retirements").get() as { device_id: string }).device_id, "serial-2");
   });
 });
 

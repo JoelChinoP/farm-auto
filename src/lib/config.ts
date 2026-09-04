@@ -1,4 +1,5 @@
-import { resolve } from "node:path";
+import { homedir } from "node:os";
+import { isAbsolute, relative, resolve } from "node:path";
 
 function positiveInteger(name: string, fallback: number) {
   const value = Number(process.env[name] || fallback);
@@ -19,6 +20,35 @@ function localUrl(value: string) {
   return url.toString().replace(/\/$/, "");
 }
 
+function facebookProfilePath() {
+  const root = process.env.LOCALAPPDATA?.trim() || resolve(homedir(), ".farm-appium");
+  const path = resolve(
+    process.env.FACEBOOK_BROWSER_PROFILE_PATH?.trim() || root,
+    process.env.FACEBOOK_BROWSER_PROFILE_PATH?.trim() ? "" : "facebook-edge-profile",
+  );
+  const workspaceRelative = relative(resolve(/* turbopackIgnore: true */ process.cwd()), path);
+  if (!workspaceRelative || (!workspaceRelative.startsWith("..") && !isAbsolute(workspaceRelative))) {
+    throw new Error("FACEBOOK_BROWSER_PROFILE_PATH debe estar fuera del repositorio.");
+  }
+  return path;
+}
+
+function labels(name: string, fallback: string) {
+  const values = (process.env[name]?.trim() || fallback).split("|").map((value) => value.trim()).filter(Boolean);
+  if (!values.length) throw new Error(`${name} debe contener al menos una etiqueta.`);
+  return values;
+}
+
+const commentMinWords = positiveInteger("COMMENT_MIN_WORDS", 5);
+const commentMaxWords = positiveInteger("COMMENT_MAX_WORDS", 15);
+if (commentMaxWords < commentMinWords) {
+  throw new Error("COMMENT_MAX_WORDS debe ser igual o mayor que COMMENT_MIN_WORDS.");
+}
+const workerDeviceConcurrency = positiveInteger("WORKER_DEVICE_CONCURRENCY", 4);
+if (workerDeviceConcurrency > 100) throw new Error("WORKER_DEVICE_CONCURRENCY no puede superar 100.");
+const deepSeekConcurrency = positiveInteger("DEEPSEEK_CONCURRENCY", 2);
+if (deepSeekConcurrency > 4) throw new Error("DEEPSEEK_CONCURRENCY no puede superar 4.");
+
 export const appConfig = Object.freeze({
   databasePath:
     process.env.DATABASE_PATH?.trim() ||
@@ -31,4 +61,28 @@ export const appConfig = Object.freeze({
   cleanupTimeoutMs: positiveInteger("CLEANUP_TIMEOUT_MS", 15_000),
   workerLeaseMs: positiveInteger("WORKER_LEASE_MS", 15_000),
   workerPollMs: positiveInteger("WORKER_POLL_MS", 500),
+  workerDeviceConcurrency,
+  facebookBrowserExecutablePath: process.env.FACEBOOK_BROWSER_EXECUTABLE_PATH?.trim() || undefined,
+  facebookBrowserProfilePath: facebookProfilePath(),
+  facebookExtractionTimeoutMs: positiveInteger("FACEBOOK_EXTRACTION_TIMEOUT_MS", 45_000),
+  facebookControlledAccount: process.env.FACEBOOK_CONTROLLED_ACCOUNT?.trim() || "",
+  facebookAccountResourceId: process.env.FACEBOOK_ACCOUNT_RESOURCE_ID?.trim() || "",
+  facebookPostContainerResourceId: process.env.FACEBOOK_POST_CONTAINER_RESOURCE_ID?.trim() || "",
+  facebookPostUrlResourceId: process.env.FACEBOOK_POST_URL_RESOURCE_ID?.trim() || "",
+  facebookCommentComposerResourceId: process.env.FACEBOOK_COMMENT_COMPOSER_RESOURCE_ID?.trim() || "",
+  facebookCommentEditorResourceId: process.env.FACEBOOK_COMMENT_EDITOR_RESOURCE_ID?.trim() || "",
+  facebookCommentSubmitResourceId: process.env.FACEBOOK_COMMENT_SUBMIT_RESOURCE_ID?.trim() || "",
+  facebookCommentResultContainerResourceId: process.env.FACEBOOK_COMMENT_RESULT_CONTAINER_RESOURCE_ID?.trim() || "",
+  facebookUiTimeoutMs: positiveInteger("FACEBOOK_UI_TIMEOUT_MS", 15_000),
+  facebookLikeActiveLabels: labels("FACEBOOK_LIKE_ACTIVE_LABELS", "Ya no me gusta|Unlike|Remove Like|Quitar Me gusta"),
+  facebookLikeInactiveLabels: labels("FACEBOOK_LIKE_INACTIVE_LABELS", "Me gusta|Like"),
+  facebookCommentLabels: labels("FACEBOOK_COMMENT_LABELS", "Comentar|Comment"),
+  deepSeekApiKey: process.env.API_DEEPSEEK?.trim() || "",
+  deepSeekConcurrency,
+  deepSeekModel: process.env.DEEPSEEK_MODEL?.trim() || "deepseek-chat",
+  deepSeekTimeoutMs: positiveInteger("DEEPSEEK_TIMEOUT_MS", 45_000),
+  commentGenerationPrompt: process.env.COMMENT_GENERATION_PROMPT?.trim() ||
+    "Escribe comentarios naturales relacionados con el contexto y la intencion indicada. No inventes experiencias, identidades ni datos.",
+  commentMinWords,
+  commentMaxWords,
 });

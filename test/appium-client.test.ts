@@ -85,6 +85,49 @@ test("decodes and validates base64 screenshots", async () => {
   await assert.rejects(client.getScreenshot("session-1"), expectCode("APPIUM_SCREENSHOT_INVALID"));
 });
 
+test("uses owned W3C sessions for the required Android interaction primitives", async () => {
+  const requests: Array<{ url: string; method: string; body?: unknown }> = [];
+  const responses: unknown[] = [
+    null,
+    null,
+    [{ "element-6066-11e4-a52e-4f735466cecf": "element-1" }],
+    [{ "element-6066-11e4-a52e-4f735466cecf": "element-2" }],
+    "texto exacto",
+    "true",
+    null,
+    null,
+    null,
+  ];
+  const client = new AppiumClient({
+    baseUrl: "http://127.0.0.1:4723",
+    ownedSessionIds: ["session-1"],
+    fetch: async (input, init) => {
+      requests.push({
+        url: String(input),
+        method: init?.method ?? "GET",
+        ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}),
+      });
+      return Response.json({ value: responses.shift() });
+    },
+  });
+
+  await client.activateApp("session-1", "com.facebook.katana");
+  await client.executeScript("session-1", "mobile: deepLink", [{ url: "https://facebook.com/post/1", package: "com.facebook.katana" }]);
+  assert.deepEqual(await client.findElements("session-1", "accessibility id", "Me gusta"), [{ elementId: "element-1" }]);
+  assert.deepEqual(await client.findElementsFromElement("session-1", "element-1", "xpath", ".//*[@text='objetivo']"), [{ elementId: "element-2" }]);
+  assert.equal(await client.getElementText("session-1", "element-1"), "texto exacto");
+  assert.equal(await client.getElementAttribute("session-1", "element-1", "selected"), "true");
+  await client.clearElement("session-1", "element-1");
+  await client.setElementValue("session-1", "element-1", "á");
+  await client.clickElement("session-1", "element-1");
+
+  assert.match(requests[0].url, /appium\/device\/activate_app$/);
+  assert.deepEqual(requests[1].body, { script: "mobile: deepLink", args: [{ url: "https://facebook.com/post/1", package: "com.facebook.katana" }] });
+  assert.deepEqual(requests[2].body, { using: "accessibility id", value: "Me gusta" });
+  assert.match(requests[3].url, /element\/element-1\/elements$/);
+  assert.deepEqual(requests[7].body, { text: "á", value: ["á"] });
+});
+
 test("deletes an owned session only after Appium confirms success", async () => {
   let attempts = 0;
   const client = new AppiumClient({

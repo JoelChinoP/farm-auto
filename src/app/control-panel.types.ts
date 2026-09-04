@@ -6,6 +6,10 @@ import type {
   Platform,
   PostStatus,
   PreparationStatus,
+  CleanupStatus,
+  EffectPhase,
+  OperationStatus,
+  SessionStatus,
 } from "@/lib/domain";
 
 export type {
@@ -16,6 +20,10 @@ export type {
   Platform,
   PostStatus,
   PreparationStatus,
+  CleanupStatus,
+  EffectPhase,
+  OperationStatus,
+  SessionStatus,
 } from "@/lib/domain";
 
 export type ViewId = "devices" | "facebook" | "tiktok" | "history";
@@ -48,6 +56,7 @@ export interface Device {
   hardwareId: string;
   lastPreparation: string | null;
   lastPlatformCheck: Record<Platform, string | null>;
+  facebookAccount?: string | null;
   retireAfterCampaign?: boolean;
 }
 
@@ -75,13 +84,40 @@ export interface CampaignComment {
   text: string;
   status: CommentStatus;
   stale: boolean;
+  source?: "generated" | "manual";
+  version?: number;
+  textHash?: string;
   error?: string;
+}
+
+export interface CampaignActionResult {
+  status: "pending" | "effect_possible" | "confirmed" | "failed" | "outcome_unknown" | "cancelled" | "reconciled_not_sent";
+  result: "already_active" | "activated" | "sent" | "preserved" | "not_sent" | null;
+  error: string | null;
+}
+
+export interface CampaignExecution {
+  operationId: string;
+  status: OperationStatus;
+  effectPhase: EffectPhase;
+  sessionStatus: SessionStatus;
+  cleanupStatus: CleanupStatus;
+  attempts: number;
+  confirmedRounds?: number;
+  requestedRounds?: number;
+  error: string | null;
+  uncertainAction: "like" | "comment" | "live_round" | null;
+  like: CampaignActionResult | null;
+  comment: CampaignActionResult | null;
+  checkpoints: Array<{ id: string; phase: string; sequence: number; createdAt: number }>;
+  evidence: Array<{ checkpointId: string | null; kind: "metadata" | "screenshot" | "page_source"; path: string; createdAt: number }>;
 }
 
 export interface CampaignPost {
   id: string;
   position: number;
   url: string;
+  finalUrl?: string | null;
   status: PostStatus;
   contextStatus: ContextStatus;
   context: string;
@@ -100,16 +136,21 @@ export interface CampaignAssignment {
   status: AssignmentStatus;
   scheduledAt: string | null;
   actualAt: string | null;
+  execution: CampaignExecution | null;
 }
 
 export interface CampaignDraft {
+  id?: string | null;
+  revision?: number;
   platform: Platform;
+  mode?: "post" | "live";
   status: CampaignStatus;
   selectedDeviceIds: string[];
   urlInput: string;
   urls: string[];
   urlErrors: UrlLineError[];
   actions: { like: boolean; comment: boolean };
+  controlledAccount?: string | null;
   distribution: IntentDistribution[];
   posts: CampaignPost[];
   assignments: CampaignAssignment[];
@@ -123,6 +164,7 @@ export interface CampaignDraft {
 
 export interface HistoryAssignment {
   id: string;
+  operationId?: string | null;
   postUrl: string;
   deviceId: string;
   deviceAlias: string;
@@ -136,12 +178,18 @@ export interface HistoryAssignment {
   commentResult: "ok" | "failed" | "not_requested" | "outcome_unknown";
   error?: string;
   attempts: number;
+  confirmedRounds?: number;
+  requestedRounds?: number;
   cleanup: "home_confirmed" | "session_closed" | "unknown" | "failed";
+  uncertainAction?: "like" | "comment" | "live_round" | null;
+  checkpoints?: CampaignExecution["checkpoints"];
+  evidence?: CampaignExecution["evidence"];
 }
 
 export interface HistoryCampaign {
   id: string;
   platform: Platform;
+  mode?: "post" | "live";
   startedAt: string;
   deviceIds: string[];
   postUrls: string[];
@@ -173,7 +221,8 @@ export interface DeviceEditor {
   order: number;
   serial: string;
   systemPort: number;
-  errors: Partial<Record<"alias" | "order" | "serial" | "systemPort", string>>;
+  facebookAccount: string;
+  errors: Partial<Record<"alias" | "order" | "serial" | "systemPort" | "facebookAccount", string>>;
 }
 
 export interface HistoryFilters {
@@ -215,6 +264,11 @@ export interface ControlState {
 
 export type ControlAction =
   | { type: "tick"; now: string }
+  | { type: "hydrate-devices"; devices: Device[] }
+  | { type: "hydrate-facebook"; draft: CampaignDraft; force?: boolean }
+  | { type: "hydrate-tiktok"; draft: CampaignDraft; force?: boolean }
+  | { type: "hydrate-history"; platform: Platform; history: HistoryCampaign[] }
+  | { type: "set-notice"; notice: Notice }
   | { type: "navigate"; view: ViewId }
   | { type: "clear-notice" }
   | { type: "set-device-import"; value: string }
@@ -239,12 +293,16 @@ export type ControlAction =
   | { type: "remove-distribution"; platform: Platform; id: string }
   | { type: "update-distribution"; platform: Platform; id: string; field: "intention" | "tone" | "count"; value: string | number }
   | { type: "prepare-campaign"; platform: Platform }
+  | { type: "campaign-requested"; platform: Platform }
+  | { type: "campaign-request-failed"; platform: Platform }
   | { type: "advance-post"; platform: Platform; postId: string; stage: "context" | "comments" | "failed" }
   | { type: "select-post"; platform: Platform; postId: string }
   | { type: "edit-context"; platform: Platform; postId: string; value: string }
+  | { type: "save-context"; platform: Platform; postId: string }
   | { type: "restore-context"; platform: Platform; postId: string }
   | { type: "retry-context"; platform: Platform; postId: string }
   | { type: "edit-comment"; platform: Platform; postId: string; commentId: string; value: string }
+  | { type: "save-comment"; platform: Platform; postId: string; commentId: string }
   | { type: "update-comment-profile"; platform: Platform; postId: string; commentId: string; field: "intention"; value: string }
   | { type: "update-comment-profile"; platform: Platform; postId: string; commentId: string; field: "tone"; value: Tone }
   | { type: "start-comment-regeneration"; platform: Platform; postId: string; commentIds: string[] }
@@ -255,6 +313,8 @@ export type ControlAction =
   | { type: "set-review-group"; platform: Platform; value: "post" | "device" }
   | { type: "request-start-campaign"; platform: Platform }
   | { type: "start-campaign"; platform: Platform }
+  | { type: "cancel-assignment"; operationId: string }
+  | { type: "reconcile-assignment"; platform: Platform; assignmentId: string; operationId: string; action: "like" | "comment"; resolution: "sent" | "not_sent" }
   | { type: "advance-running-campaign"; platform: Platform }
   | { type: "clear-campaign"; platform: Platform }
   | { type: "set-history-filter"; field: keyof HistoryFilters; value: string }

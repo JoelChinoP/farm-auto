@@ -16,7 +16,26 @@ import {
   recoverOwnedSessions,
   releaseRuntimeOwnership,
 } from "./lib/device-runtime.ts";
+import { FacebookBrowser } from "./lib/facebook-browser.ts";
+import {
+  executeFacebookAssignment,
+  recoverFacebookExecutions,
+} from "./lib/facebook-mobile.ts";
+import type { FacebookMobileDriver } from "./lib/facebook-mobile.ts";
+import {
+  createFacebookCampaign,
+  extractFacebookPost,
+  generateFacebookComments,
+} from "./lib/facebook.ts";
+import type { DeepSeekFetch, FacebookCampaignRequest, FacebookExtractor } from "./lib/facebook.ts";
 import { claimNextJob, completeJob, failJob, getJob, recoverStaleJobs } from "./lib/queue.ts";
+import { executeTikTokAssignment, recoverTikTokExecutions } from "./lib/tiktok-mobile.ts";
+import type { TikTokLiveMobileDriver, TikTokPostMobileDriver } from "./lib/tiktok-mobile.ts";
+import {
+  createTikTokCampaign,
+  generateTikTokComment,
+  type TikTokCampaignRequest,
+} from "./lib/tiktok.ts";
 
 type WorkerDependencies = {
   database?: Database.Database;
@@ -25,8 +44,20 @@ type WorkerDependencies = {
   owner?: string;
   signal?: AbortSignal;
   once?: boolean;
+  deviceConcurrency?: number;
+  aiConcurrency?: number;
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
+  facebookBrowser?: FacebookExtractor & { close?: () => Promise<void> };
+  deepSeekFetch?: DeepSeekFetch;
+  facebookMobile?: FacebookMobileDriver;
+  tiktokPostMobile?: TikTokPostMobileDriver;
+  tiktokLiveMobile?: TikTokLiveMobileDriver;
 };
+
+function campaignPlatform(database: Database.Database, campaignId: string | null) {
+  if (!campaignId) return null;
+  return (database.prepare("SELECT platform FROM campaigns WHERE id = ?").get(campaignId) as { platform: "facebook" | "tiktok" } | undefined)?.platform ?? null;
+}
 
 export async function runWorker(options: WorkerDependencies = {}) {
   const database = options.database ?? getDatabase();
@@ -38,6 +69,15 @@ export async function runWorker(options: WorkerDependencies = {}) {
     ownedSessionIds: getOwnedAppiumSessionIds(database),
   });
   const sleep = options.sleep ?? (async (milliseconds, signal) => delay(milliseconds, undefined, { signal }));
+  const facebookBrowser = options.facebookBrowser ?? new FacebookBrowser(database, owner);
+  const deviceConcurrency = options.deviceConcurrency ?? appConfig.workerDeviceConcurrency;
+  const aiConcurrency = options.aiConcurrency ?? appConfig.deepSeekConcurrency;
+  if (!Number.isInteger(deviceConcurrency) || deviceConcurrency < 1 || deviceConcurrency > 100) {
+    throw new TypeError("deviceConcurrency debe ser un entero entre 1 y 100.");
+  }
+  if (!Number.isInteger(aiConcurrency) || aiConcurrency < 1 || aiConcurrency > 4) {
+    throw new TypeError("aiConcurrency debe ser un entero entre 1 y 4.");
+  }
   if (!claimRuntimeOwnership(database, owner, process.pid, Date.now(), appConfig.workerLeaseMs)) {
     throw new Error("Otro worker de Farm Appium mantiene el lease activo.");
   }
@@ -75,29 +115,13 @@ export async function runWorker(options: WorkerDependencies = {}) {
     signal.throwIfAborted();
     assertRuntimeOwnership(database, owner);
     recoverStaleJobs(database, owner);
+    recoverFacebookExecutions(database, owner);
+    recoverTikTokExecutions(database, owner);
     let nextInventoryAt = Date.now() + 5_000;
+    const activeDeviceJobs = new Set<Promise<void>>();
+    const activeAiJobs = new Set<Promise<void>>();
 
-    do {
-      signal.throwIfAborted();
-      if (!claimRuntimeOwnership(database, owner, process.pid, Date.now(), appConfig.workerLeaseMs)) {
-        throw new Error("El worker perdio su lease.");
-      }
-      if (Date.now() >= nextInventoryAt) {
-        try {
-          await refreshDeviceInventory(database, adb, signal, owner);
-        } catch {
-          // Inventory is best-effort; preparation records concrete device failures.
-        }
-        signal.throwIfAborted();
-        nextInventoryAt = Date.now() + 5_000;
-      }
-      const job = claimNextJob(database, owner);
-      if (!job) {
-        if (options.once) break;
-        await sleep(appConfig.workerPollMs, signal);
-        continue;
-      }
-
+    const runJob = async (job: NonNullable<ReturnType<typeof claimNextJob>>) => {
       const jobController = new AbortController();
       const jobSignal = AbortSignal.any([signal, jobController.signal]);
       const cancellationPoll = setInterval(() => {
@@ -107,30 +131,114 @@ export async function runWorker(options: WorkerDependencies = {}) {
       }, 100);
       cancellationPoll.unref();
       try {
-        if (job.kind !== "device.prepare" || !job.operationId) {
-          throw new Error(`El worker de Fase 2 no admite el job ${job.kind}.`);
+        if (!job.operationId) throw new Error(`El job ${job.kind} no tiene una operacion asociada.`);
+        let result: unknown;
+        if (job.kind === "device.prepare") {
+          result = await prepareDevice(database, job.operationId, owner, {
+            adb,
+            appium,
+            signal: jobSignal,
+            leaseSignal: leaseController.signal,
+          });
+        } else if (job.kind === "campaign.create") {
+          result = (job.payload as { platform?: unknown }).platform === "tiktok"
+            ? createTikTokCampaign(database, job.operationId, job.payload as TikTokCampaignRequest)
+            : createFacebookCampaign(database, job.operationId, job.payload as FacebookCampaignRequest);
+        } else if (job.kind === "post.extract") {
+          result = await extractFacebookPost(database, job.operationId, facebookBrowser, jobSignal);
+        } else if (job.kind === "comments.generate") {
+          result = campaignPlatform(database, job.campaignId) === "tiktok"
+            ? await generateTikTokComment(database, job.operationId, options.deepSeekFetch, jobSignal)
+            : await generateFacebookComments(database, job.operationId, options.deepSeekFetch, jobSignal);
+        } else if (job.kind === "assignment.execute") {
+          result = campaignPlatform(database, job.campaignId) === "tiktok"
+            ? await executeTikTokAssignment(database, job.operationId, owner, {
+              adb,
+              appium,
+              postMobile: options.tiktokPostMobile,
+              liveMobile: options.tiktokLiveMobile,
+              signal: jobSignal,
+              leaseSignal: leaseController.signal,
+            })
+            : await executeFacebookAssignment(database, job.operationId, owner, {
+              adb,
+              appium,
+              mobile: options.facebookMobile,
+              signal: jobSignal,
+              leaseSignal: leaseController.signal,
+            });
+        } else {
+          throw new Error(`El worker no admite el job ${job.kind}.`);
         }
-        const result = await prepareDevice(database, job.operationId, owner, {
-          adb,
-          appium,
-          signal: jobSignal,
-          leaseSignal: leaseController.signal,
-        });
         completeJob(database, job.id, owner, result);
       } catch (error) {
         try {
           assertRuntimeOwnership(database, owner);
-          failJob(database, job.id, owner, error);
+          const current = getJob(database, job.id);
+          const interrupted = signal.aborted
+            && current?.cancellationRequestedAt === null
+            && ["none", "before_effect"].includes(current.effectPhase);
+          if (!interrupted) failJob(database, job.id, owner, error, 0, job.kind === "device.prepare");
         } catch (leaseError) {
           if (!leaseController.signal.aborted) throw leaseError;
         }
       } finally {
         clearInterval(cancellationPoll);
       }
-    } while (!options.once);
+    };
+
+    try {
+      do {
+        signal.throwIfAborted();
+        if (!claimRuntimeOwnership(database, owner, process.pid, Date.now(), appConfig.workerLeaseMs)) {
+          throw new Error("El worker perdio su lease.");
+        }
+        if (Date.now() >= nextInventoryAt) {
+          try {
+            await refreshDeviceInventory(database, adb, signal, owner);
+          } catch {
+            // Inventory is best-effort; preparation records concrete device failures.
+          }
+          signal.throwIfAborted();
+          nextInventoryAt = Date.now() + 5_000;
+        }
+        const excludeKinds = [
+          ...(activeDeviceJobs.size >= deviceConcurrency ? ["assignment.execute"] : []),
+          ...(activeAiJobs.size >= aiConcurrency ? ["comments.generate"] : []),
+        ];
+        const job = claimNextJob(database, owner, Date.now(), { excludeKinds });
+        if (!job) {
+          const activeJobs = [...activeDeviceJobs, ...activeAiJobs];
+          if (activeJobs.length) {
+            await Promise.race(activeJobs);
+            continue;
+          }
+          if (options.once) break;
+          await sleep(appConfig.workerPollMs, signal);
+          continue;
+        }
+        if (["assignment.execute", "comments.generate"].includes(job.kind) && !options.once) {
+          const running = runJob(job);
+          const activeJobs = job.kind === "assignment.execute" ? activeDeviceJobs : activeAiJobs;
+          activeJobs.add(running);
+          void running.then(
+            () => activeJobs.delete(running),
+            () => activeJobs.delete(running),
+          );
+        } else {
+          await runJob(job);
+        }
+      } while (!options.once);
+    } finally {
+      await Promise.allSettled([...activeDeviceJobs, ...activeAiJobs]);
+    }
   } finally {
     clearInterval(heartbeat);
-    releaseRuntimeOwnership(database, owner);
+    try {
+      await facebookBrowser.close?.();
+    } finally {
+      releaseRuntimeOwnership(database, owner);
+    }
   }
 }
 

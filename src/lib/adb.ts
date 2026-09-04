@@ -239,36 +239,56 @@ export class AdbClient {
   async inspectDevice(serial: string, options: AdbCommandOptions = {}): Promise<AdbDeviceInspection> {
     this.validateSerial(serial);
     const profile = this.requireProfile(serial);
+    const inspection = await this.inspectTarget(serial, options);
+    if (inspection.hardwareId !== profile.hardwareId) {
+      throw new HardwareIdentityMismatchError(serial, profile.hardwareId, inspection.hardwareId);
+    }
+    return inspection;
+  }
+
+  async inspectUnregisteredDevice(serial: string, options: AdbCommandOptions = {}): Promise<AdbDeviceInspection> {
+    this.validateSerial(serial);
+    return this.inspectTarget(serial, options);
+  }
+
+  private async inspectTarget(serial: string, options: AdbCommandOptions): Promise<AdbDeviceInspection> {
     const inventoryDevice = (await this.listDevices(options)).find((device) => device.serial === serial);
     if (!inventoryDevice) throw new Error(`El dispositivo ${serial} no esta conectado por ADB.`);
     if (inventoryDevice.state !== "device") {
       throw new Error(`El dispositivo ${serial} esta ${inventoryDevice.state}.`);
     }
-
+    const execute = (args: readonly string[]) => this.invoke(["-s", serial, ...args], options);
     const model = this.requiredOutput(
-      (await this.execute(serial, ["shell", "getprop", "ro.product.model"], options)).stdout,
+      (await execute(["shell", "getprop", "ro.product.model"])).stdout,
       "ro.product.model",
     );
     const roSerialNo = this.requiredOutput(
-      (await this.execute(serial, ["shell", "getprop", "ro.serialno"], options)).stdout,
+      (await execute(["shell", "getprop", "ro.serialno"])).stdout,
       "ro.serialno",
     );
     const androidId = this.requiredOutput(
-      (await this.execute(serial, ["shell", "settings", "get", "secure", "android_id"], options)).stdout,
+      (await execute(["shell", "settings", "get", "secure", "android_id"])).stdout,
       "android_id",
     );
     const packages = parsePackages(
-      (await this.execute(serial, ["shell", "pm", "list", "packages"], options)).stdout,
+      (await execute(["shell", "pm", "list", "packages"])).stdout,
     );
     const foreground = parseForeground(
-      (await this.execute(serial, ["shell", "dumpsys", "window", "windows"], options)).stdout,
+      (await execute(["shell", "dumpsys", "window", "windows"])).stdout,
     );
-    const launcher = await this.resolveLauncher(serial, options);
+    const launcher = parseResolvedActivity((await execute([
+      "shell",
+      "cmd",
+      "package",
+      "resolve-activity",
+      "--brief",
+      "-a",
+      "android.intent.action.MAIN",
+      "-c",
+      "android.intent.category.HOME",
+    ])).stdout);
+    if (!launcher) throw new Error(`No se pudo resolver el launcher de ${serial}.`);
     const hardwareId = calculateHardwareId(roSerialNo, androidId);
-    if (hardwareId !== profile.hardwareId) {
-      throw new HardwareIdentityMismatchError(serial, profile.hardwareId, hardwareId);
-    }
-
     return {
       deviceId: serial,
       state: "device",

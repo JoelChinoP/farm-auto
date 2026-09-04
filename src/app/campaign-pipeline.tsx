@@ -49,20 +49,20 @@ export function CampaignPipeline({ platform, draft, state, dispatch }: CampaignP
           <article className="post-detail">
             <header className="post-detail-head">
               <div><span>PUBLICACIÓN {String(selectedPost.position).padStart(2, "0")}</span><Title order={3} title={selectedPost.url}>{domainLabel(selectedPost.url)}</Title><span className="post-url" title={selectedPost.url}>{selectedPost.url}</span></div>
-              <div><Badge size="lg">{statusLabels[selectedPost.status]}</Badge><small>{selectedPost.elapsedSeconds}s simulados</small></div>
+              <div><Badge size="lg">{statusLabels[selectedPost.status]}</Badge><small>Estado persistido</small></div>
             </header>
 
             <Accordion className="detail-accordion" multiple defaultValue={["context", "comments"]}>
               <Accordion.Item value="context">
                 <Accordion.Control>Contexto de publicación</Accordion.Control>
                 <Accordion.Panel>
-                  <div className="context-meta"><Badge color={selectedPost.contextStatus === "failed" ? "red" : "gray"}>{statusLabels[selectedPost.contextStatus]}</Badge><span>Fuente: {selectedPost.contextSource ? { extracted: "Extraído", cache: "Caché", manual: "Edición manual" }[selectedPost.contextSource] : "Pendiente"}</span><span>Extracción: {formatDate(selectedPost.extractedAt)}</span></div>
+                  <div className="context-meta"><Badge color={selectedPost.contextStatus === "failed" ? "red" : "gray"}>{statusLabels[selectedPost.contextStatus]}</Badge><span>Fuente: {selectedPost.contextSource ? { extracted: "Extraído", cache: "Caché", manual: "Edición manual" }[selectedPost.contextSource] : "Pendiente"}</span>{platform === "facebook" && <span>Extracción: {formatDate(selectedPost.extractedAt)}</span>}</div>
                   {selectedPost.error && <Alert color="red" title="Extracción aislada">{selectedPost.error}</Alert>}
-                  <Textarea label="Contexto editable" description="Editar después de generar marca los comentarios como desactualizados." minRows={4} maxRows={8} autosize value={selectedPost.context} placeholder={selectedPost.contextStatus === "extracting" ? "Extrayendo contexto…" : "Escribe contexto manual para continuar"} onChange={(event) => dispatch({ type: "edit-context", platform, postId: selectedPost.id, value: event.currentTarget.value })} />
+                  <Textarea label={platform === "tiktok" ? "Contexto manual" : "Contexto editable"} description="Editar después de generar marca los comentarios como desactualizados." minRows={4} maxRows={8} maxLength={1200} autosize value={selectedPost.context} placeholder={selectedPost.contextStatus === "extracting" ? "Extrayendo contexto…" : "Escribe contexto manual para continuar"} onChange={(event) => dispatch({ type: "edit-context", platform, postId: selectedPost.id, value: event.currentTarget.value })} />
                   <Group mt="sm">
-                    <Button size="compact-sm" disabled={selectedPost.context.trim().length < 2} onClick={() => dispatch({ type: "edit-context", platform, postId: selectedPost.id, value: selectedPost.context })}>Guardar edición</Button>
-                    <Button size="compact-sm" variant="default" disabled={!selectedPost.extractedContext} onClick={() => dispatch({ type: "restore-context", platform, postId: selectedPost.id })}>Restaurar extraído</Button>
-                    <Button size="compact-sm" variant="light" onClick={() => dispatch({ type: "retry-context", platform, postId: selectedPost.id })}>Reintentar extracción</Button>
+                    <Button size="compact-sm" disabled={selectedPost.context.trim().length < (platform === "tiktok" ? 5 : 2)} onClick={() => dispatch({ type: "save-context", platform, postId: selectedPost.id })}>Guardar edición</Button>
+                    {platform === "facebook" && <Button size="compact-sm" variant="default" disabled={!selectedPost.extractedContext} onClick={() => dispatch({ type: "restore-context", platform, postId: selectedPost.id })}>Restaurar extraído</Button>}
+                    {platform === "facebook" && <Button size="compact-sm" variant="light" onClick={() => dispatch({ type: "retry-context", platform, postId: selectedPost.id })}>Reintentar extracción</Button>}
                   </Group>
                 </Accordion.Panel>
               </Accordion.Item>
@@ -82,18 +82,18 @@ export function CampaignPipeline({ platform, draft, state, dispatch }: CampaignP
                             return (
                               <tr key={comment.id} data-stale={comment.stale}>
                                 <td><strong>{String(device?.order ?? 0).padStart(2, "0")} / {device?.alias ?? "Retirado"}</strong><small>{shortSerial(device?.serial)}</small></td>
-                                <td><TextInput aria-label={`Intención para ${device?.alias ?? comment.deviceId}`} value={comment.intention} onChange={(event) => dispatch({ type: "update-comment-profile", platform, postId: selectedPost.id, commentId: comment.id, field: "intention", value: event.currentTarget.value })} /><Select mt={5} aria-label={`Tono para ${device?.alias ?? comment.deviceId}`} value={comment.tone} data={toneOptions} allowDeselect={false} onChange={(value) => dispatch({ type: "update-comment-profile", platform, postId: selectedPost.id, commentId: comment.id, field: "tone", value: (value ?? "Cercano") as Tone })} /></td>
-                                <td><Textarea aria-label={`Comentario para ${device?.alias ?? comment.deviceId}`} minRows={2} maxRows={5} autosize value={comment.text} error={invalid ? "Usa entre 2 y 500 caracteres" : undefined} onChange={(event) => dispatch({ type: "edit-comment", platform, postId: selectedPost.id, commentId: comment.id, value: event.currentTarget.value })} /></td>
+                                <td><TextInput aria-label={`Intención para ${device?.alias ?? comment.deviceId}`} value={comment.intention} onChange={(event) => dispatch({ type: "update-comment-profile", platform, postId: selectedPost.id, commentId: comment.id, field: "intention", value: event.currentTarget.value })} onBlur={() => dispatch({ type: "save-comment", platform, postId: selectedPost.id, commentId: comment.id })} /><Select mt={5} aria-label={`Tono para ${device?.alias ?? comment.deviceId}`} value={comment.tone} data={toneOptions} allowDeselect={false} onChange={(value) => dispatch({ type: "update-comment-profile", platform, postId: selectedPost.id, commentId: comment.id, field: "tone", value: (value ?? "Cercano") as Tone })} onBlur={() => dispatch({ type: "save-comment", platform, postId: selectedPost.id, commentId: comment.id })} /></td>
+                                <td><Textarea aria-label={`Comentario para ${device?.alias ?? comment.deviceId}`} minRows={2} maxRows={5} autosize value={comment.text} error={invalid ? "Usa entre 2 y 500 caracteres" : undefined} onChange={(event) => dispatch({ type: "edit-comment", platform, postId: selectedPost.id, commentId: comment.id, value: event.currentTarget.value })} onBlur={() => dispatch({ type: "save-comment", platform, postId: selectedPost.id, commentId: comment.id })} /></td>
                                 <td><code className={comment.text.length > 500 ? "counter-error" : ""}>{comment.text.length}/500</code></td>
                                 <td><Badge color={comment.stale || comment.status === "failed" ? "red" : ["generating", "regenerating", "pending"].includes(comment.status) ? "blue" : "lime"}>{comment.stale ? "Desactualizado" : statusLabels[comment.status]}</Badge>{comment.error && <small>{comment.error}</small>}</td>
-                                <td><Button size="compact-xs" variant="light" onClick={() => dispatch({ type: "start-comment-regeneration", platform, postId: selectedPost.id, commentIds: [comment.id] })}>Regenerar</Button></td>
+                                <td><Button size="compact-xs" variant="light" disabled={selectedPost.contextStatus !== "edited"} onClick={() => dispatch({ type: "request-regenerate-post", platform, postId: selectedPost.id })}>{comment.text ? "Regenerar" : "Generar"}</Button></td>
                               </tr>
                             );
                           })}
                         </tbody>
                       </table>
                     </div>
-                    <Group justify="flex-end" mt="sm"><Button variant="default" onClick={() => dispatch({ type: "request-regenerate-post", platform, postId: selectedPost.id })}>Regenerar todos los comentarios de esta publicación</Button></Group>
+                    <Group justify="flex-end" mt="sm"><Button variant="default" disabled={selectedPost.contextStatus !== "edited"} onClick={() => dispatch({ type: "request-regenerate-post", platform, postId: selectedPost.id })}>{platform === "tiktok" ? "Generar comentario con DeepSeek" : "Regenerar todos los comentarios de esta publicación"}</Button></Group>
                   </Accordion.Panel>
                 </Accordion.Item>
               )}

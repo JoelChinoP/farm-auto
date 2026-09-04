@@ -53,7 +53,7 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
           <Text>Allowlist explícita, preparación aislada y puertos exclusivos.</Text>
         </div>
         <div className="refresh-stamp">
-          <span>ÚLTIMA ACTUALIZACIÓN SIMULADA</span>
+          <span>ÚLTIMA ACTUALIZACIÓN</span>
           <strong>{formatDate(state.demoOperations.now, true)}</strong>
         </div>
       </header>
@@ -79,7 +79,7 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
             <div className="import-grid">
               <Textarea
                 label="Seriales ADB"
-                description="Un serial por línea. Se aceptan equipos todavía desconectados."
+                description="Un serial por línea. Deben estar conectados y autorizados para registrar su identidad física."
                 placeholder={"R58M72K1A7X\nemulator-5554\n192.168.0.42:5555"}
                 autosize
                 minRows={4}
@@ -90,7 +90,7 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
                 aria-describedby="device-import-errors"
               />
               <div className="import-aside">
-                <Text size="sm">Los IDs se añaden primero. Conexión, modelo y sesiones se verifican durante la preparación.</Text>
+                <Text size="sm">ADB verifica identidad, modelo y aplicaciones antes de persistir cada perfil. Las sesiones se validan durante la preparación.</Text>
                 <Button onClick={() => dispatch({ type: "add-devices" })}>Agregar dispositivos</Button>
               </div>
             </div>

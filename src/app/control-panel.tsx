@@ -4,6 +4,7 @@ import {
   Alert,
   Badge,
   Button,
+  Checkbox,
   Drawer,
   Group,
   Modal,
@@ -11,17 +12,20 @@ import {
   Stack,
   Text,
   TextInput,
+  Textarea,
 } from "@mantine/core";
-import { useEffect, useReducer, useRef } from "react";
+import { useEffect, useReducer, useRef, useState } from "react";
 
 import { CampaignView } from "./campaign-view";
 import type {
   CampaignDraft,
+  CampaignActionResult,
   ControlAction,
   ControlDispatch,
   ControlState,
   Device,
   Platform,
+  Tone,
   ViewId,
 } from "./control-panel.types";
 import {
@@ -35,6 +39,7 @@ import {
 } from "./demo-state";
 import { DevicesView } from "./devices-view";
 import { HistoryView } from "./history-view";
+import { TikTokLivePanel, type TikTokConfiguration, type TikTokLiveInput } from "./tiktok-live-panel";
 
 const navItems: { id: ViewId; index: string; label: string }[] = [
   { id: "devices", index: "01", label: "Dispositivos" },
@@ -43,7 +48,6 @@ const navItems: { id: ViewId; index: string; label: string }[] = [
   { id: "history", index: "04", label: "Historial" },
 ];
 
-const preparationSteps = ["Validando ADB", "Comprobando Appium", "Leyendo jerarquía", "Volviendo a Inicio"];
 const abortSteps = [
   "Solicitud registrada",
   "Deteniendo nuevos trabajos",
@@ -52,6 +56,294 @@ const abortSteps = [
   "Enviando Home por dispositivo",
   "Finalizado o requiere recuperación",
 ];
+
+type DeviceSnapshot = {
+  hardwareId: string;
+  deviceId: string;
+  alias: string;
+  physicalOrder: number;
+  systemPort: number;
+  connection: Device["connection"] | null;
+  model: string | null;
+  observedAt: number | null;
+  preparationStatus: Device["preparation"] | null;
+  preparationStep: string | null;
+  preparationUpdatedAt: number | null;
+  farmAvailability: "available" | "busy";
+  retirementStatus: "pending" | null;
+  facebookAccount: string | null;
+  facebookAccountFingerprint: string | null;
+  packages: unknown[];
+};
+
+type FacebookSnapshot = {
+  id: string;
+  platform: Platform;
+  mode?: "post" | "live";
+  status: CampaignDraft["status"];
+  revision: number;
+  actions: CampaignDraft["actions"];
+  controlledAccount: string | null;
+  manifest?: null | {
+    revision: number;
+    scheduledAt: number;
+    allowSharedAccounts: boolean;
+    createdAt: number;
+  };
+  deviceIds: string[];
+  createdAt: number;
+  updatedAt: number;
+  posts: Array<{
+    id: string;
+    position: number;
+    url: string;
+    finalUrl: string | null;
+    status: CampaignDraft["posts"][number]["status"];
+    contextStatus: CampaignDraft["posts"][number]["contextStatus"];
+    context: string;
+    extractedContext: string;
+    contextSource: CampaignDraft["posts"][number]["contextSource"];
+    extractedAt: number | null;
+    error: string | null;
+    comments: Array<{
+      id: string;
+      assignmentId: string;
+      deviceId: string;
+      intention: string;
+      tone: Tone;
+      text: string;
+      status: CampaignDraft["posts"][number]["comments"][number]["status"];
+      stale: boolean;
+      source: "generated" | "manual";
+      version: number;
+      textHash: string;
+      error: string | null;
+    }>;
+  }>;
+  assignments: Array<{
+    id: string;
+    postId: string;
+    deviceId: string;
+    status: CampaignDraft["assignments"][number]["status"];
+    scheduledAt: number | null;
+    actualAt: number | null;
+    execution: CampaignDraft["assignments"][number]["execution"];
+  }>;
+};
+
+type FacebookExecutionConfirmation = {
+  campaignId: string;
+  revision: number;
+  scheduledAt: number;
+  actions: { like: boolean; comment: boolean };
+  assignments: Array<{
+    assignmentId: string;
+    postId: string;
+    deviceId: string;
+    deviceLabel: string;
+    expectedAccount: string;
+    postUrl: string;
+    comment: null | { id: string; version: number; text: string; textHash: string };
+  }>;
+};
+
+type TikTokExecutionConfirmation = Omit<FacebookExecutionConfirmation, "scheduledAt" | "assignments"> & {
+  assignments: [FacebookExecutionConfirmation["assignments"][number]];
+};
+
+function isoDate(value: number | null) {
+  return value === null ? null : new Date(value).toISOString();
+}
+
+function mapDeviceSnapshots(devices: DeviceSnapshot[]): Device[] {
+  return devices.map((device) => {
+    const packages = new Set(device.packages.filter((value): value is string => typeof value === "string"));
+    const preparation = device.preparationStatus ?? "not_ready";
+    return {
+      id: device.deviceId,
+      order: device.physicalOrder,
+      alias: device.alias,
+      serial: device.deviceId,
+      model: device.model ?? "Pendiente de lectura",
+      connection: device.connection ?? "offline",
+      preparation,
+      preparationStep: device.preparationStep ?? undefined,
+      capabilities: {
+        facebook: packages.has("com.facebook.katana") ? "ready" : "not_installed",
+        tiktok: packages.has("com.zhiliaoapp.musically") ? "ready" : "not_installed",
+      },
+      activity: preparation === "recovery_required" ? "recovery_required" : device.farmAvailability,
+      systemPort: device.systemPort,
+      hardwareId: device.hardwareId,
+      lastPreparation: isoDate(device.preparationUpdatedAt),
+      lastPlatformCheck: { facebook: isoDate(device.observedAt), tiktok: isoDate(device.observedAt) },
+      facebookAccount: device.facebookAccount,
+      retireAfterCampaign: device.retirementStatus === "pending",
+    };
+  });
+}
+
+function mapCampaignSnapshot(snapshot: FacebookSnapshot): CampaignDraft {
+  const firstComments = snapshot.posts[0]?.comments ?? [];
+  const distribution = [...firstComments.reduce((rows, comment) => {
+    const key = `${comment.intention}\0${comment.tone}`;
+    const current = rows.get(key);
+    if (current) current.count += 1;
+    else rows.set(key, { id: `${snapshot.platform}-intent-${rows.size + 1}`, intention: comment.intention, tone: comment.tone, count: 1 });
+    return rows;
+  }, new Map<string, CampaignDraft["distribution"][number]>()).values()];
+  return {
+    id: snapshot.id,
+    revision: snapshot.revision,
+    platform: snapshot.platform,
+    mode: snapshot.mode,
+    status: snapshot.status,
+    selectedDeviceIds: snapshot.deviceIds,
+    urlInput: snapshot.posts.map((post) => post.url).join("\n"),
+    urls: snapshot.posts.map((post) => post.url),
+    urlErrors: [],
+    actions: snapshot.actions,
+    controlledAccount: snapshot.controlledAccount,
+    distribution: distribution.length
+      ? distribution
+      : [{ id: `${snapshot.platform}-intent-1`, intention: "Reacción natural", tone: "Cercano", count: snapshot.platform === "tiktok" ? 1 : 0 }],
+    posts: snapshot.posts.map((post) => ({
+      id: post.id,
+      position: post.position,
+      url: post.url,
+      finalUrl: post.finalUrl,
+      status: post.status,
+      contextStatus: post.contextStatus,
+      context: post.context,
+      extractedContext: post.extractedContext,
+      contextSource: post.contextSource,
+      extractedAt: isoDate(post.extractedAt),
+      elapsedSeconds: 0,
+      comments: post.comments.map((comment) => ({
+        id: comment.id,
+        assignmentId: comment.assignmentId,
+        deviceId: comment.deviceId,
+        intention: comment.intention,
+        tone: comment.tone,
+        text: comment.text,
+        status: comment.status,
+        stale: comment.stale,
+        source: comment.source,
+        version: comment.version,
+        textHash: comment.textHash,
+        ...(comment.error ? { error: comment.error } : {}),
+      })),
+      ...(post.error ? { error: post.error } : {}),
+    })),
+    assignments: snapshot.assignments.map((assignment) => ({
+      id: assignment.id,
+      postId: assignment.postId,
+      deviceId: assignment.deviceId,
+      status: assignment.status,
+      scheduledAt: isoDate(assignment.scheduledAt),
+      actualAt: isoDate(assignment.actualAt),
+      execution: assignment.execution,
+    })),
+    selectedPostId: snapshot.posts[0]?.id ?? null,
+    scheduleStart: snapshot.manifest ? "custom" : "now",
+    scheduleDateTime: snapshot.manifest ? new Date(snapshot.manifest.scheduledAt).toISOString().slice(0, 16) : "",
+    maxWaitMinutes: 30,
+    scheduleStatus: snapshot.manifest ? "frozen" : "none",
+    reviewGrouping: "post",
+  };
+}
+
+function actionResult(
+  requested: boolean,
+  action: CampaignActionResult | null,
+) {
+  if (!requested) return "not_requested" as const;
+  if (action?.status === "confirmed") return "ok" as const;
+  if (action?.status === "effect_possible" || action?.status === "outcome_unknown") return "outcome_unknown" as const;
+  return "failed" as const;
+}
+
+function mapCampaignHistory(snapshots: FacebookSnapshot[], devices: Device[]) {
+  return snapshots.map((snapshot) => ({
+    id: snapshot.id,
+    platform: snapshot.platform,
+    mode: snapshot.mode,
+    startedAt: new Date(snapshot.createdAt).toISOString(),
+    deviceIds: snapshot.deviceIds,
+    postUrls: snapshot.posts.map((post) => post.url),
+    actions: snapshot.actions,
+    status: snapshot.status,
+    completedAssignments: snapshot.assignments.filter((assignment) => ["sent", "failed", "outcome_unknown", "cancelled"].includes(assignment.status)).length,
+    totalAssignments: snapshot.assignments.length,
+    assignments: snapshot.assignments.map((assignment) => {
+      const post = snapshot.posts.find((item) => item.id === assignment.postId)!;
+      const comment = post.comments.find((item) => item.assignmentId === assignment.id);
+      const device = devices.find((item) => item.id === assignment.deviceId);
+      const execution = assignment.execution;
+      const cleanup = execution?.cleanupStatus === "home_confirmed"
+        ? "home_confirmed" as const
+        : execution?.cleanupStatus === "session_closed"
+          ? "session_closed" as const
+          : execution?.cleanupStatus === "failed"
+            ? "failed" as const
+            : "unknown" as const;
+      return {
+        id: assignment.id,
+        operationId: execution?.operationId ?? null,
+        postUrl: post.url,
+        deviceId: assignment.deviceId,
+        deviceAlias: device?.alias ?? "Dispositivo retirado",
+        deviceSerial: device?.serial ?? assignment.deviceId,
+        plannedAt: isoDate(assignment.scheduledAt) ?? new Date(snapshot.createdAt).toISOString(),
+        actualAt: isoDate(assignment.actualAt),
+        status: assignment.status,
+        comment: comment?.text || null,
+        context: post.context || "No requerido",
+        likeResult: actionResult(snapshot.actions.like, execution?.like ?? null),
+        commentResult: actionResult(snapshot.actions.comment, execution?.comment ?? null),
+        ...(execution?.error ? { error: execution.error } : {}),
+        attempts: execution?.attempts ?? 0,
+        confirmedRounds: execution?.confirmedRounds,
+        requestedRounds: execution?.requestedRounds,
+        cleanup,
+        uncertainAction: execution?.uncertainAction ?? null,
+        checkpoints: execution?.checkpoints ?? [],
+        evidence: execution?.evidence ?? [],
+      };
+    }),
+  }));
+}
+
+function preserveDirtyFacebookFields(current: CampaignDraft, incoming: CampaignDraft, dirty: Set<string>) {
+  if (!dirty.size || current.id !== incoming.id) return incoming;
+  return {
+    ...incoming,
+    posts: incoming.posts.map((post) => {
+      const localPost = current.posts.find((item) => item.id === post.id);
+      if (!localPost) return post;
+      return {
+        ...post,
+        ...(dirty.has(`context:${post.id}`) ? {
+          context: localPost.context,
+          contextStatus: localPost.contextStatus,
+          contextSource: localPost.contextSource,
+        } : {}),
+        comments: post.comments.map((comment) => {
+          if (!dirty.has(`comment:${comment.id}`)) return comment;
+          const local = localPost.comments.find((item) => item.id === comment.id);
+          return local ? { ...comment, text: local.text, intention: local.intention, tone: local.tone, status: local.status, source: local.source } : comment;
+        }),
+      };
+    }),
+  };
+}
+
+async function apiRequest<T>(url: string, init?: RequestInit) {
+  const response = await fetch(url, init);
+  const payload = await response.json() as { success: boolean; data?: T; message?: string };
+  if (!response.ok || !payload.success || !payload.data) throw new Error(payload.message || `HTTP ${response.status}`);
+  return payload.data;
+}
 
 function draftKey(platform: Platform) {
   return platform === "facebook" ? "facebookDraft" : "tiktokDraft";
@@ -90,6 +382,8 @@ function validateDeviceEditor(state: ControlState) {
       ? { systemPort: "Debe estar entre 8200 y 8299" }
       : {}),
     ...(others.some((item) => item.systemPort === editor.systemPort) ? { systemPort: "El puerto ya está asignado" } : {}),
+    ...(editor.facebookAccount.length > 300 ? { facebookAccount: "Máximo 300 caracteres" } : {}),
+    ...(/[\u0000-\u001f\u007f]/.test(editor.facebookAccount) ? { facebookAccount: "Contiene caracteres de control" } : {}),
   };
   return { editor, errors, deviceId: modal.deviceId };
 }
@@ -99,6 +393,39 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
   switch (action.type) {
     case "tick":
       return { ...state, demoOperations: { ...state.demoOperations, now: action.now } };
+    case "hydrate-devices":
+      return { ...state, devices: action.devices };
+    case "hydrate-facebook":
+      if (!action.force
+         && state.facebookDraft.id === action.draft.id
+         && (state.facebookDraft.revision ?? 0) >= (action.draft.revision ?? 0)
+         && state.facebookDraft.controlledAccount === action.draft.controlledAccount) return state;
+      return {
+        ...state,
+        facebookDraft: {
+          ...action.draft,
+          selectedPostId: action.draft.posts.some((post) => post.id === state.facebookDraft.selectedPostId)
+            ? state.facebookDraft.selectedPostId
+            : action.draft.selectedPostId,
+        },
+      };
+    case "hydrate-tiktok":
+      if (!action.force
+         && state.tiktokDraft.id === action.draft.id
+         && (state.tiktokDraft.revision ?? 0) >= (action.draft.revision ?? 0)) return state;
+      return {
+        ...state,
+        tiktokDraft: {
+          ...action.draft,
+          selectedPostId: action.draft.posts.some((post) => post.id === state.tiktokDraft.selectedPostId)
+            ? state.tiktokDraft.selectedPostId
+            : action.draft.selectedPostId,
+        },
+      };
+    case "hydrate-history":
+      return { ...state, history: [...action.history, ...state.history.filter((item) => item.platform !== action.platform)] };
+    case "set-notice":
+      return { ...state, notice: action.notice };
     case "navigate":
       return { ...state, activeView: action.view };
     case "clear-notice":
@@ -119,36 +446,7 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
           demoOperations: { ...state.demoOperations, deviceImportErrors: parsed.errors },
         };
       }
-      const usedPorts = new Set(state.devices.map((item) => item.systemPort));
-      const availablePorts = Array.from({ length: 100 }, (_, index) => 8200 + index).filter((port) => !usedPorts.has(port));
-      if (parsed.serials.length > availablePorts.length) {
-        return {
-          ...state,
-          notice: { kind: "error", title: "Sin puertos disponibles", message: "El rango exclusivo 8200–8299 no alcanza para toda la lista." },
-        };
-      }
-      const maxOrder = Math.max(0, ...state.devices.map((item) => item.order));
-      const added: Device[] = parsed.serials.map((serial, index) => ({
-        id: `device-demo-${Date.now()}-${index}`,
-        order: maxOrder + index + 1,
-        alias: `Equipo ${maxOrder + index + 1}`,
-        serial,
-        model: "Pendiente de lectura",
-        connection: "offline",
-        preparation: "not_ready",
-        capabilities: { facebook: "session_required", tiktok: "session_required" },
-        activity: "available",
-        systemPort: availablePorts[index],
-        hardwareId: `PENDIENTE-${maxOrder + index + 1}`,
-        lastPreparation: null,
-        lastPlatformCheck: { facebook: null, tiktok: null },
-      }));
-      return {
-        ...state,
-        devices: [...state.devices, ...added],
-        notice: { kind: "status", title: `${added.length} dispositivos agregados`, message: "Ya aparecen en la allowlist; la preparación continúa pendiente." },
-        demoOperations: { ...state.demoOperations, deviceImportText: "", deviceImportErrors: [] },
-      };
+      return state;
     }
     case "set-device-search":
       return { ...state, demoOperations: { ...state.demoOperations, deviceSearch: action.value } };
@@ -179,7 +477,14 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
         activeModal: { type: "edit-device", deviceId: device.id },
         demoOperations: {
           ...state.demoOperations,
-          deviceEditor: { alias: device.alias, order: device.order, serial: device.serial, systemPort: device.systemPort, errors: {} },
+          deviceEditor: {
+            alias: device.alias,
+            order: device.order,
+            serial: device.serial,
+            systemPort: device.systemPort,
+            facebookAccount: device.facebookAccount ?? "",
+            errors: {},
+          },
         },
       };
     }
@@ -214,12 +519,13 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
             order: validation.editor.order,
             serial: validation.editor.serial.trim(),
             systemPort: validation.editor.systemPort,
+            facebookAccount: validation.editor.facebookAccount.trim() || null,
             preparation: changedIdentity ? "not_ready" : item.preparation,
             preparationStep: changedIdentity ? undefined : item.preparationStep,
           };
         }),
         activeModal: null,
-        notice: { kind: "status", title: "Dispositivo actualizado", message: "Los cambios solo existen en esta sesión de demostración." },
+        notice: { kind: "status", title: "Dispositivo actualizado", message: "Perfil y cuenta esperada guardados en SQLite." },
         demoOperations: { ...state.demoOperations, deviceEditor: null },
       };
     }
@@ -249,7 +555,7 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
       return {
         ...state,
         devices: state.devices.map((item) => action.deviceIds.includes(item.id)
-          ? { ...item, preparation: "preparing", preparationStep: preparationSteps[0] }
+          ? { ...item, preparation: "preparing", preparationStep: "Validando ADB" }
           : item),
         notice: { kind: "status", title: "Preparación simulada iniciada", message: `${action.deviceIds.length} equipos avanzan de forma independiente.` },
       };
@@ -328,6 +634,10 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
           scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
         };
       });
+    case "campaign-requested":
+      return updateDraft(state, action.platform, (draft) => ({ ...draft, status: "preparing" }));
+    case "campaign-request-failed":
+      return updateDraft(state, action.platform, (draft) => ({ ...draft, status: "draft" }));
     case "advance-post":
       return updateDraft(state, action.platform, (draft) => {
         const posts = draft.posts.map((post) => {
@@ -388,6 +698,8 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
             }
           : post),
       }));
+    case "save-context":
+      return state;
     case "restore-context":
       return updateDraft(state, action.platform, (draft) => ({
         ...draft,
@@ -409,9 +721,11 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
         ...draft,
         scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
         posts: draft.posts.map((post) => post.id === action.postId
-          ? { ...post, comments: post.comments.map((comment) => comment.id === action.commentId ? { ...comment, text: action.value, status: "edited", stale: false } : comment) }
+          ? { ...post, comments: post.comments.map((comment) => comment.id === action.commentId ? { ...comment, text: action.value, status: "edited", stale: false, source: "manual" } : comment) }
           : post),
       }));
+    case "save-comment":
+      return state;
     case "update-comment-profile":
       return updateDraft(state, action.platform, (draft) => ({
         ...draft,
@@ -446,7 +760,7 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
               ...post,
               status: "ready",
               comments: post.comments.map((comment) => action.commentIds.includes(comment.id)
-                ? { ...comment, text: `Nueva versión ${comment.tone.toLowerCase()} para esta publicación.`, status: "ready", stale: false, error: undefined }
+                ? { ...comment, text: `Nueva versión ${comment.tone.toLowerCase()} para esta publicación.`, status: "ready", stale: false, source: "generated", error: undefined }
                 : comment),
             }
           : post),
@@ -468,13 +782,19 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
         scheduleStatus: draft.scheduleStatus === "none" ? "none" : "stale",
       } as CampaignDraft));
     case "generate-schedule":
-      return updateDraft(state, action.platform, (draft) => ({
-        ...draft,
-        assignments: scheduleAssignments(draft, state.demoOperations.now),
-        posts: draft.posts.map((post) => ({ ...post, status: post.status === "ready" ? "scheduled" : post.status })),
-        status: "scheduled",
-        scheduleStatus: "valid",
-      }));
+      return updateDraft(state, action.platform, (draft) => {
+        const planned = scheduleAssignments(draft, state.demoOperations.now);
+        const scheduledAt = planned[0]?.scheduledAt ?? null;
+        return {
+          ...draft,
+          assignments: action.platform === "facebook"
+            ? planned.map((assignment) => ({ ...assignment, scheduledAt }))
+            : planned,
+          posts: draft.posts.map((post) => ({ ...post, status: post.status === "ready" ? "scheduled" : post.status })),
+          status: "scheduled",
+          scheduleStatus: "valid",
+        };
+      });
     case "set-review-group":
       return updateDraft(state, action.platform, (draft) => ({ ...draft, reviewGrouping: action.value }));
     case "request-start-campaign":
@@ -558,6 +878,8 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
       const next = createInitialState(state.demoOperations.now)[draftKey(action.platform)];
       return updateDraft(state, action.platform, () => ({
         ...next,
+        id: state[draftKey(action.platform)].id,
+        revision: state[draftKey(action.platform)].revision,
         selectedDeviceIds: [],
         urlInput: "",
         urls: [],
@@ -651,14 +973,88 @@ function NavIcon({ view }: { view: ViewId }) {
 
 export function ControlPanel() {
   const [state, rawDispatch] = useReducer(controlReducer, createInitialState("2026-09-03T16:20:00.000Z"));
+  const [publicConfirmation, setPublicConfirmation] = useState(false);
+  const [expectedTargetTexts, setExpectedTargetTexts] = useState<Record<string, string>>({});
+  const [sharedAccountConfirmation, setSharedAccountConfirmation] = useState(false);
+  const [facebookExecutionConfirmation, setFacebookExecutionConfirmation] = useState<FacebookExecutionConfirmation | null>(null);
+  const [tiktokExecutionConfirmation, setTikTokExecutionConfirmation] = useState<TikTokExecutionConfirmation | null>(null);
+  const [tiktokConfiguration, setTikTokConfiguration] = useState<TikTokConfiguration>({
+    controlledAccount: null,
+    postEffectsEnabled: false,
+    liveEffectsEnabled: false,
+    postSelectorsConfigured: false,
+    commentSelectorsConfigured: false,
+    liveSelectorsConfigured: false,
+    liveCalibration: null,
+  });
   const timers = useRef<number[]>([]);
+  const dirtyFacebookFields = useRef(new Set<string>());
+  const dirtyTikTokFields = useRef(new Set<string>());
+  const stateRef = useRef(state);
 
   useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+
+  useEffect(() => {
+    let active = true;
+    let refreshing = false;
+    let reportedError = false;
+    const scheduledTimers = timers.current;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+         const [deviceData, campaignData, tiktokData] = await Promise.all([
+           apiRequest<{ devices: DeviceSnapshot[] }>("/api/devices"),
+           apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[] }>("/api/facebook/campaigns"),
+           apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[]; configuration: TikTokConfiguration }>("/api/tiktok/campaigns"),
+         ]);
+         if (!active) return;
+         const devices = mapDeviceSnapshots(deviceData.devices);
+         rawDispatch({ type: "hydrate-devices", devices });
+         rawDispatch({ type: "hydrate-history", platform: "facebook", history: mapCampaignHistory(campaignData.history, devices) });
+         rawDispatch({ type: "hydrate-history", platform: "tiktok", history: mapCampaignHistory(tiktokData.history, devices) });
+         setTikTokConfiguration(tiktokData.configuration);
+         if (campaignData.campaign) {
+           const incoming = mapCampaignSnapshot(campaignData.campaign);
+           rawDispatch({
+             type: "hydrate-facebook",
+             draft: preserveDirtyFacebookFields(stateRef.current.facebookDraft, incoming, dirtyFacebookFields.current),
+             force: dirtyFacebookFields.current.size > 0,
+           });
+         }
+         if (tiktokData.campaign) {
+           const incoming = mapCampaignSnapshot(tiktokData.campaign);
+           rawDispatch({
+             type: "hydrate-tiktok",
+             draft: preserveDirtyFacebookFields(stateRef.current.tiktokDraft, incoming, dirtyTikTokFields.current),
+             force: dirtyTikTokFields.current.size > 0,
+           });
+         }
+        reportedError = false;
+      } catch (error) {
+        if (active && !reportedError) {
+          reportedError = true;
+          rawDispatch({
+            type: "set-notice",
+            notice: { kind: "error", title: "No se pudo actualizar el snapshot", message: error instanceof Error ? error.message : String(error) },
+          });
+        }
+      } finally {
+        refreshing = false;
+      }
+    };
     rawDispatch({ type: "tick", now: new Date().toISOString() });
-    const timer = window.setInterval(() => rawDispatch({ type: "tick", now: new Date().toISOString() }), 1_000);
+    void refresh();
+    const timer = window.setInterval(() => {
+      rawDispatch({ type: "tick", now: new Date().toISOString() });
+      void refresh();
+    }, 1_000);
     return () => {
+      active = false;
       window.clearInterval(timer);
-      timers.current.forEach(window.clearTimeout);
+      scheduledTimers.forEach(window.clearTimeout);
     };
   }, []);
 
@@ -666,36 +1062,484 @@ export function ControlPanel() {
     timers.current.push(window.setTimeout(callback, delay));
   };
 
-  const dispatch: ControlDispatch = (action) => {
-    if (action.type === "start-device-preparation") {
-      rawDispatch(action);
-      action.deviceIds.forEach((deviceId, deviceIndex) => {
-        preparationSteps.slice(1).forEach((step, stepIndex) => later(
-          () => rawDispatch({ type: "advance-device-preparation", deviceId, step }),
-          350 * (stepIndex + 1) + deviceIndex * 90,
-        ));
-        later(
-          () => rawDispatch({ type: "finish-device-preparation", deviceId, failed: deviceId === "device-07" }),
-          1_650 + deviceIndex * 90,
-        );
+  const hydrateFacebookWhenIdle = (campaign: FacebookSnapshot) => {
+    const incoming = mapCampaignSnapshot(campaign);
+    rawDispatch({
+      type: "hydrate-facebook",
+      draft: preserveDirtyFacebookFields(stateRef.current.facebookDraft, incoming, dirtyFacebookFields.current),
+      force: dirtyFacebookFields.current.size > 0,
+    });
+  };
+
+  const hydrateTikTokWhenIdle = (campaign: FacebookSnapshot) => {
+    const incoming = mapCampaignSnapshot(campaign);
+    rawDispatch({
+      type: "hydrate-tiktok",
+      draft: preserveDirtyFacebookFields(stateRef.current.tiktokDraft, incoming, dirtyTikTokFields.current),
+      force: dirtyTikTokFields.current.size > 0,
+    });
+  };
+
+  const pollOperation = (id: string, platform: Platform = "facebook") => {
+    void apiRequest<{
+      operation: {
+        id: string;
+        kind: string;
+        status: "pending" | "running" | "succeeded" | "failed" | "cancelled" | "outcome_unknown";
+        campaignId: string | null;
+        error: string | null;
+      };
+    }>(`/api/operations/${id}`).then(({ operation }) => {
+      if (["pending", "running"].includes(operation.status)) {
+        later(() => pollOperation(id, platform), 1_000);
+        return;
+      }
+      if (operation.campaignId) {
+        void Promise.all([
+          apiRequest<{ campaign: FacebookSnapshot }>(`/api/${platform}/campaigns/${operation.campaignId}`),
+          apiRequest<{ history: FacebookSnapshot[] }>(`/api/${platform}/campaigns`),
+        ]).then(([{ campaign }, { history }]) => {
+          if (platform === "facebook") hydrateFacebookWhenIdle(campaign);
+          else if (campaign.mode !== "live") hydrateTikTokWhenIdle(campaign);
+          rawDispatch({ type: "hydrate-history", platform, history: mapCampaignHistory(history, stateRef.current.devices) });
+        });
+      }
+      if (operation.status === "succeeded") {
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: "Operación completada", message: "El resultado y el cleanup quedaron persistidos." },
+        });
+        return;
+      }
+      if (operation.kind === "campaign.create") rawDispatch({ type: "campaign-request-failed", platform });
+      rawDispatch({
+        type: "set-notice",
+        notice: {
+          kind: "error",
+          title: operation.status === "outcome_unknown"
+            ? "Requiere reconciliación manual"
+            : operation.status === "cancelled"
+              ? "Operación cancelada"
+              : "La operación no se completó",
+          message: operation.error || (operation.status === "outcome_unknown"
+            ? "Una acción pública pudo ocurrir. No se ofrecerá reintento automático."
+            : "El worker detuvo la operación."),
+        },
       });
+    }).catch(() => later(() => pollOperation(id, platform), 1_000));
+  };
+
+  const dispatch: ControlDispatch = (action) => {
+    if (action.type === "add-devices") {
+      const parsed = parseDeviceInput(state.demoOperations.deviceImportText, state.devices);
+      if (parsed.errors.length || parsed.serials.length === 0) {
+        rawDispatch(action);
+        return;
+      }
+      void apiRequest<{ devices: DeviceSnapshot[] }>("/api/devices", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ serials: parsed.serials }),
+      }).then(({ devices }) => {
+        rawDispatch({ type: "hydrate-devices", devices: mapDeviceSnapshots(devices) });
+        rawDispatch({ type: "set-device-import", value: "" });
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: `${parsed.serials.length} dispositivos incorporados`, message: "La identidad física y el perfil quedaron persistidos en SQLite." },
+        });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudieron incorporar los dispositivos", message: error instanceof Error ? error.message : String(error) },
+      }));
       return;
+    }
+
+    if (action.type === "request-start-campaign" && action.platform === "facebook") {
+      const draft = state.facebookDraft;
+      if (dirtyFacebookFields.current.size) {
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "error", title: "Hay cambios sin guardar", message: "Guarda el contexto y el comentario antes de autorizar efectos públicos." },
+        });
+        return;
+      }
+      const scheduledAt = draft.assignments[0]?.scheduledAt
+        ? new Date(draft.assignments[0].scheduledAt).getTime()
+        : Number.NaN;
+      if (!draft.id || !draft.revision || !draft.assignments.length || !Number.isSafeInteger(scheduledAt)) return;
+      const assignments = draft.assignments.map((assignment) => {
+        const post = draft.posts.find((item) => item.id === assignment.postId);
+        const device = state.devices.find((item) => item.id === assignment.deviceId);
+        const comment = post?.comments.find((item) => item.assignmentId === assignment.id);
+        if (!post || !device?.facebookAccount || (draft.actions.comment && (!comment?.version || !comment.textHash))) return null;
+        return {
+          assignmentId: assignment.id,
+          postId: post.id,
+          deviceId: assignment.deviceId,
+          deviceLabel: `${device.alias} / ${device.serial}`,
+          expectedAccount: device.facebookAccount,
+          postUrl: post.finalUrl || post.url,
+          comment: comment
+            ? { id: comment.id, version: comment.version!, text: comment.text, textHash: comment.textHash! }
+            : null,
+        };
+      });
+      if (assignments.some((assignment) => !assignment)) {
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "error", title: "Falta verificar una cuenta", message: "Asocia una cuenta Facebook a cada dispositivo desde Dispositivos > Editar." },
+        });
+        return;
+      }
+      setPublicConfirmation(false);
+      setSharedAccountConfirmation(false);
+      setExpectedTargetTexts(Object.fromEntries(draft.posts.map((post) => [post.id, post.context.trim().slice(0, 500)])));
+      setFacebookExecutionConfirmation({
+        campaignId: draft.id,
+        revision: draft.revision,
+        scheduledAt,
+        actions: { ...draft.actions },
+        assignments: assignments as FacebookExecutionConfirmation["assignments"],
+      });
+      rawDispatch(action);
+      return;
+    }
+
+    if (action.type === "request-start-campaign" && action.platform === "tiktok") {
+      const draft = state.tiktokDraft;
+      const assignment = draft.assignments[0];
+      const post = draft.posts[0];
+      const device = assignment && state.devices.find((item) => item.id === assignment.deviceId);
+      const comment = post?.comments.find((item) => item.assignmentId === assignment?.id);
+      if (dirtyTikTokFields.current.size) {
+        rawDispatch({ type: "set-notice", notice: { kind: "error", title: "Hay cambios sin guardar", message: "Guarda el contexto y el comentario antes de autorizar efectos públicos." } });
+        return;
+      }
+      if (!draft.id || !draft.revision || !assignment || !post || !device || !tiktokConfiguration.controlledAccount
+        || (draft.actions.comment && (!comment?.version || !comment.textHash))) {
+        rawDispatch({ type: "set-notice", notice: { kind: "error", title: "Falta configuración TikTok", message: "Configura la cuenta controlada, los selectores y completa el comentario 1×1." } });
+        return;
+      }
+      setPublicConfirmation(false);
+      setExpectedTargetTexts({ [post.id]: post.context.trim().slice(0, 500) });
+      setTikTokExecutionConfirmation({
+        campaignId: draft.id,
+        revision: draft.revision,
+        actions: { ...draft.actions },
+        assignments: [{
+          assignmentId: assignment.id,
+          postId: post.id,
+          deviceId: assignment.deviceId,
+          deviceLabel: `${device.alias} / ${device.serial}`,
+          expectedAccount: tiktokConfiguration.controlledAccount,
+          postUrl: post.finalUrl || post.url,
+          comment: comment ? { id: comment.id, version: comment.version!, text: comment.text, textHash: comment.textHash! } : null,
+        }],
+      });
+      rawDispatch(action);
+      return;
+    }
+
+    if (action.type === "start-campaign" && action.platform === "facebook") {
+      const confirmation = facebookExecutionConfirmation;
+      if (!confirmation || !publicConfirmation
+        || confirmation.assignments.some((assignment) => (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) < 5)) return;
+      const accountFingerprints = confirmation.assignments.map((assignment) => assignment.expectedAccount.normalize("NFKC").replace(/\s+/gu, " ").toLocaleLowerCase("es"));
+      const sharedAccounts = new Set(accountFingerprints).size < new Set(confirmation.assignments.map((assignment) => assignment.deviceId)).size;
+      if (sharedAccounts && !sharedAccountConfirmation) return;
+      rawDispatch({ type: "close-modal" });
+      void apiRequest<{ operation: { id: string } }>(`/api/facebook/campaigns/${confirmation.campaignId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({
+          idempotencyKey: crypto.randomUUID(),
+          expectedRevision: confirmation.revision,
+          scheduledAt: confirmation.scheduledAt,
+          expectedActions: confirmation.actions,
+          assignments: confirmation.assignments.map((assignment) => ({
+            assignmentId: assignment.assignmentId,
+            postId: assignment.postId,
+            deviceId: assignment.deviceId,
+            expectedAccount: assignment.expectedAccount,
+            expectedPostUrl: assignment.postUrl,
+            expectedTargetText: expectedTargetTexts[assignment.postId].trim(),
+            expectedComment: assignment.comment && {
+              id: assignment.comment.id,
+              version: assignment.comment.version,
+              textHash: assignment.comment.textHash,
+            },
+          })),
+          allowSharedAccounts: sharedAccounts,
+          sharedAccountsConfirmed: sharedAccounts && sharedAccountConfirmation,
+          confirmed: true,
+          controlledAccount: true,
+          controlledContent: true,
+        }),
+      }).then(({ operation }) => {
+        pollOperation(operation.id);
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: "Campaña programada", message: "El worker revalidará cada dispositivo, cuenta y publicación antes de cualquier efecto." },
+        });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo autorizar la ejecución", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (action.type === "start-campaign" && action.platform === "tiktok") {
+      const confirmation = tiktokExecutionConfirmation;
+      const assignment = confirmation?.assignments[0];
+      if (!confirmation || !assignment || !publicConfirmation || !tiktokConfiguration.postEffectsEnabled
+        || !tiktokConfiguration.postSelectorsConfigured
+        || (confirmation.actions.comment && !tiktokConfiguration.commentSelectorsConfigured)
+        || (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) < 5) return;
+      rawDispatch({ type: "close-modal" });
+      void apiRequest<{ operation: { id: string } }>(`/api/tiktok/campaigns/${confirmation.campaignId}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({
+          idempotencyKey: crypto.randomUUID(),
+          expectedRevision: confirmation.revision,
+          expectedAccount: assignment.expectedAccount,
+          expectedAssignmentId: assignment.assignmentId,
+          expectedPostId: assignment.postId,
+          expectedDeviceId: assignment.deviceId,
+          expectedPostUrl: assignment.postUrl,
+          expectedActions: confirmation.actions,
+          expectedComment: assignment.comment && { id: assignment.comment.id, version: assignment.comment.version, textHash: assignment.comment.textHash },
+          expectedTargetText: expectedTargetTexts[assignment.postId].trim(),
+          confirmed: true,
+          controlledAccount: true,
+          controlledContent: true,
+        }),
+      }).then(({ operation }) => {
+        pollOperation(operation.id, "tiktok");
+        rawDispatch({ type: "set-notice", notice: { kind: "status", title: "Ejecución TikTok en cola", message: "El worker revalidará dispositivo, cuenta, publicación y estado del Like." } });
+      }).catch((error: unknown) => rawDispatch({ type: "set-notice", notice: { kind: "error", title: "No se pudo autorizar TikTok", message: error instanceof Error ? error.message : String(error) } }));
+      return;
+    }
+
+    if (action.type === "reconcile-assignment") {
+      const platform = action.platform;
+      void apiRequest<{ campaign: FacebookSnapshot }>(`/api/${platform}/assignments/${action.assignmentId}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({
+          idempotencyKey: crypto.randomUUID(),
+          operationId: action.operationId,
+          action: action.action,
+          resolution: action.resolution,
+        }),
+      }).then(({ campaign }) => {
+        if (platform === "facebook") hydrateFacebookWhenIdle(campaign);
+        else hydrateTikTokWhenIdle(campaign);
+        void apiRequest<{ history: FacebookSnapshot[] }>(`/api/${platform}/campaigns`).then(({ history }) => {
+          rawDispatch({ type: "hydrate-history", platform, history: mapCampaignHistory(history, stateRef.current.devices) });
+        });
+        rawDispatch({ type: "set-notice", notice: { kind: "status", title: "Reconciliación guardada", message: "No se creó ni reintentó ninguna acción móvil." } });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo reconciliar", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (action.type === "cancel-assignment") {
+      void apiRequest(`/api/operations/${action.operationId}`, {
+        method: "DELETE",
+        headers: { "x-control-panel-client": "control-panel" },
+      }).then(() => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "status", title: "Cancelación registrada", message: "La asignación se detendrá sin bloquear otros dispositivos." },
+      })).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo cancelar la asignación", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (action.type === "edit-context") {
+      (action.platform === "facebook" ? dirtyFacebookFields : dirtyTikTokFields).current.add(`context:${action.postId}`);
+      rawDispatch(action);
+      return;
+    }
+    if (action.type === "edit-comment" || action.type === "update-comment-profile") {
+      (action.platform === "facebook" ? dirtyFacebookFields : dirtyTikTokFields).current.add(`comment:${action.commentId}`);
+      rawDispatch(action);
+      return;
+    }
+    if ((action.type === "clear-campaign"
+      || action.type === "set-campaign-devices"
+      || action.type === "set-campaign-urls"
+      || action.type === "toggle-campaign-action")
+      ) {
+      (action.platform === "facebook" ? dirtyFacebookFields : dirtyTikTokFields).current.clear();
     }
 
     if (action.type === "prepare-campaign") {
       const draft = state[draftKey(action.platform)];
-      rawDispatch(action);
-      if (!draft.actions.comment) return;
-      draft.urls.forEach((url, index) => {
-        const postId = `${action.platform}-post-${index + 1}`;
-        const offset = index === 0 ? 420 : 800 + index * 380;
-        if (url.includes("fallo")) {
-          later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId, stage: "failed" }), offset);
-          return;
-        }
-        later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId, stage: "context" }), offset);
-        later(() => rawDispatch({ type: "advance-post", platform: action.platform, postId, stage: "comments" }), offset + 520);
+      rawDispatch({ type: "campaign-requested", platform: action.platform });
+      void apiRequest<{ operation: { id: string } }>(`/api/${action.platform}/campaigns`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({
+          idempotencyKey: crypto.randomUUID(),
+          urls: draft.urls,
+          deviceIds: draft.selectedDeviceIds,
+          actions: draft.actions,
+          distribution: draft.distribution.map(({ intention, tone, count }) => ({ intention, tone, count })),
+        }),
+      }).then(({ operation }) => {
+        pollOperation(operation.id, action.platform);
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: "Campaña aceptada", message: action.platform === "tiktok" ? "El worker está creando el objetivo persistente 1×1." : "El worker está creando el plan persistente read-only." },
+        });
+      }).catch((error: unknown) => {
+        rawDispatch({ type: "campaign-request-failed", platform: action.platform });
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "error", title: "No se pudo crear la campaña", message: error instanceof Error ? error.message : String(error) },
+        });
       });
+      return;
+    }
+
+    if (action.type === "save-context") {
+      const post = state[draftKey(action.platform)].posts.find((item) => item.id === action.postId);
+      if (!post) return;
+      void apiRequest<{ campaign: FacebookSnapshot }>(`/api/${action.platform}/posts/${post.id}/context`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ context: post.context }),
+      }).then(({ campaign }) => {
+        (action.platform === "facebook" ? dirtyFacebookFields : dirtyTikTokFields).current.delete(`context:${post.id}`);
+        if (action.platform === "facebook") hydrateFacebookWhenIdle(campaign);
+        else hydrateTikTokWhenIdle(campaign);
+        rawDispatch({ type: "set-notice", notice: { kind: "status", title: "Contexto guardado", message: "Los comentarios anteriores quedaron desactualizados." } });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo guardar el contexto", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (action.type === "restore-context" && action.platform === "facebook") {
+      void apiRequest<{ campaign: FacebookSnapshot }>(`/api/facebook/posts/${action.postId}/context`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ restoreExtracted: true }),
+      }).then(({ campaign }) => {
+        dirtyFacebookFields.current.delete(`context:${action.postId}`);
+        hydrateFacebookWhenIdle(campaign);
+      })
+        .catch((error: unknown) => rawDispatch({
+          type: "set-notice",
+          notice: { kind: "error", title: "No se pudo restaurar el contexto", message: error instanceof Error ? error.message : String(error) },
+        }));
+      return;
+    }
+
+    if (action.type === "retry-context" && action.platform === "facebook") {
+      void apiRequest<{ operation: { id: string } }>(`/api/facebook/posts/${action.postId}/extract`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ idempotencyKey: crypto.randomUUID() }),
+      }).then(({ operation }) => {
+        pollOperation(operation.id);
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: "Extracción en cola", message: "Se usará únicamente el perfil Edge dedicado." },
+        });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo iniciar la extracción", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (action.type === "save-comment") {
+      const comment = state[draftKey(action.platform)].posts.find((item) => item.id === action.postId)
+        ?.comments.find((item) => item.id === action.commentId);
+      if (!comment || (comment.text.trim().length > 0 && comment.text.trim().length < 2) || comment.text.length > 500) return;
+      void apiRequest<{ campaign: FacebookSnapshot }>(`/api/${action.platform}/comments/${comment.id}`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ text: comment.text, intention: comment.intention, tone: comment.tone }),
+      }).then(({ campaign }) => {
+        (action.platform === "facebook" ? dirtyFacebookFields : dirtyTikTokFields).current.delete(`comment:${comment.id}`);
+        if (action.platform === "facebook") hydrateFacebookWhenIdle(campaign);
+        else hydrateTikTokWhenIdle(campaign);
+      })
+        .catch((error: unknown) => rawDispatch({
+          type: "set-notice",
+          notice: { kind: "error", title: "No se pudo guardar el comentario", message: error instanceof Error ? error.message : String(error) },
+        }));
+      return;
+    }
+
+    if (action.type === "request-regenerate-post" || action.type === "start-comment-regeneration") {
+      const dirty = action.platform === "facebook" ? dirtyFacebookFields : dirtyTikTokFields;
+      if (dirty.current.size) {
+        rawDispatch({ type: "set-notice", notice: { kind: "error", title: "Hay cambios sin guardar", message: "Guarda el contexto y comentario antes de generar." } });
+        return;
+      }
+      const post = state[draftKey(action.platform)].posts.find((item) => item.id === action.postId);
+      if (!post) return;
+      const hasManualComments = post.comments.some((comment) => comment.source === "manual" || comment.status === "edited");
+      if (action.type === "request-regenerate-post" && hasManualComments) {
+        rawDispatch(action);
+        return;
+      }
+      rawDispatch({ type: "close-modal" });
+      void apiRequest<{ operation: { id: string } }>(`/api/${action.platform}/posts/${post.id}/comments`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ idempotencyKey: crypto.randomUUID(), overwriteManual: hasManualComments }),
+      }).then(({ operation }) => {
+        pollOperation(operation.id, action.platform);
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: "Generación en cola", message: action.platform === "tiktok" ? "DeepSeek generará exactamente un comentario desde el contexto manual." : "DeepSeek recibirá una sola solicitud para todas las asignaciones del post." },
+        });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo iniciar la generación", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (action.type === "start-abort") {
+      void apiRequest<{ cancelled: number }>("/api/operations", {
+        method: "DELETE",
+        headers: { "x-control-panel-client": "control-panel" },
+      }).then(({ cancelled }) => {
+        rawDispatch({ type: "close-modal" });
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: "Cancelación registrada", message: `${cancelled} trabajo(s) propios fueron cancelados o notificados.` },
+        });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo cancelar", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (action.type === "start-device-preparation") {
+      void Promise.all(action.deviceIds.map((deviceId) => apiRequest("/api/devices/prepare", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ deviceId, idempotencyKey: crypto.randomUUID() }),
+      }))).then(() => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "status", title: "Preparación en cola", message: `${action.deviceIds.length} dispositivo(s) serán preparados por el worker.` },
+      })).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo preparar el dispositivo", message: error instanceof Error ? error.message : String(error) },
+      }));
       return;
     }
 
@@ -706,37 +1550,22 @@ export function ControlPanel() {
       return;
     }
 
-    if (action.type === "request-regenerate-post") {
-      const post = state[draftKey(action.platform)].posts.find((item) => item.id === action.postId);
-      if (!post) return;
-      const ids = post.comments.map((comment) => comment.id);
-      if (post.comments.some((comment) => comment.status === "edited")) rawDispatch(action);
-      else dispatch({ type: "start-comment-regeneration", platform: action.platform, postId: action.postId, commentIds: ids });
-      return;
-    }
-
-    if (action.type === "start-comment-regeneration") {
-      rawDispatch(action);
-      later(() => rawDispatch({ type: "finish-comment-regeneration", platform: action.platform, postId: action.postId, commentIds: action.commentIds }), 650);
-      return;
-    }
-
-    if (action.type === "start-campaign") {
-      rawDispatch(action);
-      later(() => rawDispatch({ type: "advance-running-campaign", platform: action.platform }), 900);
-      return;
-    }
-
-    if (action.type === "start-abort") {
-      timers.current.forEach(window.clearTimeout);
-      timers.current = [];
-      rawDispatch(action);
-      abortSteps.slice(1, -1).forEach((_, index) => later(() => rawDispatch({ type: "advance-abort", step: index + 1 }), 360 * (index + 1)));
-      later(() => rawDispatch({ type: "finish-abort" }), 1_950);
-      return;
-    }
-
     rawDispatch(action);
+  };
+
+  const runTikTokLive = async (input: TikTokLiveInput) => {
+    try {
+      const { operation } = await apiRequest<{ operation: { id: string } }>("/api/tiktok/live", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+      body: JSON.stringify(input),
+      });
+      pollOperation(operation.id, "tiktok");
+      rawDispatch({ type: "set-notice", notice: { kind: "status", title: "TikTok Live en cola", message: "Cada ronda tendrá checkpoint y no se reintentará si su efecto queda incierto." } });
+    } catch (error) {
+      rawDispatch({ type: "set-notice", notice: { kind: "error", title: "TikTok Live sigue bloqueado", message: error instanceof Error ? error.message : String(error) } });
+      throw error;
+    }
   };
 
   const activeCampaigns = state.history.filter((item) => ["running", "cancellation_requested"].includes(item.status)).length;
@@ -746,6 +1575,17 @@ export function ControlPanel() {
   const editor = state.demoOperations.deviceEditor;
   const regeneratePost = modal?.type === "regenerate-post" ? state[draftKey(modal.platform)].posts.find((item) => item.id === modal.postId) : undefined;
   const abort = state.demoOperations.abort;
+  const confirmationDevices = facebookExecutionConfirmation
+    ? [...new Map(facebookExecutionConfirmation.assignments.map((assignment) => [assignment.deviceId, assignment])).values()]
+    : [];
+  const confirmationPosts = facebookExecutionConfirmation
+    ? [...new Map(facebookExecutionConfirmation.assignments.map((assignment) => [assignment.postId, assignment])).values()]
+    : [];
+  const confirmationHasSharedAccounts = confirmationDevices.length
+    !== new Set(confirmationDevices.map((assignment) => assignment.expectedAccount.normalize("NFKC").replace(/\s+/gu, " ").trim().toLocaleLowerCase("es"))).size;
+  const confirmationTargetsValid = confirmationPosts.every((assignment) => (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) >= 5);
+  const tiktokPostConfigured = tiktokConfiguration.postSelectorsConfigured
+    && (!tiktokExecutionConfirmation?.actions.comment || tiktokConfiguration.commentSelectorsConfigured);
 
   return (
     <main className="console-frame">
@@ -757,12 +1597,12 @@ export function ControlPanel() {
             <small>Farm Appium / estación 01</small>
           </div>
         </div>
-        <Badge className="prototype-badge" variant="filled">MODO PROTOTIPO</Badge>
-        <div className="health-strip" aria-label="Salud simulada del runtime">
+        <Badge className="prototype-badge" variant="filled">FASE 6 · TIKTOK</Badge>
+        <div className="health-strip" aria-label="Salud del runtime">
           {state.runtimeHealth.slice(0, 3).map((service) => (
             <div className="health-item" key={service.id} data-status={service.status}>
               <span className="status-dot" aria-hidden="true" />
-              <span><strong>{service.label}</strong><small>{statusLabels[service.status]} · simulado</small></span>
+              <span><strong>{service.label}</strong><small>{statusLabels[service.status]}</small></span>
             </div>
           ))}
         </div>
@@ -810,7 +1650,7 @@ export function ControlPanel() {
           ))}
           <div className="nav-footnote">
             <span className="status-dot" aria-hidden="true" />
-            <p><strong>Solo demostración</strong>Ningún control ejecuta acciones reales.</p>
+            <p><strong>Efectos bajo confirmación</strong>Facebook N×M y TikTok 1×1 usan planes persistentes.</p>
           </div>
         </nav>
 
@@ -829,16 +1669,19 @@ export function ControlPanel() {
             />
           )}
           {state.activeView === "tiktok" && (
-            <CampaignView
-              platform="tiktok"
-              label="TikTok"
-              accent="tiktok"
-              allowedHosts="tiktok.com"
-              requiredCapability="Aplicación TikTok preparada"
-              experimentalActions={["tap_tap"]}
-              state={state}
-              dispatch={dispatch}
-            />
+            <>
+              <CampaignView
+                platform="tiktok"
+                label="TikTok"
+                accent="tiktok"
+                allowedHosts="tiktok.com"
+                requiredCapability="Aplicación TikTok preparada"
+                experimentalActions={[]}
+                state={state}
+                dispatch={dispatch}
+              />
+              <TikTokLivePanel devices={state.devices} configuration={tiktokConfiguration} onRun={runTikTokLive} />
+            </>
           )}
           {state.activeView === "history" && <HistoryView state={state} dispatch={dispatch} />}
         </section>
@@ -855,6 +1698,7 @@ export function ControlPanel() {
             <NumberInput label="Orden físico" min={1} value={editor.order} error={editor.errors.order} onChange={(value) => dispatch({ type: "update-device-editor", field: "order", value: Number(value) || 0 })} />
             <TextInput label="Serial ADB" value={editor.serial} error={editor.errors.serial} onChange={(event) => dispatch({ type: "update-device-editor", field: "serial", value: event.currentTarget.value })} />
             <NumberInput label="systemPort" min={8200} max={8299} value={editor.systemPort} error={editor.errors.systemPort} onChange={(value) => dispatch({ type: "update-device-editor", field: "systemPort", value: Number(value) || 0 })} />
+            <TextInput label="Cuenta Facebook esperada" description="Nombre estable que Facebook muestra en el indicador de cuenta activa." value={editor.facebookAccount} error={editor.errors.facebookAccount} onChange={(event) => dispatch({ type: "update-device-editor", field: "facebookAccount", value: event.currentTarget.value })} />
             <dl className="detail-list">
               <div><dt>Última preparación</dt><dd>{formatDate(editedDevice.lastPreparation)}</dd></div>
               <div><dt>Verificación Facebook</dt><dd>{formatDate(editedDevice.lastPlatformCheck.facebook)}</dd></div>
@@ -880,15 +1724,59 @@ export function ControlPanel() {
         </Stack>
       </Modal>
 
-      <Modal opened={modal?.type === "start-campaign"} onClose={() => dispatch({ type: "close-modal" })} title="Confirmar inicio simulado">
+      <Modal opened={modal?.type === "start-campaign"} onClose={() => dispatch({ type: "close-modal" })} title={modal?.type === "start-campaign" && modal.platform === "facebook" ? "Autorizar plan público N×M" : "Autorizar TikTok post 1×1"} size="lg">
         {modal?.type === "start-campaign" && (
           <Stack>
-            <Alert color="red" title="Efectos públicos futuros">En la implementación real esta acción podrá publicar likes y comentarios. Este prototipo no realizará ninguna solicitud.</Alert>
-            <Text>Se añadirá una campaña simulada al historial y algunos trabajos avanzarán visualmente.</Text>
-            <Group justify="flex-end">
-              <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Volver a revisión</Button>
-              <Button onClick={() => dispatch({ type: "start-campaign", platform: modal.platform })}>Iniciar campaña simulada</Button>
-            </Group>
+            {modal.platform === "facebook" ? (
+              <>
+                <Alert color="red" title="Esta acción es pública">El Like y el comentario seleccionados pueden quedar visibles en Facebook. Un resultado incierto se bloqueará hasta reconciliarlo manualmente.</Alert>
+                <dl className="detail-list wide">
+                  <div><dt>Matriz</dt><dd>{confirmationPosts.length} publicaciones × {confirmationDevices.length} dispositivos = {facebookExecutionConfirmation?.assignments.length ?? 0}</dd></div>
+                  <div><dt>Inicio</dt><dd>{facebookExecutionConfirmation ? formatDate(new Date(facebookExecutionConfirmation.scheduledAt).toISOString()) : "Sin horario"}</dd></div>
+                  <div><dt>Acciones</dt><dd>{[facebookExecutionConfirmation?.actions.like && "Like", facebookExecutionConfirmation?.actions.comment && "Comentario"].filter(Boolean).join(" + ")}</dd></div>
+                </dl>
+                <details open>
+                  <summary>Cuentas y dispositivos exactos</summary>
+                  <dl className="detail-list wide">{confirmationDevices.map((assignment) => <div key={assignment.deviceId}><dt>{assignment.deviceLabel}</dt><dd>{assignment.expectedAccount}</dd></div>)}</dl>
+                </details>
+                {confirmationPosts.map((assignment, index) => (
+                  <Stack key={assignment.postId} gap="xs">
+                    <Text size="sm" fw={700}>Publicación {index + 1}: {assignment.postUrl}</Text>
+                    <Textarea label="Texto visible que identifica esta publicación" description="Debe aparecer una sola vez en la pantalla móvil; si no coincide, el flujo se detendrá antes del efecto." minRows={2} maxLength={500} value={expectedTargetTexts[assignment.postId] ?? ""} onChange={(event) => setExpectedTargetTexts((current) => ({ ...current, [assignment.postId]: event.currentTarget.value }))} />
+                    {facebookExecutionConfirmation?.assignments.filter((item) => item.postId === assignment.postId && item.comment).map((item) => <Alert key={item.assignmentId} color="blue" title={item.deviceLabel}>{item.comment!.text}</Alert>)}
+                  </Stack>
+                ))}
+                {confirmationHasSharedAccounts && <Checkbox checked={sharedAccountConfirmation} onChange={(event) => setSharedAccountConfirmation(event.currentTarget.checked)} label="Confirmo que varios dispositivos usarán deliberadamente la misma cuenta Facebook." />}
+                <Checkbox checked={publicConfirmation} onChange={(event) => setPublicConfirmation(event.currentTarget.checked)} label="Confirmo que todas las cuentas y publicaciones son controladas y autorizo exactamente las acciones mostradas." />
+                <Group justify="flex-end">
+                  <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Volver a revisión</Button>
+                  <Button color="red" disabled={!publicConfirmation || !confirmationTargetsValid || (confirmationHasSharedAccounts && !sharedAccountConfirmation) || !facebookExecutionConfirmation} onClick={() => dispatch({ type: "start-campaign", platform: "facebook" })}>Autorizar {facebookExecutionConfirmation?.assignments.length ?? 0} ejecuciones</Button>
+                </Group>
+              </>
+            ) : (
+              <>
+                <Alert color="red" title="Esta acción es pública">El Like y comentario seleccionados pueden quedar visibles en TikTok. Un efecto incierto se bloqueará hasta reconciliarlo manualmente.</Alert>
+                {tiktokExecutionConfirmation?.assignments.map((assignment) => (
+                  <Stack key={assignment.assignmentId} gap="xs">
+                    <dl className="detail-list wide">
+                      <div><dt>Dispositivo</dt><dd>{assignment.deviceLabel}</dd></div>
+                      <div><dt>Cuenta esperada</dt><dd>{assignment.expectedAccount}</dd></div>
+                      <div><dt>Publicación</dt><dd>{assignment.postUrl}</dd></div>
+                      <div><dt>Acciones</dt><dd>{[tiktokExecutionConfirmation.actions.like && "Like", tiktokExecutionConfirmation.actions.comment && "Comentario"].filter(Boolean).join(" + ")}</dd></div>
+                    </dl>
+                    <Textarea label="Texto visible que identifica esta publicación" description="Debe aparecer una sola vez dentro del post móvil verificado." minRows={2} maxLength={500} value={expectedTargetTexts[assignment.postId] ?? ""} onChange={(event) => setExpectedTargetTexts({ [assignment.postId]: event.currentTarget.value })} />
+                    {assignment.comment && <Alert color="cyan" title="Comentario exacto">{assignment.comment.text}</Alert>}
+                  </Stack>
+                ))}
+                {!tiktokConfiguration.postEffectsEnabled && <Alert color="yellow">Bloqueado por `TIKTOK_PUBLIC_EFFECTS_ENABLED`; no se crearán jobs públicos.</Alert>}
+                {!tiktokPostConfigured && <Alert color="yellow">Falta configurar la estructura móvil TikTok verificada para esta combinación de acciones.</Alert>}
+                <Checkbox checked={publicConfirmation} onChange={(event) => setPublicConfirmation(event.currentTarget.checked)} label="Confirmo que la cuenta y publicación son controladas y autorizo exactamente esta ejecución 1×1." />
+                <Group justify="flex-end">
+                  <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Volver a revisión</Button>
+                  <Button color="red" disabled={!publicConfirmation || !tiktokExecutionConfirmation || !tiktokConfiguration.postEffectsEnabled || !tiktokPostConfigured || !tiktokExecutionConfirmation.assignments.every((assignment) => (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) >= 5)} onClick={() => dispatch({ type: "start-campaign", platform: "tiktok" })}>Autorizar ejecución TikTok</Button>
+                </Group>
+              </>
+            )}
           </Stack>
         )}
       </Modal>
@@ -914,7 +1802,7 @@ export function ControlPanel() {
               <dl className="abort-impact">
                 <div><dt>Campañas afectadas</dt><dd>{activeCampaigns}</dd></div>
                 <div><dt>Dispositivos en uso</dt><dd>{busyDevices}</dd></div>
-                <div><dt>Tareas demo</dt><dd>Extracción y generación</dd></div>
+                <div><dt>Trabajos propios</dt><dd>Preparación, extracción, generación y ejecuciones N×M</dd></div>
               </dl>
               <Text size="sm">Se detendrán nuevos trabajos, se cerrarán únicamente sesiones propias y se simulará Home por dispositivo.</Text>
               <Group justify="flex-end">

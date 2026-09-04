@@ -145,6 +145,10 @@ test("inspects all required properties and rejects a hardware identity mismatch"
     assert.deepEqual(mock.calls[0].args, ["devices", "-l"]);
     assert.equal(mock.calls.length, 7);
     for (const call of mock.calls.slice(1)) assert.deepEqual(call.args.slice(0, 2), ["-s", "serial-1"]);
+    database.prepare("DELETE FROM device_profiles").run();
+    const discovered = await client.inspectUnregisteredDevice("serial-1");
+    assert.equal(discovered.hardwareId, calculateHardwareId("physical-1", "android-1"));
+    assert.equal(discovered.model, "Pixel 6a");
   } finally {
     database.close();
   }

@@ -99,6 +99,7 @@ export function parseCampaignUrls(input: string, platform: Platform) {
     let message = "";
 
     try {
+      if (/["'\u0000-\u001f\u007f]/u.test(raw)) throw new Error("unsafe");
       const url = new URL(value);
       const host = url.hostname.toLowerCase();
       const allowed =
@@ -106,15 +107,22 @@ export function parseCampaignUrls(input: string, platform: Platform) {
           ? host === "facebook.com" || host.endsWith(".facebook.com") || host === "fb.watch"
           : host === "tiktok.com" || host.endsWith(".tiktok.com");
       if (url.protocol !== "https:") message = "Debe usar HTTPS";
+      else if (url.username || url.password || url.port) message = "No admite credenciales ni puertos no estándar";
       else if (!allowed) message = `Dominio no permitido para ${platform === "facebook" ? "Facebook" : "TikTok"}`;
       url.hash = "";
+      if (platform === "facebook" && (host === "facebook.com" || host.endsWith(".facebook.com"))) {
+        url.hostname = "www.facebook.com";
+      }
+      for (const parameter of ["__cft__", "__tn__", "fbclid", "mibextid", "ref", "refsrc"]) url.searchParams.delete(parameter);
+      url.searchParams.sort();
+      if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/u, "");
       normalized = url.toString();
     } catch {
       message = "URL no válida";
     }
 
     if (!message && seen.has(normalized)) message = "URL duplicada";
-    if (!message && urls.length >= 10) message = "Máximo 10 publicaciones";
+    if (!message && urls.length >= (platform === "tiktok" ? 1 : 10)) message = platform === "tiktok" ? "TikTok post admite una sola publicación" : "Máximo 10 publicaciones";
     seen.add(normalized);
     if (message) errors.push({ line: index + 1, value, message });
     else urls.push(normalized);
@@ -124,7 +132,10 @@ export function parseCampaignUrls(input: string, platform: Platform) {
 }
 
 export function isDeviceEligible(device: Device, platform: Platform) {
-  return device.connection === "connected" && device.preparation === "ready" && device.capabilities[platform] === "ready";
+  return device.connection === "connected"
+    && device.preparation === "ready"
+    && device.capabilities[platform] === "ready"
+    && device.activity === "available";
 }
 
 export function campaignCanPrepare(state: ControlState, platform: Platform) {
@@ -135,8 +146,7 @@ export function campaignCanPrepare(state: ControlState, platform: Platform) {
   });
   const distributionTotal = draft.distribution.reduce((total, row) => total + row.count, 0);
   return selectedAreEligible
-    && draft.urls.length >= 1
-    && draft.urls.length <= 10
+    && (platform === "tiktok" ? draft.selectedDeviceIds.length === 1 && draft.urls.length === 1 : draft.urls.length >= 1 && draft.urls.length <= 10)
     && draft.urlErrors.length === 0
     && (draft.actions.like || draft.actions.comment)
     && (!draft.actions.comment || (distributionTotal === draft.selectedDeviceIds.length && draft.distribution.every((row) => row.intention.trim() && row.count > 0)));
@@ -199,6 +209,7 @@ export function buildAssignments(draft: CampaignDraft) {
       status: draft.actions.comment ? "pending" : "approved",
       scheduledAt: null,
       actualAt: null,
+      execution: null,
     })),
   );
 
@@ -260,6 +271,8 @@ export const demoDevices: Device[] = [
 
 function emptyDraft(platform: Platform): CampaignDraft {
   return {
+    id: null,
+    revision: 0,
     platform,
     status: "draft",
     selectedDeviceIds: [],
@@ -267,6 +280,7 @@ function emptyDraft(platform: Platform): CampaignDraft {
     urls: [],
     urlErrors: [],
     actions: { like: true, comment: true },
+    controlledAccount: null,
     distribution: [{ id: `${platform}-intent-1`, intention: "Reacción natural", tone: "Cercano", count: 0 }],
     posts: [],
     assignments: [],
@@ -277,57 +291,6 @@ function emptyDraft(platform: Platform): CampaignDraft {
     scheduleStatus: "none",
     reviewGrouping: "post",
   };
-}
-
-function preparedFacebookDraft(): CampaignDraft {
-  const base: CampaignDraft = {
-    ...emptyDraft("facebook"),
-    status: "preparing",
-    selectedDeviceIds: ["device-01", "device-02"],
-    urlInput: [
-      "https://www.facebook.com/demo/posts/primera-publicacion",
-      "https://fb.watch/demo-segunda",
-      "https://www.facebook.com/demo/posts/fallo-contexto",
-    ].join("\n"),
-    urls: [
-      "https://www.facebook.com/demo/posts/primera-publicacion",
-      "https://fb.watch/demo-segunda",
-      "https://www.facebook.com/demo/posts/fallo-contexto",
-    ],
-    distribution: [
-      { id: "facebook-intent-1", intention: "Afinidad con el producto", tone: "Cercano", count: 1 },
-      { id: "facebook-intent-2", intention: "Interés por la novedad", tone: "Entusiasta", count: 1 },
-    ],
-    scheduleStatus: "stale",
-  };
-  const built = buildAssignments(base);
-  const posts = built.posts.map((post, index) => {
-    if (index === 0) {
-      return {
-        ...post,
-        status: "ready" as const,
-        contextStatus: "ready" as const,
-        context: "Presentación local de una nueva línea de productos, con foco en disponibilidad y cercanía.",
-        extractedContext: "Presentación local de una nueva línea de productos, con foco en disponibilidad y cercanía.",
-        contextSource: "extracted" as const,
-        extractedAt: "2026-09-03T15:02:00.000Z",
-        elapsedSeconds: 7,
-        comments: post.comments.map((comment, commentIndex) => ({
-          ...comment,
-          text: commentIndex === 0 ? "Se ve muy bien, gracias por compartir la novedad." : "Qué buena propuesta para la comunidad.",
-          status: commentIndex === 0 ? ("edited" as const) : ("ready" as const),
-        })),
-      };
-    }
-    if (index === 1) return { ...post, status: "extracting" as const, contextStatus: "extracting" as const, elapsedSeconds: 3 };
-    return {
-      ...post,
-      status: "partial_failed" as const,
-      contextStatus: "failed" as const,
-      error: "La sesión web simulada expiró durante la extracción.",
-    };
-  });
-  return { ...base, ...built, posts, selectedPostId: posts[0]?.id ?? null };
 }
 
 function historyAssignment(
@@ -420,10 +383,6 @@ export const demoHistory: HistoryCampaign[] = [
 
 export function createInitialState(now = new Date().toISOString()): ControlState {
   const tiktok = emptyDraft("tiktok");
-  tiktok.selectedDeviceIds = ["device-01", "device-03"];
-  tiktok.urlInput = demoTikTok;
-  tiktok.urls = [demoTikTok];
-  tiktok.distribution[0].count = 2;
 
   return {
     activeView: "devices",
@@ -434,14 +393,14 @@ export function createInitialState(now = new Date().toISOString()): ControlState
       { id: "facebookWeb", label: "Sesión Facebook", status: "ready", detail: "Perfil demo", simulated: true },
       { id: "updates", label: "Actualizaciones", status: "ready", detail: "Snapshot demo", simulated: true },
     ],
-    devices: demoDevices,
-    facebookDraft: preparedFacebookDraft(),
+    devices: [],
+    facebookDraft: emptyDraft("facebook"),
     tiktokDraft: tiktok,
-    history: demoHistory,
+    history: [],
     notice: {
       kind: "status",
-      title: "Datos de demostración cargados",
-      message: "Todo el panel opera en memoria. Ninguna acción sale de este navegador.",
+      title: "Fase 6 TikTok",
+      message: "TikTok post opera 1×1; Live permanece bloqueado hasta una prueba física independiente.",
     },
     activeModal: null,
     demoOperations: {

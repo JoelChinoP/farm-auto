@@ -106,6 +106,47 @@ test("recovers stale jobs without duplicating completed work", async () => {
   });
 });
 
+test("recovers a domain-committed confirmed effect as succeeded", async () => {
+  await withDatabase((filename) => {
+    const database = openDatabase(filename);
+    const operation = createOperation(database, {
+      kind: "assignment.execute",
+      idempotencyKey: randomUUID(),
+      request: { controlled: true },
+    }).operation;
+    const queued = enqueueJob(database, "assignment.execute", {}, {
+      operationId: operation.id,
+      effectPhase: "before_effect",
+      availableAt: 0,
+    });
+    const now = Date.now();
+    claimRuntimeOwnership(database, "dead-worker", 1, now, 60_000);
+    claimNextJob(database, "dead-worker", now);
+    database.prepare(`
+      UPDATE jobs SET effect_phase = 'effect_confirmed', result_json = '{"domainCommitted":true}' WHERE id = ?
+    `).run(queued.id);
+    database.prepare("UPDATE operations SET effect_phase = 'effect_confirmed' WHERE id = ?").run(operation.id);
+    claimRuntimeOwnership(database, "new-worker", 2, now + 60_000, 60_000);
+
+    assert.equal(recoverStaleJobs(database, "new-worker", now + 60_001), 1);
+    assert.equal(getJob(database, queued.id)?.status, "succeeded");
+    assert.equal(getOperation(database, operation.id)?.status, "succeeded");
+    database.close();
+  });
+});
+
+test("skips saturated job kinds without blocking other work", async () => {
+  await withDatabase((filename) => {
+    const database = openDatabase(filename);
+    enqueueJob(database, "comments.generate", {}, { priority: 10 });
+    const deviceJob = enqueueJob(database, "device.prepare", {}, { priority: 0 });
+    claimRuntimeOwnership(database, "worker", 1, Date.now(), 60_000);
+
+    assert.equal(claimNextJob(database, "worker", Date.now(), { excludeKinds: ["comments.generate"] })?.id, deviceJob.id);
+    database.close();
+  });
+});
+
 test("never retries a stale job after a possible public effect", async () => {
   await withDatabase((filename) => {
     const database = openDatabase(filename);

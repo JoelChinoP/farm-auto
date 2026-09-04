@@ -10,6 +10,7 @@ export function deviceReason(device: Device, platform: Platform) {
   if (device.connection === "unauthorized") return "ADB no autorizado";
   if (device.preparation !== "ready") return `Appium: ${statusLabels[device.preparation].toLowerCase()}`;
   if (device.capabilities[platform] !== "ready") return statusLabels[device.capabilities[platform]];
+  if (device.activity !== "available") return "No disponible para Farm Appium";
   return "Elegible";
 }
 
