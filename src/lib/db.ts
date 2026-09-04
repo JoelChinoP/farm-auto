@@ -74,7 +74,7 @@ export type FacebookBatchRow = {
   device_ids_json: string;
   plan_version: "legacy" | "rotation_v1";
   current_round: number;
-  execution_status: "idle" | "running";
+  execution_status: "idle" | "running" | "stopping" | "paused";
   next_execution_at: string | null;
   created_at: string;
   updated_at: string;
@@ -660,12 +660,35 @@ function createDatabase() {
          )`,
     )
     .run(recoveryTimestamp);
-  database
-    .prepare(
-      `UPDATE facebook_batches SET execution_status = 'idle', updated_at = ?
-       WHERE execution_status = 'running'`,
-    )
-    .run(recoveryTimestamp);
+   database
+     .prepare(
+       `UPDATE facebook_batches
+        SET execution_status = CASE
+              WHEN execution_status = 'stopping' THEN 'paused'
+              ELSE 'idle'
+            END,
+            next_execution_at = CASE
+              WHEN execution_status = 'stopping' THEN NULL
+              ELSE next_execution_at
+            END,
+            updated_at = ?
+        WHERE execution_status IN ('running', 'stopping')`,
+     )
+     .run(recoveryTimestamp);
+   database
+     .prepare(
+       `UPDATE facebook_rotation_slots
+        SET scheduled_at = NULL
+        WHERE EXISTS (
+          SELECT 1 FROM facebook_batches
+          WHERE facebook_batches.id = facebook_rotation_slots.batch_id
+            AND facebook_batches.status = 'active'
+            AND facebook_batches.plan_version = 'rotation_v1'
+            AND facebook_batches.execution_status = 'paused'
+            AND facebook_batches.current_round = facebook_rotation_slots.round_index
+        )`,
+     )
+     .run();
   database
     .prepare(
       `UPDATE facebook_batches SET status = 'completed', execution_status = 'idle', updated_at = ?
@@ -992,16 +1015,73 @@ export function listActiveOperations() {
     .all() as OperationRow[];
 }
 
-export function cancelActiveFacebookBatches() {
-  const result = db
-    .prepare(
-      `UPDATE facebook_batches
-       SET status = 'cancelled', execution_status = 'idle', next_execution_at = NULL,
-           updated_at = ?
-       WHERE status = 'active'`,
-    )
-    .run(now());
-  return result.changes;
+export function clearOperationalHistory() {
+  const clear = db.transaction(() => {
+    if (listActiveOperations().length) {
+      throw new AppError(
+        "Detén todas las operaciones activas antes de borrar el historial.",
+        409,
+        "OPERATIONS_ACTIVE",
+      );
+    }
+    const count = (table: string) =>
+      (db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
+    const removed = {
+      operations: count("operations"),
+      drafts: count("message_drafts"),
+      batches: count("facebook_batches"),
+      locks: count("device_locks"),
+    };
+    db.prepare("DELETE FROM device_locks").run();
+    db.prepare("DELETE FROM facebook_batches").run();
+    db.prepare("DELETE FROM message_drafts").run();
+    db.prepare("DELETE FROM operations").run();
+    return removed;
+  });
+  return clear();
+}
+
+function clearFacebookCurrentRoundSchedules(batchId: string) {
+  db.prepare(
+    `UPDATE facebook_rotation_slots
+     SET scheduled_at = NULL
+     WHERE batch_id = ?
+       AND round_index = (
+         SELECT current_round FROM facebook_batches WHERE id = ?
+       )`,
+  ).run(batchId, batchId);
+}
+
+export function pauseActiveFacebookBatchExecutions() {
+  const pause = db.transaction(() => {
+    const batches = db
+      .prepare(
+        `SELECT id, execution_status FROM facebook_batches
+         WHERE status = 'active' AND plan_version = 'rotation_v1'
+           AND (
+             execution_status = 'running' OR
+             next_execution_at IS NOT NULL OR
+             EXISTS (
+               SELECT 1 FROM facebook_rotation_slots
+               WHERE facebook_rotation_slots.batch_id = facebook_batches.id
+                 AND facebook_rotation_slots.round_index = facebook_batches.current_round
+                 AND facebook_rotation_slots.scheduled_at IS NOT NULL
+             )
+           )`,
+      )
+      .all() as Array<Pick<FacebookBatchRow, "id" | "execution_status">>;
+    const timestamp = now();
+    for (const batch of batches) {
+      db.prepare(
+        `UPDATE facebook_batches
+         SET execution_status = ?, next_execution_at = NULL, updated_at = ?
+         WHERE id = ? AND status = 'active'`,
+      ).run(batch.execution_status === "running" ? "stopping" : "paused", timestamp, batch.id);
+      clearFacebookCurrentRoundSchedules(batch.id);
+    }
+    return batches.length;
+  });
+  return pause();
 }
 
 export function acquireDeviceLock(deviceId: string, operationId: string) {
@@ -1202,9 +1282,13 @@ export function setFacebookRotationSlotScheduledAt(
   const result = db
     .prepare(
       `UPDATE facebook_rotation_slots SET scheduled_at = ?
-       WHERE batch_id = ? AND post_id = ? AND device_id = ? AND round_index = ?`,
+       WHERE batch_id = ? AND post_id = ? AND device_id = ? AND round_index = ?
+         AND EXISTS (
+           SELECT 1 FROM facebook_batches
+           WHERE id = ? AND status = 'active' AND execution_status = 'running'
+         )`,
     )
-    .run(value, batchId, postId, deviceId, roundIndex);
+    .run(value, batchId, postId, deviceId, roundIndex, batchId);
   if (result.changes !== 1) {
     throw new AppError("No se encontró la programación del dispositivo.", 404, "NOT_FOUND");
   }
@@ -1238,9 +1322,9 @@ export function setFacebookRotationSlotOpenState(
 export function claimFacebookBatchExecution(id: string) {
   const result = db
     .prepare(
-      `UPDATE facebook_batches SET execution_status = 'running', updated_at = ?
-       WHERE id = ? AND status = 'active' AND plan_version = 'rotation_v1'
-         AND execution_status = 'idle'`,
+        `UPDATE facebook_batches SET execution_status = 'running', updated_at = ?
+        WHERE id = ? AND status = 'active' AND plan_version = 'rotation_v1'
+          AND execution_status IN ('idle', 'paused')`,
     )
     .run(now(), id);
   if (result.changes !== 1) {
@@ -1254,15 +1338,35 @@ export function claimFacebookBatchExecution(id: string) {
 }
 
 export function releaseFacebookBatchExecution(id: string) {
-  db.prepare(
-    "UPDATE facebook_batches SET execution_status = 'idle', updated_at = ? WHERE id = ?",
-  ).run(now(), id);
+  const release = db.transaction(() => {
+    const batch = getFacebookBatch(id);
+    if (!batch || !["running", "stopping"].includes(batch.execution_status)) return;
+    if (batch.execution_status === "stopping") {
+      db.prepare(
+        `UPDATE facebook_batches
+         SET execution_status = 'paused', next_execution_at = NULL, updated_at = ?
+         WHERE id = ? AND execution_status = 'stopping'`,
+      ).run(now(), id);
+      clearFacebookCurrentRoundSchedules(id);
+      return;
+    }
+    db.prepare(
+      "UPDATE facebook_batches SET execution_status = 'idle', updated_at = ? WHERE id = ? AND execution_status = 'running'",
+    ).run(now(), id);
+  });
+  release();
 }
 
 export function setFacebookBatchNextExecutionAt(id: string, value: string | null) {
-  db.prepare(
-    "UPDATE facebook_batches SET next_execution_at = ?, updated_at = ? WHERE id = ?",
-  ).run(value, now(), id);
+  const result = db
+    .prepare(
+      `UPDATE facebook_batches SET next_execution_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'active' AND execution_status = 'running'`,
+    )
+    .run(value, now(), id);
+  if (result.changes !== 1) {
+    throw new AppError("La programación fue detenida por el operador.", 409, "BATCH_STOPPED");
+  }
   return getFacebookBatch(id)!;
 }
 
@@ -1310,7 +1414,7 @@ export function updateFacebookPost(
   values: Partial<
     Pick<
       FacebookPostRow,
-      "extracted_context" | "context" | "status" | "error"
+      "url" | "extracted_context" | "context" | "status" | "error"
     >
   >,
 ) {
@@ -1318,7 +1422,7 @@ export function updateFacebookPost(
   if (!current) throw new AppError("Publicación no encontrada.", 404, "NOT_FOUND");
   const updated = { ...current, ...values, updated_at: now() };
   db.prepare(
-    `UPDATE facebook_posts SET extracted_context = @extracted_context,
+    `UPDATE facebook_posts SET url = @url, extracted_context = @extracted_context,
        context = @context, status = @status, error = @error, updated_at = @updated_at
      WHERE id = @id`,
   ).run(updated);

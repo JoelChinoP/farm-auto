@@ -1,15 +1,15 @@
-import { openSocialContentOnDevices } from "@/lib/automation-service";
+import { shareFacebookPostOnDevices } from "@/lib/automation-service";
 import { AppError, errorResponse, readJson } from "@/lib/errors";
-import { normalizeContentUrl, openContentSchema } from "@/lib/schemas";
+import { facebookShareSchema, normalizeContentUrl } from "@/lib/schemas";
 
 export const runtime = "nodejs";
 
 export async function POST(request: Request) {
   try {
-    const input = openContentSchema.parse(await readJson(request));
+    const input = facebookShareSchema.parse(await readJson(request));
     let url: string;
     try {
-      url = normalizeContentUrl(input.platform, input.url);
+      url = normalizeContentUrl("facebook", input.url);
     } catch (error) {
       throw new AppError(
         error instanceof Error ? error.message : "Enlace inválido.",
@@ -17,7 +17,7 @@ export async function POST(request: Request) {
         "INVALID_CONTENT_URL",
       );
     }
-    const result = await openSocialContentOnDevices({ ...input, url });
+    const result = await shareFacebookPostOnDevices({ ...input, url });
     return Response.json({ success: true, data: result });
   } catch (error) {
     return errorResponse(error);

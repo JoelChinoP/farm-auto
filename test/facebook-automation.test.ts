@@ -3,7 +3,12 @@ import test from "node:test";
 
 import {
   extractFacebookDescriptionFromHierarchy,
+  locateFacebookProfileShareConfirmation,
+  locateFacebookProfileShareDestination,
+  locateFacebookShareTarget,
   locateFacebookTarget,
+  runFacebookPost,
+  verifyFacebookShareDelivery,
   verifyFacebookDelivery,
 } from "../src/lib/facebook-automation.ts";
 
@@ -50,6 +55,13 @@ const comment = leaf({
   class: "android.widget.Button",
   "content-desc": "Comentar",
   bounds: "[360,900][620,1000]",
+});
+const share = leaf({
+  package: "com.facebook.katana",
+  class: "android.widget.Button",
+  "content-desc": "Compartir",
+  clickable: "true",
+  bounds: "[700,900][1020,1000]",
 });
 
 test("binds marker and controls to one post and preserves an existing like", () => {
@@ -151,6 +163,85 @@ test("extracts the visible Facebook description without action controls", () => 
   );
 });
 
+test("requires the profile-specific Facebook share destination and confirmation", () => {
+  const target = locateFacebookShareTarget(
+    screen(post(marker + like() + comment + share)),
+    markerText,
+  );
+  assert.deepEqual(target.shareBounds, { left: 700, top: 900, right: 1020, bottom: 1000 });
+
+  assert.deepEqual(
+    locateFacebookProfileShareDestination(
+      screen(
+        leaf({
+          package: "com.facebook.katana",
+          class: "android.widget.Button",
+          "content-desc": "Compartir en tu perfil",
+          clickable: "true",
+          bounds: "[80,1200][1000,1300]",
+        }),
+      ),
+    ),
+    { left: 80, top: 1200, right: 1000, bottom: 1300 },
+  );
+
+  assert.deepEqual(
+    locateFacebookProfileShareConfirmation(
+      screen(
+        node(
+          {
+            package: "com.facebook.katana",
+            class: "android.view.ViewGroup",
+            bounds: "[0,1100][1080,1600]",
+          },
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.TextView",
+            text: "Tu perfil",
+            bounds: "[80,1160][1000,1220]",
+          }) +
+            leaf({
+              package: "com.facebook.katana",
+              class: "android.widget.Button",
+              "content-desc": "Compartir ahora",
+              clickable: "true",
+              bounds: "[80,1400][1000,1510]",
+            }),
+        ),
+      ),
+    ),
+    { left: 80, top: 1400, right: 1000, bottom: 1510 },
+  );
+  assert.equal(
+    verifyFacebookShareDelivery(
+      screen(
+        leaf({
+          package: "com.facebook.katana",
+          class: "android.view.ViewGroup",
+          "content-desc": "Publicación compartida",
+          bounds: "[80,100][1000,180]",
+        }),
+      ),
+    ),
+    true,
+  );
+  assert.throws(
+    () =>
+      locateFacebookProfileShareDestination(
+        screen(
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.Button",
+            "content-desc": "Enviar por Messenger",
+            clickable: "true",
+            bounds: "[80,1200][1000,1300]",
+          }),
+        ),
+      ),
+    /Compartir en tu perfil/,
+  );
+});
+
 test("supports duplicated labels and a fixed Facebook comment composer", () => {
   const description =
     "¿De verdad usar inteligencia artificial para hacer trabajos universitarios es hacer trampa?";
@@ -224,6 +315,7 @@ test("supports duplicated labels and a fixed Facebook comment composer", () => {
       containerBounds: { left: 0, top: 205, right: 1080, bottom: 1298 },
       likeBounds: { left: 0, top: 1172, right: 360, bottom: 1298 },
       commentBounds: { left: 360, top: 1172, right: 720, bottom: 1298 },
+      likeStateObservable: true,
       alreadyLiked: false,
     },
   );
@@ -352,6 +444,7 @@ test("extracts a Reel description and ignores its non-actionable comment wrapper
       containerBounds: { left: 20, top: 200, right: 1060, bottom: 1500 },
       likeBounds: { left: 80, top: 900, right: 300, bottom: 1000 },
       commentBounds: { left: 360, top: 900, right: 620, bottom: 1000 },
+      likeStateObservable: true,
       alreadyLiked: false,
     },
   );
@@ -386,6 +479,469 @@ test("extracts a Reel description and ignores its non-actionable comment wrapper
       quotedDescription,
     );
   }
+});
+
+test("binds right-rail Reel controls only to its marked video surface", () => {
+  const description = "Cultivo responsable y trabajo comunitario";
+  const reelSurface = post(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "Detalles del reel",
+      bounds: "[0,0][1080,1920]",
+    }) +
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.TextView",
+        text: description,
+        bounds: "[40,1240][820,1360]",
+      }),
+    "[0,0][1080,1920]",
+  );
+  const rightRailLike = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.Button",
+    "content-desc": "70 reacciones",
+    clickable: "true",
+    bounds: "[954,1394][1080,1499]",
+  }) +
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+    "content-desc": "70 reacciones",
+    clickable: "true",
+    bounds: "[954,1491][1080,1557]",
+    "long-clickable": "true",
+    });
+  const rightRailComment = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.Button",
+    "content-desc": "25 comentarios",
+    clickable: "true",
+    bounds: "[954,1557][1080,1728]",
+  });
+  const reelScreen = screen(reelSurface + rightRailLike + rightRailComment);
+
+  assert.deepEqual(
+    locateFacebookTarget(reelScreen, "cultivo responsable trabajo comunitario"),
+    {
+      containerBounds: { left: 0, top: 0, right: 1080, bottom: 1920 },
+      likeBounds: { left: 954, top: 1491, right: 1080, bottom: 1557 },
+      commentBounds: { left: 954, top: 1557, right: 1080, bottom: 1728 },
+      likeStateObservable: false,
+      alreadyLiked: false,
+    },
+  );
+  assert.deepEqual(
+    locateFacebookTarget(
+      reelScreen
+        .replaceAll("70 reacciones", "1 reacción")
+        .replace(
+          'clickable="true" bounds="[954,1394][1080,1499]"',
+          'clickable="true" selected="true" bounds="[954,1394][1080,1499]"',
+        ),
+      "cultivo responsable trabajo comunitario",
+    ),
+    {
+      containerBounds: { left: 0, top: 0, right: 1080, bottom: 1920 },
+      likeBounds: { left: 954, top: 1394, right: 1080, bottom: 1499 },
+      commentBounds: { left: 954, top: 1557, right: 1080, bottom: 1728 },
+      likeStateObservable: false,
+      alreadyLiked: true,
+    },
+  );
+  assert.deepEqual(
+    locateFacebookTarget(
+      screen(
+        reelSurface +
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.Button",
+            "content-desc":
+              "Botón &quot;Me gusta&quot;. Toca dos veces y mantén presionado para reaccionar.",
+            clickable: "true",
+            bounds: "[954,1584][1080,1689]",
+          }) +
+          rightRailComment +
+          leaf({
+            package: "com.facebook.katana",
+            class: "android.widget.Button",
+            text: "Agregar un comentario",
+            "content-desc": "Agregar un comentario",
+            clickable: "true",
+            bounds: "[0,1920][1080,2078]",
+          }),
+      ),
+      "cultivo responsable trabajo comunitario",
+    ),
+    {
+      containerBounds: { left: 0, top: 0, right: 1080, bottom: 1920 },
+      likeBounds: { left: 954, top: 1584, right: 1080, bottom: 1689 },
+      commentBounds: { left: 954, top: 1557, right: 1080, bottom: 1728 },
+      likeStateObservable: true,
+      alreadyLiked: false,
+    },
+  );
+  assert.throws(
+    () =>
+      locateFacebookTarget(
+        reelScreen.replace('long-clickable="true"', 'long-clickable="false"'),
+        "cultivo responsable trabajo comunitario",
+      ),
+    /único contenedor/,
+  );
+  assert.throws(
+    () =>
+      locateFacebookTarget(
+        reelScreen.replace(
+          rightRailLike,
+          rightRailLike +
+            leaf({
+              package: "com.facebook.katana",
+              class: "android.widget.Button",
+              "content-desc": "15 reacciones",
+              clickable: "true",
+              bounds: "[954,1220][1080,1310]",
+              "long-clickable": "true",
+            }),
+        ),
+        "cultivo responsable trabajo comunitario",
+      ),
+    /único contenedor/,
+  );
+});
+
+test("continues to the comment after an unambiguous Reel reaction with no accessible state", async () => {
+  const description = "Cultivo responsable y trabajo comunitario";
+  const expectedComment = "mejor seria un fondo concursable para proyectos";
+  const reel = (commentSurface = "") =>
+    post(
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": "Detalles del reel",
+        bounds: "[0,0][1080,1920]",
+      }) +
+        leaf({
+          package: "com.facebook.katana",
+          class: "android.widget.TextView",
+          text: description,
+          bounds: "[40,1240][820,1360]",
+        }) +
+        commentSurface,
+      "[0,0][1080,1920]",
+    );
+  const controls =
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "71 reacciones",
+      clickable: "true",
+      bounds: "[954,1394][1080,1499]",
+    }) +
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "71 reacciones",
+      clickable: "true",
+      "long-clickable": "true",
+      bounds: "[954,1491][1080,1557]",
+    }) +
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "25 comentarios",
+      clickable: "true",
+      bounds: "[954,1557][1080,1728]",
+    });
+  const composer = (text: string) =>
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.EditText",
+      hint: "Escribe un comentario",
+      text,
+      bounds: "[40,1740][820,1840]",
+    }) +
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "Enviar comentario",
+      clickable: "true",
+      bounds: "[840,1740][1040,1840]",
+    });
+  const initial = screen(reel() + controls);
+  const thread = screen(reel(composer("")) + controls);
+  const ready = screen(reel(composer(expectedComment)) + controls);
+  const delivered = screen(
+    reel(
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.TextView",
+        text: expectedComment,
+        bounds: "[40,1600][820,1700]",
+      }) + composer(""),
+    ) + controls,
+  );
+  let phase = 0;
+  const checkpoints: string[] = [];
+  const driver = {
+    getCurrentPackage: async () => "com.facebook.katana",
+    getPageSource: async () =>
+      phase < 2 ? initial : phase === 2 ? thread : phase === 3 ? ready : delivered,
+    execute: async (command: string, args: Record<string, unknown>) => {
+      if (command === "mobile: type") phase = 3;
+      if (command !== "mobile: clickGesture") return;
+      const y = args.y as number;
+      if (y > 1450 && y < 1600) phase = 1;
+      else if (y > 1600 && y < 1750) phase = 2;
+      else phase = 4;
+    },
+    $: async () => ({ clearValue: async () => {}, click: async () => {} }),
+  };
+
+  await runFacebookPost(
+    driver as never,
+    {
+      url: "https://www.facebook.com/reel/1047727811376295",
+      commentText: expectedComment,
+      targetMarker: "cultivo responsable trabajo comunitario",
+    },
+    new AbortController().signal,
+    (checkpoint) => checkpoints.push(checkpoint),
+    async () => {},
+  );
+
+  assert.deepEqual(checkpoints, ["like", "comment"]);
+});
+
+test("activates a Reel composer that Facebook initially hides from accessibility", async () => {
+  const description = "Cultivo responsable y trabajo comunitario";
+  const expectedComment = "mejor seria un fondo concursable para proyectos";
+  const initial = screen(
+    post(
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": "Detalles del reel",
+        bounds: "[0,0][1080,1920]",
+      }) +
+        leaf({
+          package: "com.facebook.katana",
+          class: "android.widget.TextView",
+          text: description,
+          bounds: "[40,1240][820,1360]",
+        }),
+      "[0,0][1080,1920]",
+    ) +
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": "1 reacción",
+        selected: "true",
+        clickable: "true",
+        bounds: "[954,1394][1080,1499]",
+      }) +
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": "1 reacción",
+        clickable: "true",
+        "long-clickable": "true",
+        bounds: "[954,1491][1080,1557]",
+      }) +
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": "0 comentarios",
+        clickable: "true",
+        bounds: "[954,1557][1080,1728]",
+      }),
+  );
+  const sheet = (children: string) =>
+    `<hierarchy>${node(
+      {
+        package: "com.facebook.katana",
+        class: "android.widget.FrameLayout",
+        bounds: "[0,557][1080,2280]",
+      },
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.view.ViewGroup",
+        text: "Aún no hay comentarios",
+        "content-desc": "Aún no hay comentarios",
+        bounds: "[0,558][1080,1323]",
+      }) + children,
+    )}</hierarchy>`;
+  const hiddenComposer = sheet(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.view.ViewGroup",
+      text: "Comentarios sugeridos",
+      "content-desc": "Comentarios sugeridos",
+      bounds: "[0,1689][1080,2154]",
+    }),
+  );
+  const ready = sheet(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.EditText",
+      text: expectedComment,
+      focusable: "true",
+      focused: "true",
+      bounds: "[32,1825][1048,1924]",
+    }) +
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": "Enviar",
+        clickable: "true",
+        bounds: "[964,1929][1069,2034]",
+      }),
+  );
+  const delivered = sheet(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.TextView",
+      text: expectedComment,
+      bounds: "[40,1200][900,1300]",
+    }),
+  );
+  let phase = 0;
+  const checkpoints: string[] = [];
+  const driver = {
+    getCurrentPackage: async () => "com.facebook.katana",
+    getPageSource: async () =>
+      phase < 1 ? initial : phase < 3 ? hiddenComposer : phase === 3 ? ready : delivered,
+    execute: async (command: string, args: Record<string, unknown>) => {
+      if (command === "mobile: type") {
+        phase = 3;
+        return;
+      }
+      if (command !== "mobile: clickGesture") return;
+      const y = args.y as number;
+      if (y > 1550 && y < 1800) phase = 1;
+      else if (y > 1900) phase = phase === 3 ? 4 : 2;
+    },
+    $: async () => ({ clearValue: async () => {}, click: async () => {} }),
+  };
+
+  await runFacebookPost(
+    driver as never,
+    {
+      url: "https://www.facebook.com/reel/1047727811376295",
+      commentText: expectedComment,
+      targetMarker: "cultivo responsable trabajo comunitario",
+    },
+    new AbortController().signal,
+    (checkpoint) => checkpoints.push(checkpoint),
+    async () => {},
+  );
+
+  assert.deepEqual(checkpoints, ["comment"]);
+  assert.equal(phase, 4);
+});
+
+test("scrolls a uniquely marked normal post just enough to expose its actions", async () => {
+  const expectedComment = "comentario despues del desplazamiento seguro";
+  const hidePost = leaf({
+    package: "com.facebook.katana",
+    class: "android.widget.Button",
+    "content-desc": "Ocultar publicación",
+    clickable: "true",
+    bounds: "[900,220][1040,300]",
+  });
+  const initial = screen(
+    post(
+      marker +
+        hidePost +
+        leaf({
+          package: "com.facebook.katana",
+          class: "android.widget.Button",
+          "content-desc": "Foto 3 de 3, expandir foto",
+          bounds: "[545,900][1060,1500]",
+        }),
+    ),
+  );
+  const target = screen(post(marker + hidePost + like("true") + comment));
+  const composer = (text: string) =>
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.EditText",
+      text,
+      hint: "Comentar…",
+      focusable: "true",
+      bounds: "[32,1500][900,1600]",
+    }) +
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.Button",
+      "content-desc": "Enviar",
+      clickable: "true",
+      bounds: "[920,1500][1040,1600]",
+    });
+  const modal = (children: string) =>
+    `<hierarchy>${node(
+      {
+        package: "com.facebook.katana",
+        class: "android.widget.FrameLayout",
+        bounds: "[0,0][1080,1776]",
+      },
+      leaf({
+        package: "com.facebook.katana",
+        class: "android.widget.Button",
+        "content-desc": "Cerrar",
+        clickable: "true",
+        bounds: "[480,72][600,108]",
+      }) + children,
+    )}</hierarchy>`;
+  const thread = modal(composer(""));
+  const ready = modal(composer(expectedComment));
+  const delivered = modal(
+    leaf({
+      package: "com.facebook.katana",
+      class: "android.widget.TextView",
+      text: expectedComment,
+      bounds: "[40,500][900,600]",
+    }) + composer(""),
+  );
+  let phase = 0;
+  let orientation = "";
+  let swipeSpeed = 0;
+  const checkpoints: string[] = [];
+  const driver = {
+    setOrientation: async (value: string) => {
+      orientation = value;
+    },
+    getCurrentPackage: async () => "com.facebook.katana",
+    getPageSource: async () =>
+      phase === 0 ? initial : phase === 1 ? target : phase === 2 ? thread : phase === 3 ? ready : delivered,
+    execute: async (command: string, args: Record<string, unknown>) => {
+      if (command === "mobile: swipeGesture") {
+        swipeSpeed = args.speed as number;
+        phase = 1;
+      }
+      else if (command === "mobile: type") phase = 3;
+      else if (command === "mobile: clickGesture") phase = phase === 1 ? 2 : 4;
+    },
+    $: async () => ({ clearValue: async () => {}, click: async () => {} }),
+  };
+
+  await runFacebookPost(
+    driver as never,
+    {
+      url: "https://www.facebook.com/share/p/example",
+      commentText: expectedComment,
+      targetMarker: markerText,
+    },
+    new AbortController().signal,
+    (checkpoint) => checkpoints.push(checkpoint),
+    async () => {},
+  );
+
+  assert.deepEqual(checkpoints, ["comment"]);
+  assert.equal(orientation, "PORTRAIT");
+  assert.equal(swipeSpeed, 600);
+  assert.equal(phase, 4);
 });
 
 test("fails closed for ambiguous posts or a Facebook login screen", () => {
@@ -478,6 +1034,7 @@ test("matches a marker split across Facebook text nodes in a full-screen post", 
     containerBounds: { left: 0, top: 0, right: 1080, bottom: 1920 },
     likeBounds: { left: 80, top: 900, right: 300, bottom: 1000 },
     commentBounds: { left: 360, top: 900, right: 620, bottom: 1000 },
+    likeStateObservable: true,
     alreadyLiked: false,
   });
 });
@@ -530,6 +1087,7 @@ test("matches a legacy marker in a Facebook full-screen viewer", () => {
       containerBounds: { left: 0, top: 1219, right: 1080, bottom: 2076 },
       likeBounds: { left: 36, top: 1944, right: 216, bottom: 2076 },
       commentBounds: { left: 216, top: 1944, right: 410, bottom: 2076 },
+      likeStateObservable: true,
       alreadyLiked: false,
     },
   );

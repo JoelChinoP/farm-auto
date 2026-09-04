@@ -6,6 +6,15 @@ const boilerplateFragments = [
   "see posts, photos and more on facebook",
   "regístrate o inicia sesión en facebook",
 ];
+const genericDescriptions = new Set([
+  "facebook",
+  "facebook reels",
+  "reels on facebook",
+  "detalles del reel",
+  "detalles del video",
+  "reel details",
+  "video details",
+]);
 
 function normalize(value: string) {
   return value.replace(/\s+/g, " ").trim();
@@ -44,6 +53,7 @@ function uniqueUseful(values: string[]) {
     if (
       value.length < 3 ||
       seen.has(key) ||
+      genericDescriptions.has(key) ||
       boilerplateFragments.some((fragment) => key.includes(fragment))
     ) {
       continue;

@@ -12,9 +12,12 @@ import {
   facebookExecuteSchema,
   facebookExtractSchema,
   facebookReconcileSchema,
+  facebookShareSchema,
   normalizeContentUrl,
   normalizeFacebookUrls,
+  openContentSchema,
   parseGeneratedCommentsContent,
+  preferFacebookVideoPostUrl,
   sendDraftSchema,
   tiktokLiveTapTapSchema,
 } from "../src/lib/schemas.ts";
@@ -45,6 +48,42 @@ test("accepts TikTok and Facebook HTTPS links", () => {
   assert.equal(
     normalizeContentUrl("facebook", "https://m.facebook.com/share/v/example/"),
     "https://www.facebook.com/share/v/example/",
+  );
+});
+
+test("requires at least one unique device when opening content", () => {
+  const input = {
+    deviceIds: ["device-a", "device-b"],
+    idempotencyKey: "00000000-0000-4000-8000-000000000000",
+    platform: "facebook" as const,
+    url: "https://www.facebook.com/share/p/example/",
+  };
+  assert.deepEqual(openContentSchema.parse(input), input);
+  assert.equal(
+    openContentSchema.safeParse({ ...input, deviceIds: [] }).success,
+    false,
+  );
+  assert.equal(
+    openContentSchema.safeParse({ ...input, deviceIds: ["device-a", "device-a"] }).success,
+    false,
+  );
+});
+
+test("requires a unique device set and verifiable context for Facebook shares", () => {
+  const input = {
+    deviceIds: ["device-a", "device-b"],
+    idempotencyKey: "00000000-0000-4000-8000-000000000000",
+    url: "https://www.facebook.com/share/p/example/",
+    context: "La cosecha sostenible protege los suelos de la comunidad.",
+  };
+  assert.deepEqual(facebookShareSchema.parse(input), input);
+  assert.equal(
+    facebookShareSchema.safeParse({ ...input, deviceIds: ["device-a", "device-a"] }).success,
+    false,
+  );
+  assert.equal(
+    facebookShareSchema.safeParse({ ...input, context: "Corto" }).success,
+    false,
   );
 });
 
@@ -163,6 +202,30 @@ test("parses ordered DeepSeek comments within the configured word range", () => 
       15,
     ),
     [{ text: "quedo bacan ese detalle" }],
+  );
+});
+
+test("prefers the interactive Facebook video post over an isolated Reel player", () => {
+  assert.equal(
+    preferFacebookVideoPostUrl(
+      "https://www.facebook.com/reel/1047727811376295/?rdid=example",
+      "https://www.facebook.com/61580950664389/videos/pandia-inspira/1047727811376295/",
+    ),
+    "https://www.facebook.com/61580950664389/videos/pandia-inspira/1047727811376295/",
+  );
+  assert.equal(
+    preferFacebookVideoPostUrl(
+      "https://www.facebook.com/reel/1047727811376295/",
+      "https://attacker.example/videos/1047727811376295/",
+    ),
+    "https://www.facebook.com/reel/1047727811376295/",
+  );
+  assert.equal(
+    preferFacebookVideoPostUrl(
+      "https://www.facebook.com/posts/123",
+      "https://www.facebook.com/61580950664389/videos/pandia-inspira/123/",
+    ),
+    "https://www.facebook.com/posts/123",
   );
 });
 
@@ -338,10 +401,16 @@ test("validates Facebook timing with one maximum wait per device", () => {
 });
 
 test("uses the JSON list of Facebook-tested devices", () => {
-  assert.equal(configuredFacebookDeviceIds.length, 12);
+  assert.equal(configuredFacebookDeviceIds.length, 30);
   assert.equal(new Set(configuredFacebookDeviceIds).size, configuredFacebookDeviceIds.length);
-  assert.equal(new Set(configuredFacebookDevices.map((device) => device.systemPort)).size, 12);
-  assert.equal(new Set(configuredFacebookDevices.map((device) => device.physicalOrder)).size, 12);
+  assert.equal(
+    new Set(configuredFacebookDevices.map((device) => device.systemPort)).size,
+    configuredFacebookDevices.length,
+  );
+  assert.equal(
+    new Set(configuredFacebookDevices.map((device) => device.physicalOrder)).size,
+    configuredFacebookDevices.length,
+  );
   assert.equal(isConfiguredFacebookDevice("988e94414444565339"), true);
   assert.equal(isConfiguredFacebookDevice("device-not-configured"), false);
 });
@@ -356,6 +425,14 @@ test("requires an exact, unique Facebook device allocation", () => {
     ],
   };
   assert.equal(facebookDraftsSchema.safeParse(valid).success, true);
+  assert.equal(
+    facebookDraftsSchema.safeParse({ ...valid, replaceExisting: true }).success,
+    true,
+  );
+  assert.equal(
+    facebookDraftsSchema.safeParse({ ...valid, replaceExisting: "true" }).success,
+    false,
+  );
   assert.equal(
     facebookDraftsSchema.safeParse({
       context: valid.context,
@@ -414,6 +491,17 @@ test("keeps only the Facebook post description", () => {
       messages: [],
       metadata: "Log into Facebook to start sharing and connecting.",
     }),
+    "",
+  );
+  assert.equal(
+    buildFacebookPostDescription({
+      messages: ["Detalles del reel"],
+      metadata: "Una cosecha de maíz que resiste las heladas.",
+    }),
+    "Una cosecha de maíz que resiste las heladas.",
+  );
+  assert.equal(
+    buildFacebookPostDescription({ messages: [], metadata: "Facebook" }),
     "",
   );
 });

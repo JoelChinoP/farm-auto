@@ -7,16 +7,17 @@ import {
   closeFacebook,
   getDeviceHardwareId,
   getHomePackage,
+  getResumedActivity,
   isPackageInstalled,
   openFacebookUrl,
+  openTikTokUrl,
+  waitForAdbForegroundPackage,
 } from "@/lib/adb";
 import { isAutomationRetrySafe } from "@/lib/automation-errors";
 export { isAutomationRetrySafe } from "@/lib/automation-errors";
 import {
-  activateAndOpenUrl,
   pressHome,
   wait,
-  waitForForegroundPackage,
 } from "@/lib/android-actions";
 import {
   cancelAndroidOperation,
@@ -43,9 +44,12 @@ import {
   updateOperation,
 } from "@/lib/db";
 import { AppError } from "@/lib/errors";
+import { buildFacebookTargetMarker } from "@/lib/facebook-context";
+import { isConfiguredFacebookDevice } from "@/lib/facebook-devices";
 import {
   FACEBOOK_PACKAGE,
   runFacebookPost,
+  runFacebookSharePost,
 } from "@/lib/facebook-automation";
 import {
   runTikTokLive,
@@ -55,7 +59,7 @@ import {
 
 export const SETUP_REVISION = 1;
 
-type PublicCheckpoint = "engagement" | "like" | "comment";
+type PublicCheckpoint = "engagement" | "like" | "comment" | "share";
 
 const globalAutomation = globalThis as typeof globalThis & {
   operationCheckpoints?: Map<string, PublicCheckpoint>;
@@ -421,6 +425,8 @@ function outcomeUnknown(error: unknown, checkpoint: PublicCheckpoint | null) {
       ? "Se intentó enviar el comentario y el resultado debe verificarse manualmente."
       : checkpoint === "like"
         ? "Se intentó aplicar el like y el resultado debe verificarse manualmente."
+        : checkpoint === "share"
+          ? "Se intentó compartir la publicación y el resultado debe verificarse manualmente."
         : "Se intentó interactuar con el contenido y el resultado debe verificarse manualmente.",
     502,
     "AUTOMATION_OUTCOME_UNKNOWN",
@@ -528,24 +534,67 @@ export function openSocialContent(input: {
           "APP_NOT_INSTALLED",
         );
       }
-      const homePackage = await getHomePackage(input.deviceId);
-      return withAndroidSession(operationId, profile, async (driver, signal) => {
-        await goHomeInSession(driver, homePackage, signal);
-        if (input.platform === "facebook") {
-          await openFacebookUrl(input.deviceId, input.url);
-        } else {
-          await activateAndOpenUrl(driver, packageName, input.url);
-        }
-        const focusedPackage = await waitForForegroundPackage(
-          driver,
-          packageName,
-          15_000,
-          signal,
+      if (input.platform === "facebook") {
+        await openFacebookUrl(input.deviceId, input.url);
+      } else {
+        await openTikTokUrl(input.deviceId, input.url);
+      }
+      const focusedPackage = await waitForAdbForegroundPackage(
+        input.deviceId,
+        packageName,
+        15_000,
+      );
+      const activity = await getResumedActivity(input.deviceId);
+      if (
+        input.platform === "facebook" &&
+        activity?.activityName.toLowerCase().includes("login")
+      ) {
+        throw new AppError(
+          "Facebook requiere iniciar sesión en este dispositivo antes de abrir el enlace.",
+          409,
+          "FACEBOOK_LOGIN_REQUIRED",
         );
-        return { operationId, focusedPackage, platform: input.platform };
-      });
+      }
+      return { operationId, focusedPackage, platform: input.platform };
     },
   );
+}
+
+export async function openSocialContentOnDevices(input: {
+  deviceIds: string[];
+  idempotencyKey: string;
+  platform: keyof typeof socialPackages;
+  url: string;
+}) {
+  const results = await Promise.allSettled(
+    input.deviceIds.map((deviceId) =>
+      openSocialContent({
+        deviceId,
+        idempotencyKey: `${input.idempotencyKey}:${deviceId}`,
+        platform: input.platform,
+        url: input.url,
+      }),
+    ),
+  );
+  return {
+    devices: results.map((result, index) => {
+      const deviceId = input.deviceIds[index];
+      if (result.status === "fulfilled") {
+        return {
+          deviceId,
+          status: "opened" as const,
+          focusedPackage: result.value.result.focusedPackage,
+        };
+      }
+      const error = result.reason;
+      return {
+        deviceId,
+        status: "failed" as const,
+        message: error instanceof Error ? error.message : String(error),
+        code: error instanceof AppError ? error.code : "INTERNAL_ERROR",
+      };
+    }),
+  };
 }
 
 export function runTikTokLiveTapTap(input: {
@@ -685,6 +734,99 @@ export async function likeAndCommentFacebookPost(input: {
       return { operationId, platform: "facebook" as const };
     },
   );
+}
+
+export async function shareFacebookPost(input: {
+  deviceId: string;
+  idempotencyKey: string;
+  url: string;
+  context: string;
+}) {
+  if (!isConfiguredFacebookDevice(input.deviceId)) {
+    throw new AppError(
+      "El dispositivo no está habilitado para compartir en Facebook.",
+      409,
+      "FACEBOOK_DEVICE_NOT_CONFIGURED",
+    );
+  }
+  const targetMarker = buildFacebookTargetMarker(input.context);
+  if (!targetMarker) {
+    throw new AppError(
+      "El contexto debe contener una frase identificable de la publicación.",
+      422,
+      "FACEBOOK_TARGET_MARKER_INVALID",
+    );
+  }
+  return executeOperation(
+    "facebook-post-share",
+    input.idempotencyKey,
+    input.deviceId,
+    { url: input.url, targetMarker },
+    async (operationId, profile) => {
+      assertDevicePrepared(input.deviceId);
+      await assertProfileIdentity(profile);
+      if (!(await isPackageInstalled(input.deviceId, FACEBOOK_PACKAGE))) {
+        throw new AppError(
+          "Facebook no está instalado en el dispositivo seleccionado.",
+          409,
+          "FACEBOOK_NOT_INSTALLED",
+        );
+      }
+      try {
+        await runWithCleanup(operationId, profile, (driver, signal) =>
+          runFacebookSharePost(
+            driver,
+            { url: input.url, targetMarker },
+            signal,
+            () => {
+              operationCheckpoints.set(operationId, "share");
+            },
+            (url) => openFacebookUrl(input.deviceId, url),
+          ),
+        );
+      } catch (error) {
+        throw outcomeUnknown(
+          error,
+          operationCheckpoints.get(operationId) ?? null,
+        );
+      } finally {
+        await closeFacebook(input.deviceId);
+      }
+      return { operationId, platform: "facebook" as const };
+    },
+  );
+}
+
+export async function shareFacebookPostOnDevices(input: {
+  deviceIds: string[];
+  idempotencyKey: string;
+  url: string;
+  context: string;
+}) {
+  const devices: Array<{
+    deviceId: string;
+    status: "shared" | "failed";
+    message?: string;
+    code?: string;
+  }> = [];
+  for (const deviceId of input.deviceIds) {
+    try {
+      await shareFacebookPost({
+        ...input,
+        deviceId,
+        idempotencyKey: `${input.idempotencyKey}:${deviceId}`,
+      });
+      devices.push({ deviceId, status: "shared" });
+    } catch (error) {
+      devices.push({
+        deviceId,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error),
+        code: error instanceof AppError ? error.code : "INTERNAL_ERROR",
+      });
+    }
+  }
+  return { devices };
 }
 
 export async function cancelOperation(operationId: string) {

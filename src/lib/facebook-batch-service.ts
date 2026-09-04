@@ -15,7 +15,6 @@ import {
 } from "@/lib/automation-service";
 import {
   advanceFacebookBatchRound,
-  cancelActiveFacebookBatches,
   claimFacebookBatchExecution,
   createFacebookBatch,
   getDraft,
@@ -26,6 +25,7 @@ import {
   listFacebookAssignments,
   listFacebookPosts,
   listFacebookRotationSlots,
+  pauseActiveFacebookBatchExecutions,
   releaseFacebookBatchExecution,
   replaceFacebookAssignments,
   setFacebookBatchNextExecutionAt,
@@ -265,7 +265,7 @@ function currentPost(postId: string) {
   }
   if (
     batch.plan_version === "rotation_v1" &&
-    batch.execution_status === "running"
+    ["running", "stopping"].includes(batch.execution_status)
   ) {
     throw new AppError(
       "La rotación está ejecutándose; espera a que termine o se detenga.",
@@ -348,7 +348,7 @@ export async function reopenFacebookBatchDevice(batchId: string, deviceId: strin
   if (!batch || batch.status !== "active" || batch.plan_version !== "rotation_v1") {
     throw new AppError("La rotación ya no está activa.", 409, "BATCH_NOT_ACTIVE");
   }
-  if (batch.execution_status === "running") {
+  if (["running", "stopping"].includes(batch.execution_status)) {
     throw new AppError(
       "Espera a que termine el paso de rotación antes de reabrir Facebook.",
       409,
@@ -409,10 +409,11 @@ export async function extractPostContext(input: { postId: string }) {
     "extracting",
   );
   try {
-    const context = await getAuthenticatedFacebookDescription(post.url);
+    const extracted = await getAuthenticatedFacebookDescription(post.url);
     updateFacebookPost(post.id, {
-      extracted_context: context,
-      context,
+      url: extracted.url,
+      extracted_context: extracted.description,
+      context: extracted.description,
       status: "context_ready",
       error: null,
     });
@@ -431,6 +432,7 @@ export async function generatePostDrafts(input: {
   context: string;
   deviceIds: string[];
   allocations: Array<{ intent: string; tone: string; count: number }>;
+  replaceExisting?: boolean;
   signal?: AbortSignal;
 }) {
   const post = currentPost(input.postId);
@@ -456,14 +458,22 @@ export async function generatePostDrafts(input: {
     }
   }
   const existing = listFacebookAssignments(post.id);
+  const replaceExisting = Boolean(input.replaceExisting);
   if (
-    ["approved", "running", "completed"].includes(post.status) ||
+    ["running", "completed", "outcome_unknown", "skipped"].includes(post.status) ||
     existing.some((assignment) =>
       ["running", "sent", "outcome_unknown"].includes(assignment.status),
     )
   ) {
     throw new AppError(
       "No se pueden reemplazar comentarios que ya se están publicando o fueron enviados.",
+      409,
+      "ASSIGNMENTS_NOT_REPLACEABLE",
+    );
+  }
+  if (replaceExisting && !existing.length) {
+    throw new AppError(
+      "No hay comentarios generados para reemplazar.",
       409,
       "ASSIGNMENTS_NOT_REPLACEABLE",
     );
@@ -483,7 +493,7 @@ export async function generatePostDrafts(input: {
   }
 
   let expanded: ReturnType<typeof expandFacebookAllocations> | null = null;
-  if (!existing.length) {
+  if (!existing.length || replaceExisting) {
     try {
       expanded = expandFacebookAllocations(plannedDeviceIds, input.allocations);
     } catch (error) {
@@ -497,7 +507,9 @@ export async function generatePostDrafts(input: {
 
   transitionFacebookPost(
     post.id,
-    ["queued", "context_ready", "drafts_ready", "partial_failed"],
+    replaceExisting
+      ? ["drafts_ready", "partial_failed", "approved"]
+      : ["queued", "context_ready", "drafts_ready", "partial_failed"],
     "generating",
   );
   const generationContext = existing.length
@@ -507,9 +519,9 @@ export async function generatePostDrafts(input: {
   let unexpectedError: unknown = null;
   try {
     if (!existing.length) updateFacebookPost(post.id, { context: input.context });
-    const assignments = existing.length
-      ? existing
-      : replaceFacebookAssignments(post.id, expanded!);
+    const assignments = !existing.length || replaceExisting
+      ? replaceFacebookAssignments(post.id, expanded!)
+      : existing;
     const deviceOrder = new Map(
       plannedDeviceIds.map((deviceId, index) => [deviceId, index]),
     );
@@ -636,7 +648,7 @@ export function abortAllFacebookWork() {
   return {
     stoppedGenerations,
     stoppedExtractions: abortFacebookExtraction() ? 1 : 0,
-    cancelledBatches: cancelActiveFacebookBatches(),
+    pausedBatches: pauseActiveFacebookBatchExecutions(),
   };
 }
 
@@ -795,6 +807,9 @@ function updateRotationPostStatus(post: FacebookPostRow) {
 }
 
 function assignmentOutcomeAfterSendError(draftId: string, error: unknown) {
+  if (error instanceof AppError && error.code === "AUTOMATION_OUTCOME_UNKNOWN") {
+    return { status: "outcome_unknown" as const, error: error.message };
+  }
   const draftStatus = getDraft(draftId)?.status;
   const status = draftStatus === "approved"
     ? "approved" as const

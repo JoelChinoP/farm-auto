@@ -1719,6 +1719,64 @@ select:focus {
   white-space: nowrap;
 }
 
+.open-content-devices,
+.open-content-result {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: var(--white);
+}
+
+.open-content-devices .subheading {
+  align-items: center;
+}
+
+.open-content-devices .text-button {
+  margin-left: auto;
+}
+
+.open-content-device-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.open-content-device-option {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.open-content-device-option span,
+.open-content-result small {
+  display: grid;
+  min-width: 0;
+}
+
+.open-content-device-option strong,
+.open-content-device-option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.open-content-result.succeeded {
+  border-color: #9bc8ab;
+}
+
+.open-content-result.failed {
+  border-color: #dd9e9e;
+}
+
 .facebook-plan-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2254,6 +2312,30 @@ button.facebook-queue-item:disabled {
 
 .facebook-reconciliation-bar {
   background: #e8f0ff;
+}
+
+.facebook-regeneration-box {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #d8b27a;
+  border-radius: 11px;
+  background: #fff8ed;
+}
+
+.facebook-regeneration-box > div:first-child {
+  display: grid;
+  gap: 3px;
+}
+
+.facebook-regeneration-box strong {
+  font-size: 11px;
+}
+
+.facebook-regeneration-box span {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.4;
 }
 
 .facebook-approval-bar > div,

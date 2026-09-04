@@ -12,7 +12,10 @@ import {
 import { appConfig } from "@/lib/config";
 import { AppError } from "@/lib/errors";
 import { buildFacebookPostDescription } from "@/lib/facebook-context";
-import { normalizeContentUrl } from "@/lib/schemas";
+import {
+  normalizeContentUrl,
+  preferFacebookVideoPostUrl,
+} from "@/lib/schemas";
 
 type FacebookBrowserState = {
   context: BrowserContext | null;
@@ -44,8 +47,16 @@ state.mode ??= state.context ? "login" : null;
 
 const messageSelector =
   '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-testid="post_message"]';
+const reelDetailsSelector = [
+  '[aria-label="Detalles del reel"]',
+  '[aria-label="Detalles del video"]',
+  '[aria-label="Reel details"]',
+  '[aria-label="Video details"]',
+].join(", ");
+const descriptionSelector = `${messageSelector}, ${reelDetailsSelector}`;
 const collapsedDescription =
   /(?:…|\.\.\.)\s*(?:(?:ver|see)\s+)?(?:más|mas|more)\s*$/iu;
+const expandedReelDescription = /\s*(?:ver menos|see less)\s*$/iu;
 
 async function isLoggedIn(context: BrowserContext) {
   const cookies = await context.cookies("https://www.facebook.com/");
@@ -268,7 +279,7 @@ async function findPostScope(page: Page): Promise<Locator> {
     const count = Math.min(await scopes.count(), 10);
     for (let index = 0; index < count; index++) {
       const scope = scopes.nth(index);
-      const messages = await scope.locator(messageSelector).allInnerTexts();
+       const messages = await scope.locator(descriptionSelector).allInnerTexts();
       if (!messages.length) continue;
       const signature = [...new Set(
         messages.map((message) => message.replace(/\s+/g, " ").trim()),
@@ -300,6 +311,14 @@ async function findPostScope(page: Page): Promise<Locator> {
   return (await main.count()) ? main : page.locator("body");
 }
 
+async function findReelScope(page: Page): Promise<Locator> {
+  for (const selector of ['[role="dialog"]:visible', '[role="main"]:visible']) {
+    const scope = page.locator(selector).first();
+    if (await scope.count()) return scope;
+  }
+  return page.locator("body");
+}
+
 async function expandPostText(page: Page, scope: Locator) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const button = scope
@@ -319,26 +338,61 @@ async function expandPostText(page: Page, scope: Locator) {
   }
 }
 
-async function readPostDescription(page: Page) {
-  const scope = await findPostScope(page);
-  let previous = "";
-  await scope
-    .locator(messageSelector)
-    .first()
-    .waitFor({ state: "attached", timeout: 5_000 })
-    .catch(() => undefined);
+async function readFacebookMetadata(page: Page) {
+  const metadata = page.locator(
+    'meta[property="og:description"], meta[name="description"]',
+  );
+  if (!(await metadata.count())) return "";
+  return metadata.first().getAttribute("content").catch(() => "");
+}
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    await expandPostText(page, scope);
-    const messages = await scope.locator(messageSelector).allInnerTexts();
-    const metadata = await page
-      .locator('meta[property="og:description"], meta[name="description"]')
-      .first()
-      .getAttribute("content")
-      .catch(() => "");
+async function readReelMessages(scope: Locator) {
+  const values = await scope.locator('span[dir="auto"]:visible').allInnerTexts();
+  const candidates = [...new Set(
+    values
+      .map((value) => value.replace(/\s+/g, " ").trim())
+      .filter((value) => value.length >= 5),
+  )];
+  const expanded = candidates.filter((value) => expandedReelDescription.test(value));
+  if (expanded.length === 1) {
+    return [expanded[0].replace(expandedReelDescription, "").trim()];
+  }
+  return candidates.length === 1 ? candidates : [];
+}
+
+async function readPostDescription(page: Page) {
+  const pathname = new URL(page.url()).pathname.toLowerCase();
+  const isReel = /\/(?:reel|reels|share\/r)\//.test(pathname);
+  const scope = isReel ? await findReelScope(page) : await findPostScope(page);
+  const metadata = await readFacebookMetadata(page);
+  const metadataDescription = buildFacebookPostDescription({
+    messages: [],
+    metadata: metadata ?? "",
+  });
+  const deadline = Date.now() + 5_000;
+  const metadataFallbackAt = Date.now() + 1_000;
+  let previous = "";
+
+  while (Date.now() < deadline) {
+    let messages: string[];
+    if (isReel) {
+      messages = await readReelMessages(scope);
+      if (messages.some((message) => collapsedDescription.test(message))) {
+        const button = scope
+          .getByRole("button", { name: /^(Ver más|See more)$/i })
+          .first();
+        if (await button.isVisible().catch(() => false)) {
+          await button.click({ timeout: 3_000, force: true });
+          await page.waitForTimeout(250);
+          messages = await readReelMessages(scope);
+        }
+      }
+    } else {
+      await expandPostText(page, scope);
+      messages = await scope.locator(descriptionSelector).allInnerTexts();
+    }
     const description = buildFacebookPostDescription({
       messages,
-      metadata: metadata ?? "",
     });
     if (
       description.length >= 5 &&
@@ -347,7 +401,10 @@ async function readPostDescription(page: Page) {
     ) {
       return description;
     }
-    previous = description;
+    if (description) previous = description;
+    if (!description && metadataDescription && (isReel || Date.now() >= metadataFallbackAt)) {
+      return metadataDescription;
+    }
     await page.waitForTimeout(250);
   }
 
@@ -358,7 +415,12 @@ async function readPostDescription(page: Page) {
       "FACEBOOK_BROWSER_CONTENT_TRUNCATED",
     );
   }
-  return previous;
+  if (previous || metadataDescription) return previous || metadataDescription;
+  throw new AppError(
+    "Facebook abrió la publicación, pero no encontró una descripción visible.",
+    422,
+    "FACEBOOK_BROWSER_CONTENT_EMPTY",
+  );
 }
 
 export async function getAuthenticatedFacebookDescription(url: string) {
@@ -393,12 +455,11 @@ export async function getAuthenticatedFacebookDescription(url: string) {
     controller.signal.throwIfAborted();
     await page.goto(normalizedUrl, {
       waitUntil: "commit",
-      timeout: 20_000,
+      timeout: 12_000,
     });
     await page
-      .waitForLoadState("domcontentloaded", { timeout: 10_000 })
+      .waitForLoadState("domcontentloaded", { timeout: 2_000 })
       .catch(() => undefined);
-    await page.waitForTimeout(350);
     controller.signal.throwIfAborted();
     try {
       normalizeContentUrl("facebook", page.url());
@@ -429,16 +490,20 @@ export async function getAuthenticatedFacebookDescription(url: string) {
     }
 
     await dismissOptionalDialogs(page);
+    const openGraphUrl = await page
+      .locator('meta[property="og:url"]')
+      .evaluateAll((elements) => elements[0]?.getAttribute("content") ?? null);
     const description = await readPostDescription(page);
     controller.signal.throwIfAborted();
-    if (description.length < 5) {
-      throw new AppError(
-        "Facebook abrió la publicación, pero no encontró una descripción visible.",
-        422,
-        "FACEBOOK_BROWSER_CONTENT_EMPTY",
-      );
-    }
-    return description;
+    return {
+      description,
+      // Facebook resolves shared video links to /reel/ URLs, which open its isolated
+      // player on Android. The Open Graph URL keeps the interactive video post surface.
+      url: preferFacebookVideoPostUrl(
+        page.url(),
+        openGraphUrl,
+      ),
+    };
   } catch (error) {
     if (controller.signal.aborted) {
       throw new AppError(

@@ -32,6 +32,8 @@ test("builds the sequential ADB commands for Facebook", () => {
         "android.intent.action.VIEW",
         "-d",
         "https://www.facebook.com/share/v/example/",
+        "-p",
+        "com.facebook.katana",
       ],
     ],
   );

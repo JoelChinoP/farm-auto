@@ -42,9 +42,18 @@ export const deviceActionSchema = z.object({
   idempotencyKey,
 });
 
-export const openContentSchema = deviceActionSchema.extend({
+export const openContentSchema = z.object({
+  deviceIds: z.array(deviceId).min(1).max(100),
+  idempotencyKey,
   platform: z.enum(["tiktok", "facebook"]),
   url: z.string().trim().url().max(2048),
+}).strict().superRefine((input, context) => {
+  if (new Set(input.deviceIds).size === input.deviceIds.length) return;
+  context.addIssue({
+    code: "custom",
+    path: ["deviceIds"],
+    message: "Cada dispositivo solo puede abrir el enlace una vez.",
+  });
 });
 
 export const tiktokLiveTapTapSchema = deviceActionSchema.extend({
@@ -128,6 +137,23 @@ export const facebookBatchSchema = z
     }
   });
 
+export const facebookShareSchema = z
+  .object({
+    deviceIds: z.array(deviceId).min(1).max(100),
+    idempotencyKey,
+    url: z.string().trim().url().max(2048),
+    context: z.string().trim().min(12).max(1200),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (new Set(input.deviceIds).size === input.deviceIds.length) return;
+    context.addIssue({
+      code: "custom",
+      path: ["deviceIds"],
+      message: "Cada dispositivo solo puede compartir una vez por solicitud.",
+    });
+  });
+
 export const facebookExtractSchema = z.object({}).strict();
 
 export const facebookBrowserActionSchema = z
@@ -149,6 +175,7 @@ export const facebookDraftsSchema = z
     context: z.string().trim().min(5).max(1200),
     deviceIds: z.array(deviceId).min(1).max(100),
     allocations: z.array(facebookAllocationSchema).min(1).max(20),
+    replaceExisting: z.boolean().optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -253,6 +280,24 @@ export function normalizeContentUrl(
   }
   url.hash = "";
   return url.toString();
+}
+
+export function preferFacebookVideoPostUrl(currentUrl: string, openGraphUrl: string | null) {
+  const current = normalizeContentUrl("facebook", currentUrl);
+  if (!openGraphUrl?.trim()) return current;
+  try {
+    const candidate = normalizeContentUrl(
+      "facebook",
+      new URL(openGraphUrl.trim(), current).toString(),
+    );
+    const currentPath = new URL(current).pathname.toLowerCase();
+    const candidatePath = new URL(candidate).pathname.toLowerCase();
+    return currentPath.startsWith("/reel/") && candidatePath.includes("/videos/")
+      ? candidate
+      : current;
+  } catch {
+    return current;
+  }
 }
 
 export function normalizeFacebookUrls(values: string[]) {

@@ -70,6 +70,59 @@ function isCommentControl(node: AndroidNode) {
   );
 }
 
+function isReelDetail(node: AndroidNode) {
+  return accessibleLabels(node).some((label) =>
+    /^(?:detalles del reel|detalles del video|detalles de la pestana (?:reels?|video)|reel details|video details)$/.test(
+      label,
+    ),
+  );
+}
+
+function isReelLike(node: AndroidNode) {
+  return (
+    isLike(node) ||
+      Boolean(
+        node.bounds &&
+        node.attributes.enabled !== "false" &&
+        (node.attributes["long-clickable"] === "true" ||
+          node.attributes.selected === "true" ||
+          node.attributes.checked === "true") &&
+        accessibleLabels(node).some((label) =>
+          /^(?:\d+(?: \d+)?(?: (?:mil|k|m))? )?(?:me gusta|like|reaccion(?:es)?|reactions?)(?: \d+(?: \d+)?(?: (?:mil|k|m))?)?$/.test(
+            label,
+          ),
+        ),
+    )
+  );
+}
+
+function isReelCommentControl(node: AndroidNode) {
+  return (
+    isCommentControl(node) ||
+    Boolean(
+      node.bounds &&
+        node.attributes.enabled !== "false" &&
+        accessibleLabels(node).some((label) =>
+          /^(?:\d+(?: \d+)?(?: (?:mil|k|m))? )?(?:comentarios?|comments?)(?: \d+(?: \d+)?(?: (?:mil|k|m))?)?$/.test(
+            label,
+          ),
+        ),
+    )
+  );
+}
+
+function isShareControl(node: AndroidNode) {
+  return Boolean(
+    node.bounds &&
+      node.attributes.enabled !== "false" &&
+      accessibleLabels(node).some((label) =>
+        /^(?:(?:boton|button) )?(?:compartir|share)(?: (?:boton|button))?$/.test(
+          label,
+        ),
+      ),
+  );
+}
+
 function eligibleContainer(node: AndroidNode) {
   if (!node.bounds || !node.parent || isScrollable(node)) return false;
   return true;
@@ -94,13 +147,106 @@ function preferredControls(
   return clickable.length ? clickable : controls;
 }
 
+function uniqueControls(
+  nodes: AndroidNode[],
+  predicate: (node: AndroidNode) => boolean,
+) {
+  return [...new Map(
+    preferredControls(nodes, predicate).map((node) => [node.attributes.bounds, node]),
+  ).values()];
+}
+
+function overlappingRailControls(left: AndroidNode, right: AndroidNode) {
+  if (!left.bounds || !right.bounds) return false;
+  const sharedLabel = accessibleLabels(left).some((label) =>
+    accessibleLabels(right).includes(label),
+  );
+  return (
+    sharedLabel &&
+    left.bounds.left === right.bounds.left &&
+    left.bounds.right === right.bounds.right &&
+    left.bounds.top < right.bounds.bottom &&
+    right.bounds.top < left.bounds.bottom
+  );
+}
+
+function uniqueReelRailControls(
+  nodes: AndroidNode[],
+  predicate: (node: AndroidNode) => boolean,
+) {
+  const controls = uniqueControls(nodes, predicate);
+  return controls.filter(
+    (control) =>
+      !controls.some(
+        (other) => {
+          if (other === control || !overlappingRailControls(other, control)) {
+            return false;
+          }
+          const otherIsSelected =
+            other.attributes.selected === "true" || other.attributes.checked === "true";
+          const controlIsSelected =
+            control.attributes.selected === "true" || control.attributes.checked === "true";
+          if (otherIsSelected !== controlIsSelected) return otherIsSelected;
+          const otherIsReactionAction = other.attributes["long-clickable"] === "true";
+          const controlIsReactionAction = control.attributes["long-clickable"] === "true";
+          return otherIsReactionAction !== controlIsReactionAction
+            ? otherIsReactionAction
+            : other.bounds!.top < control.bounds!.top;
+        },
+      ),
+  );
+}
+
+type FacebookPostCandidate = {
+  container: AndroidNode;
+  nodes: AndroidNode[];
+  like: AndroidNode;
+  comment: AndroidNode;
+};
+
+function isRightReelRailControl(node: AndroidNode, reelBounds: Bounds) {
+  if (!node.bounds) return false;
+  const center = (node.bounds.left + node.bounds.right) / 2;
+  return (
+    node.bounds.bottom > reelBounds.top &&
+    node.bounds.top < reelBounds.bottom &&
+    center >= reelBounds.left + (reelBounds.right - reelBounds.left) * 0.65
+  );
+}
+
+function reelSideControlCandidates(all: AndroidNode[], targetMarker?: string) {
+  if (!targetMarker) return [] as FacebookPostCandidate[];
+  return all.flatMap((container): FacebookPostCandidate[] => {
+    if (!eligibleContainer(container)) return [];
+    const nodes = subtreeNodes(container).filter(
+      (node) =>
+        node.attributes.package === FACEBOOK_PACKAGE &&
+        node.attributes.displayed !== "false",
+    );
+    if (
+      !orderedMarkerMatch(nodes, targetMarker) ||
+      !nodes.some(isReelDetail)
+    ) {
+      return [];
+    }
+    const sideControls = all.filter((node) =>
+      isRightReelRailControl(node, container.bounds!),
+    );
+    const likes = uniqueReelRailControls(sideControls, isReelLike);
+    const sideComments = uniqueReelRailControls(sideControls, isReelCommentControl);
+    return likes.length === 1 && sideComments.length === 1
+      ? [{ container, nodes, like: likes[0], comment: sideComments[0] }]
+      : [];
+  });
+}
+
 function facebookPostCandidates(xml: string, targetMarker?: string) {
   const all = flattenAndroidNodes(parseAndroidHierarchy(xml)).filter(
     (node) =>
       node.attributes.package === FACEBOOK_PACKAGE &&
       node.attributes.displayed !== "false",
   );
-  const candidates = all.flatMap((container) => {
+  let candidates: FacebookPostCandidate[] = all.flatMap((container) => {
     if (!eligibleContainer(container) || !container.parent) return [];
     const nodes = subtreeNodes(container).filter(
       (node) =>
@@ -119,6 +265,10 @@ function facebookPostCandidates(xml: string, targetMarker?: string) {
       ? [{ container, nodes, like: likes[0], comment: comments[0] }]
       : [];
   });
+  const reelCandidates = reelSideControlCandidates(all, targetMarker);
+  const reelContainers = new Set(reelCandidates.map((candidate) => candidate.container));
+  candidates = candidates.filter((candidate) => !reelContainers.has(candidate.container));
+  candidates.push(...reelCandidates);
   const smallest = candidates.filter(
     (candidate) =>
       !candidates.some(
@@ -210,6 +360,7 @@ export function locateFacebookTarget(xml: string, targetMarker: string) {
     containerBounds: target.container.bounds!,
     likeBounds: target.like.bounds!,
     commentBounds: target.comment.bounds!,
+    likeStateObservable: isLike(target.like),
     alreadyLiked:
       target.like.attributes.selected === "true" ||
       target.like.attributes.checked === "true" ||
@@ -217,6 +368,121 @@ export function locateFacebookTarget(xml: string, targetMarker: string) {
         nodeLabel(target.like),
       ),
   };
+}
+
+function locateFacebookTargetScrollArea(xml: string, targetMarker: string) {
+  const all = facebookVisibleNodes(xml);
+  const candidates = all.filter((container) => {
+    if (!eligibleContainer(container)) return false;
+    const nodes = subtreeNodes(container);
+    return (
+      orderedMarkerMatch(nodes, targetMarker) &&
+      nodes.some((node) =>
+        accessibleLabels(node).some((label) =>
+          /^(?:ocultar publicacion|hide post)$/.test(label),
+        ),
+      ) &&
+      !nodes.some(isReelDetail) &&
+      !nodes.some(isLike) &&
+      !nodes.some(isCommentControl)
+    );
+  });
+  const smallest = candidates.filter(
+    (container) =>
+      !candidates.some(
+        (other) => other !== container && subtreeNodes(container).includes(other),
+      ),
+  );
+  if (smallest.length !== 1) return null;
+  for (let ancestor = smallest[0].parent; ancestor; ancestor = ancestor.parent) {
+    if (isScrollable(ancestor) && ancestor.bounds) return ancestor.bounds;
+  }
+  return null;
+}
+
+export function locateFacebookShareTarget(xml: string, targetMarker: string) {
+  const candidates = [...facebookPostCandidates(xml, targetMarker).values()].flatMap(
+    (candidate) => {
+      const shares = preferredControls(candidate.nodes, isShareControl);
+      return shares.length === 1
+        ? [{ containerBounds: candidate.container.bounds!, shareBounds: shares[0].bounds! }]
+        : [];
+    },
+  );
+  if (candidates.length !== 1) {
+    throw new Error("No se identificó un único botón Compartir en la publicación objetivo.");
+  }
+  return candidates[0];
+}
+
+function isProfileShareDestination(node: AndroidNode) {
+  return Boolean(
+    node.bounds &&
+      node.attributes.enabled !== "false" &&
+      accessibleLabels(node).some((label) =>
+        /^(?:compartir en tu perfil|share to profile)$/.test(label),
+      ),
+  );
+}
+
+function isProfileShareConfirmation(node: AndroidNode) {
+  return accessibleLabels(node).some((label) =>
+    /^(?:tu perfil|your profile|compartiendo en tu perfil|sharing to your profile)$/.test(
+      label,
+    ),
+  );
+}
+
+function isFinalShareControl(node: AndroidNode) {
+  return Boolean(
+    node.bounds &&
+      node.attributes.enabled !== "false" &&
+      accessibleLabels(node).some((label) => /^(?:compartir ahora|share now)$/.test(label)),
+  );
+}
+
+function facebookVisibleNodes(xml: string) {
+  return flattenAndroidNodes(parseAndroidHierarchy(xml)).filter(
+    (node) =>
+      node.attributes.package === FACEBOOK_PACKAGE &&
+      node.attributes.displayed !== "false",
+  );
+}
+
+export function locateFacebookProfileShareDestination(xml: string) {
+  const destinations = preferredControls(facebookVisibleNodes(xml), isProfileShareDestination);
+  if (destinations.length !== 1) {
+    throw new Error("Facebook no expuso un único destino Compartir en tu perfil.");
+  }
+  return destinations[0].bounds!;
+}
+
+export function locateFacebookProfileShareConfirmation(xml: string) {
+  const nodes = facebookVisibleNodes(xml);
+  const candidates = nodes.flatMap((container) => {
+    if (!eligibleContainer(container)) return [];
+    const children = subtreeNodes(container).filter(
+      (node) =>
+        node.attributes.package === FACEBOOK_PACKAGE &&
+        node.attributes.displayed !== "false",
+    );
+    if (!children.some(isProfileShareConfirmation)) return [];
+    const controls = preferredControls(children, isFinalShareControl);
+    return controls.length === 1 ? [controls[0]] : [];
+  });
+  const unique = new Map(candidates.map((node) => [node.attributes.bounds, node]));
+  if (unique.size !== 1) {
+    throw new Error("Facebook no expuso una confirmación inequívoca para compartir en tu perfil.");
+  }
+  return [...unique.values()][0].bounds!;
+}
+
+export function verifyFacebookShareDelivery(xml: string) {
+  return facebookVisibleNodes(xml).some((node) =>
+    accessibleLabels(node).some((label) =>
+      /^(?:compartido|shared|publicacion compartida|post shared)(?:[.!].*)?$/.test(label),
+    ),
+  );
 }
 
 const ignoredDescription = /^(?:me gusta|ya no me gusta|like|liked|unlike|comentar|comentario|comment|compartir|share|enviar|send|seguir|follow|publico|public|patrocinado|sponsored|ver mas|see more)$/;
@@ -380,11 +646,53 @@ export async function readFacebookPostDescription(
   );
 }
 
+function reelCommentSheet(xml: string, requirePrompt = false) {
+  const roots = parseAndroidHierarchy(xml).filter(
+    (node) =>
+      node.attributes.package === FACEBOOK_PACKAGE &&
+      node.attributes.displayed !== "false" &&
+      node.bounds,
+  );
+  if (roots.length !== 1 || roots[0].bounds!.top <= 0) return null;
+  if (
+    requirePrompt &&
+    !subtreeNodes(roots[0]).some((node) =>
+      accessibleLabels(node).some((label) =>
+        /^(?:comentarios sugeridos|suggested comments|aun no hay comentarios|no comments yet)$/.test(
+          label,
+        ),
+      ),
+    )
+  ) {
+    return null;
+  }
+  return roots[0].bounds!;
+}
+
+function hiddenReelComposerBounds(xml: string) {
+  if (!reelCommentSheet(xml, true)) return null;
+  const prompts = facebookVisibleNodes(xml).filter(
+    (node) =>
+      node.bounds &&
+      accessibleLabels(node).some((label) =>
+        /^(?:comentarios sugeridos|suggested comments)$/.test(label),
+      ),
+  );
+  if (prompts.length !== 1) return null;
+  const prompt = prompts[0].bounds!;
+  const width = prompt.right - prompt.left;
+  const height = prompt.bottom - prompt.top;
+  const x = Math.round(prompt.left + width / 2);
+  const y = Math.round(prompt.bottom - height * 0.17);
+  return { left: x - 1, top: y - 1, right: x + 1, bottom: y + 1 };
+}
+
 function locateThread(
   xml: string,
   targetMarker: string,
   targetBounds: Bounds,
   commentText?: string,
+  allowReelSheet = false,
 ) {
   const expected = commentText ? normalizeAccessibleText(commentText) : null;
   const all = flattenAndroidNodes(parseAndroidHierarchy(xml)).filter(
@@ -414,9 +722,10 @@ function locateThread(
       node.attributes.clickable === "true" &&
       accessibleLabels(node).includes("cerrar"),
   );
+  const hasReelSheet = allowReelSheet && Boolean(reelCommentSheet(xml));
   if (
     smallestTargets.length > 1 ||
-    (smallestTargets.length === 0 && modalCloseControls.length !== 1)
+    (smallestTargets.length === 0 && modalCloseControls.length !== 1 && !hasReelSheet)
   ) {
     throw new Error("No se identificó un único hilo objetivo.");
   }
@@ -433,9 +742,10 @@ function locateThread(
       node.bounds &&
         /EditText|AutoCompleteTextView/.test(node.attributes.class ?? "") &&
         node.attributes.focusable !== "false" &&
-        accessibleLabels(node).some((label) =>
-          /(comment|coment|escribe|write)/.test(label),
-        ),
+        (hasReelSheet ||
+          accessibleLabels(node).some((label) =>
+            /(comment|coment|escribe|write)/.test(label),
+          )),
     );
   const internalComposers = targetNodes.filter(isComposer);
   const targetIds = new Set(targetNodes.map((node) => node.id));
@@ -497,12 +807,36 @@ export function verifyFacebookDelivery(
   targetMarker: string,
   targetBounds: Bounds,
   commentText: string,
+  allowReelSheet = false,
 ) {
-  const thread = locateThread(xml, targetMarker, targetBounds, commentText);
-  return (
-    thread.published.length === 1 &&
-    normalizeAccessibleText(thread.composer.attributes.text ?? "") === ""
-  );
+  try {
+    const thread = locateThread(
+      xml,
+      targetMarker,
+      targetBounds,
+      commentText,
+      allowReelSheet,
+    );
+    return (
+      thread.published.length === 1 &&
+      normalizeAccessibleText(thread.composer.attributes.text ?? "") === ""
+    );
+  } catch (error) {
+    if (!allowReelSheet || !reelCommentSheet(xml)) throw error;
+    const expected = normalizeAccessibleText(commentText);
+    const matches = facebookVisibleNodes(xml).filter(
+      (node) =>
+        !/EditText|AutoCompleteTextView/.test(node.attributes.class ?? "") &&
+        accessibleLabels(node).includes(expected),
+    );
+    const smallest = matches.filter(
+      (node) =>
+        !subtreeNodes(node).some(
+          (descendant) => descendant !== node && matches.includes(descendant),
+        ),
+    );
+    return smallest.length === 1;
+  }
 }
 
 export async function runFacebookPost(
@@ -512,20 +846,37 @@ export async function runFacebookPost(
   checkpoint: (effect: "like" | "comment") => void,
   openUrl: (url: string) => Promise<void>,
 ) {
+  await driver.setOrientation?.("PORTRAIT");
   let target: ReturnType<typeof locateFacebookTarget> | null = null;
   for (let navigationAttempt = 0; navigationAttempt < 3 && !target; navigationAttempt++) {
     signal.throwIfAborted();
     await openUrl(input.url);
     await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
+    let scrolledToActions = false;
     for (let attempt = 0; attempt < 4; attempt++) {
       signal.throwIfAborted();
+      const hierarchy = await driver.getPageSource();
       try {
         target = locateFacebookTarget(
-          await driver.getPageSource(),
+          hierarchy,
           input.targetMarker,
         );
         break;
       } catch {
+        const scrollArea = !scrolledToActions &&
+          locateFacebookTargetScrollArea(hierarchy, input.targetMarker);
+        if (scrollArea) {
+          await driver.execute("mobile: swipeGesture", {
+            left: scrollArea.left,
+            top: scrollArea.top,
+            width: scrollArea.right - scrollArea.left,
+            height: scrollArea.bottom - scrollArea.top,
+            direction: "up",
+            percent: 0.2,
+            speed: 600,
+          });
+          scrolledToActions = true;
+        }
         if (attempt === 3) break;
         // A vertical gesture can advance to a different Reel or post.
         await wait(750, signal);
@@ -549,12 +900,12 @@ export async function runFacebookPost(
         await driver.getPageSource(),
         input.targetMarker,
       );
+      target = updated;
       if (updated.alreadyLiked) {
-        target = updated;
         break;
       }
     }
-    if (!target.alreadyLiked) {
+    if (!target.alreadyLiked && target.likeStateObservable) {
       throw new AppError(
         "No se pudo verificar el like aplicado en Facebook.",
         502,
@@ -562,32 +913,58 @@ export async function runFacebookPost(
       );
     }
   }
+  const targetWidth = target.containerBounds.right - target.containerBounds.left;
+  const isReel =
+    target.commentBounds.left >= target.containerBounds.left + targetWidth * 0.65;
   await clickBounds(driver, target.commentBounds);
 
   let thread: ReturnType<typeof locateThread> | null = null;
+  let hiddenComposerFocused = false;
   for (let attempt = 0; attempt < 5; attempt++) {
     await wait(500, signal);
+    const hierarchy = await driver.getPageSource();
     try {
       thread = locateThread(
-        await driver.getPageSource(),
+        hierarchy,
         input.targetMarker,
         target.containerBounds,
+        undefined,
+        isReel,
       );
       break;
     } catch {
-      // The comment surface may still be opening.
+      const hiddenComposer = isReel && hiddenReelComposerBounds(hierarchy);
+      if (!hiddenComposer) continue;
+      await clickBounds(driver, hiddenComposer);
+      hiddenComposerFocused = true;
+      await wait(500, signal);
+      const focusedHierarchy = await driver.getPageSource();
+      try {
+        thread = locateThread(
+          focusedHierarchy,
+          input.targetMarker,
+          target.containerBounds,
+          undefined,
+          true,
+        );
+      } catch {
+        if (!reelCommentSheet(focusedHierarchy)) hiddenComposerFocused = false;
+      }
+      break;
     }
   }
-  if (!thread) {
+  if (!thread && !hiddenComposerFocused) {
     throw new AppError(
       "Facebook no expuso un único compositor asociado al objetivo.",
       409,
       "FACEBOOK_TARGET_NOT_VERIFIED",
     );
   }
-  const composer = await driver.$(`//*[@bounds='${thread.composer.attributes.bounds}']`);
-  await composer.clearValue();
-  await composer.click();
+  if (thread) {
+    const composer = await driver.$(`//*[@bounds='${thread.composer.attributes.bounds}']`);
+    await composer.clearValue();
+    await composer.click();
+  }
   await driver.execute("mobile: type", { text: input.commentText });
 
   let readyThread: ReturnType<typeof locateThread> | null = null;
@@ -600,6 +977,7 @@ export async function runFacebookPost(
         input.targetMarker,
         target.containerBounds,
         input.commentText,
+        isReel,
       );
       if (updated.published.length) {
         throw new AppError(
@@ -635,7 +1013,7 @@ export async function runFacebookPost(
   }
   checkpoint("comment");
   await clickBounds(driver, readyThread.sends[0].bounds!);
-  for (let attempt = 0; attempt < 5; attempt++) {
+  for (let attempt = 0; attempt < 20; attempt++) {
     await wait(1_000, signal);
     try {
       if (
@@ -644,6 +1022,7 @@ export async function runFacebookPost(
           input.targetMarker,
           target.containerBounds,
           input.commentText,
+          isReel,
         )
       ) {
         return;
@@ -656,5 +1035,91 @@ export async function runFacebookPost(
     "No se pudo verificar el comentario publicado en Facebook.",
     502,
     "COMMENT_DELIVERY_UNKNOWN",
+  );
+}
+
+export async function runFacebookSharePost(
+  driver: AndroidDriver,
+  input: { url: string; targetMarker: string },
+  signal: AbortSignal,
+  checkpoint: () => void,
+  openUrl: (url: string) => Promise<void>,
+) {
+  let target: ReturnType<typeof locateFacebookShareTarget> | null = null;
+  for (let navigationAttempt = 0; navigationAttempt < 3 && !target; navigationAttempt++) {
+    signal.throwIfAborted();
+    await openUrl(input.url);
+    await waitForForegroundPackage(driver, FACEBOOK_PACKAGE, 20_000, signal);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      signal.throwIfAborted();
+      try {
+        target = locateFacebookShareTarget(
+          await driver.getPageSource(),
+          input.targetMarker,
+        );
+        break;
+      } catch {
+        if (attempt === 3) break;
+        await wait(750, signal);
+      }
+    }
+  }
+  if (!target) {
+    throw new AppError(
+      "Facebook no expuso inequívocamente el botón Compartir de la publicación objetivo.",
+      409,
+      "FACEBOOK_TARGET_NOT_VERIFIED",
+    );
+  }
+
+  // Some Facebook versions can share directly from this first control, so retain
+  // an uncertain outcome if the sheet cannot be verified afterwards.
+  checkpoint();
+  await clickBounds(driver, target.shareBounds);
+
+  let destination: Bounds | null = null;
+  for (let attempt = 0; attempt < 5 && !destination; attempt++) {
+    await wait(500, signal);
+    try {
+      destination = locateFacebookProfileShareDestination(await driver.getPageSource());
+    } catch {
+      // The share sheet may still be rendering.
+    }
+  }
+  if (!destination) {
+    throw new AppError(
+      "Facebook no ofreció el destino Compartir en tu perfil para esta publicación.",
+      409,
+      "FACEBOOK_SHARE_PROFILE_UNAVAILABLE",
+    );
+  }
+  await clickBounds(driver, destination);
+
+  let confirmation: Bounds | null = null;
+  for (let attempt = 0; attempt < 5 && !confirmation; attempt++) {
+    await wait(500, signal);
+    try {
+      confirmation = locateFacebookProfileShareConfirmation(await driver.getPageSource());
+    } catch {
+      // Wait for the profile composer to show its final explicit action.
+    }
+  }
+  if (!confirmation) {
+    throw new AppError(
+      "Facebook no mostró una confirmación explícita para compartir en tu perfil.",
+      409,
+      "FACEBOOK_SHARE_CONFIRMATION_UNAVAILABLE",
+    );
+  }
+  await clickBounds(driver, confirmation);
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await wait(1_000, signal);
+    if (verifyFacebookShareDelivery(await driver.getPageSource())) return;
+  }
+  throw new AppError(
+    "No se pudo verificar que Facebook compartió la publicación en el perfil.",
+    502,
+    "SHARE_DELIVERY_UNKNOWN",
   );
 }

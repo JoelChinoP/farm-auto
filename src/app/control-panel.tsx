@@ -138,7 +138,7 @@ type FacebookBatch = {
   plan_version: "legacy" | "rotation_v1";
   current_round: number;
   total_rounds: number;
-  execution_status: "idle" | "running";
+  execution_status: "idle" | "running" | "stopping" | "paused";
   next_execution_at: string | null;
   execution_started: boolean;
   device_ids: string[];
@@ -173,6 +173,25 @@ type ApiPayload<T> = {
   message?: string;
 };
 
+type OpenContentResult = {
+  devices: Array<{
+    deviceId: string;
+    status: "opened" | "failed";
+    focusedPackage?: string;
+    message?: string;
+    code?: string;
+  }>;
+};
+
+type FacebookShareResult = {
+  devices: Array<{
+    deviceId: string;
+    status: "shared" | "failed";
+    message?: string;
+    code?: string;
+  }>;
+};
+
 type SetupResult = {
   status: "pending" | "running" | "ready" | "not_ready";
   problem: string | null;
@@ -182,6 +201,7 @@ type AutomationSlug =
   | "device-home"
   | "open-social-content"
   | "facebook-post-like-comment"
+  | "facebook-post-share"
   | "tiktok-live-tap-tap"
   | "tiktok-post-like-comment";
 
@@ -237,6 +257,14 @@ const automationDefinitions: AutomationDefinition[] = [
     accent: "facebook",
   },
   {
+    slug: "facebook-post-share",
+    code: "SH",
+    group: "Facebook",
+    title: "Compartir en perfil",
+    description: "Comparte una publicación verificada en los perfiles seleccionados.",
+    accent: "facebook",
+  },
+  {
     slug: "tiktok-live-tap-tap",
     code: "LV",
     group: "TikTok Live",
@@ -278,6 +306,7 @@ function friendlyAction(kind: string) {
     {
       "device-home": "Pantalla de inicio",
       "facebook-post-like-comment": "Like y comentario en Facebook",
+      "facebook-post-share": "Compartir en perfil de Facebook",
       "facebook-context-extract": "Extraer contexto de Facebook",
       "open-social-content": "Abrir contenido",
       "tiktok-live-tap-tap": "Tap tap en TikTok Live",
@@ -362,8 +391,12 @@ function WorkspaceShell({
             </span>
           )}
           <HelpTip label={`Detalles técnicos de ${definition.title}`}>
-            <li>Flujo TypeScript ejecutado mediante Appium.</li>
-            <li>El estado depende del dispositivo seleccionado.</li>
+            <li>
+              {definition.slug === "open-social-content"
+                ? "La apertura se envía mediante comandos ADB."
+                : "Flujo TypeScript ejecutado mediante Appium."}
+            </li>
+            <li>El estado depende de los dispositivos seleccionados.</li>
           </HelpTip>
         </div>
       </header>
@@ -520,24 +553,67 @@ function HomeWorkspace(props: WorkspaceProps) {
 function OpenContentWorkspace(props: WorkspaceProps) {
   const [platform, setPlatform] = useState<"tiktok" | "facebook">("tiktok");
   const [url, setUrl] = useState("");
+  const [deviceIds, setDeviceIds] = useState<string[]>([]);
+  const [lastResult, setLastResult] = useState<OpenContentResult | null>(null);
   const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
-  const installed = Boolean(props.device?.capabilities?.[platform]);
+  const preparedDeviceIds = new Set(
+    props.snapshot?.setup.devices
+      .filter(
+        (item) =>
+          item.status === "ready" &&
+          item.setup_revision === props.snapshot?.setup.revision,
+      )
+      .map((item) => item.device_id) ?? [],
+  );
+  const availableDevices = (props.snapshot?.devices ?? [])
+    .filter(
+      (device) =>
+        device.state === "device" &&
+        Boolean(device.profile) &&
+        Boolean(device.capabilities?.[platform]) &&
+        preparedDeviceIds.has(device.id),
+    )
+    .sort(
+      (left, right) =>
+        (left.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) -
+          (right.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) ||
+        left.id.localeCompare(right.id),
+    );
+  const availableDeviceIds = availableDevices.map((device) => device.id);
+  const selectedDeviceIds = deviceIds.filter((id) => availableDeviceIds.includes(id));
+  const allSelected =
+    availableDeviceIds.length > 0 && selectedDeviceIds.length === availableDeviceIds.length;
+  const lastFailures = lastResult?.devices.filter((device) => device.status === "failed") ?? [];
+
+  function toggleDevice(deviceId: string) {
+    setDeviceIds((current) =>
+      current.includes(deviceId)
+        ? current.filter((id) => id !== deviceId)
+        : [...current, deviceId],
+    );
+  }
+
+  function selectAllDevices() {
+    setDeviceIds(allSelected ? [] : availableDeviceIds);
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     await props.runAction(
       "open-content",
-      () =>
-        api("/api/automations/open-content", {
+      async () => {
+        const result = await api<OpenContentResult>("/api/automations/open-content", {
           method: "POST",
           body: JSON.stringify({
-            deviceId: props.selectedDevice,
+            deviceIds: selectedDeviceIds,
             idempotencyKey: crypto.randomUUID(),
             platform,
             url,
           }),
-        }),
-      `Contenido abierto en ${platform === "tiktok" ? "TikTok" : "Facebook"}.`,
+        });
+        setLastResult(result);
+      },
+      "La apertura por ADB terminó; revisa el resultado de cada dispositivo.",
     );
   }
 
@@ -547,9 +623,9 @@ function OpenContentWorkspace(props: WorkspaceProps) {
         <div className="workspace-explainer">
           <p className="eyebrow">Navegación aislada</p>
           <h3>Primero observa. Después decide.</h3>
-          <p>
-            Este módulo solo abre el enlace. Es ideal para revisar una publicación antes
-            de generar un comentario o configurar un Live.
+            <p>
+              Este módulo abre el enlace por ADB en uno o varios equipos. Es ideal para
+              revisar una publicación antes de generar un comentario o configurar un Live.
           </p>
           <div className="action-boundary">
             <strong>No interactúa</strong>
@@ -566,7 +642,7 @@ function OpenContentWorkspace(props: WorkspaceProps) {
             >
               <span>TK</span>
               <strong>TikTok</strong>
-              <small>{props.device?.capabilities?.tiktok ? "Instalado" : "No instalado"}</small>
+              <small>Apertura por ADB</small>
             </button>
             <button
               type="button"
@@ -576,7 +652,7 @@ function OpenContentWorkspace(props: WorkspaceProps) {
             >
               <span>FB</span>
               <strong>Facebook</strong>
-              <small>{props.device?.capabilities?.facebook ? "Instalado" : "No instalado"}</small>
+              <small>Apertura por ADB</small>
             </button>
           </div>
           <label className="field">
@@ -594,18 +670,249 @@ function OpenContentWorkspace(props: WorkspaceProps) {
               required
             />
           </label>
+          <section className="open-content-devices" aria-label="Dispositivos de apertura">
+            <div className="subheading">
+              <span>ADB</span>
+              <div>
+                <strong>Dispositivos destino</strong>
+                <small>Solo equipos conectados, preparados y con {platform} instalado.</small>
+              </div>
+              <button
+                type="button"
+                className="text-button"
+                onClick={selectAllDevices}
+                disabled={Boolean(props.busy) || !availableDeviceIds.length}
+              >
+                {allSelected ? "Quitar todos" : "Seleccionar todos"}
+              </button>
+            </div>
+            <div className="open-content-device-list">
+              {availableDevices.length ? (
+                availableDevices.map((device) => (
+                  <label key={device.id} className="open-content-device-option">
+                    <input
+                      type="checkbox"
+                      checked={selectedDeviceIds.includes(device.id)}
+                      onChange={() => toggleDevice(device.id)}
+                      disabled={Boolean(props.busy)}
+                    />
+                    <span>
+                      <strong>{device.profile?.alias || device.model}</strong>
+                      <small>{device.id}</small>
+                    </span>
+                  </label>
+                ))
+              ) : (
+                <p className="inline-error">No hay equipos preparados con {platform} instalado.</p>
+              )}
+            </div>
+          </section>
           <div className="requirement-row">
-            <Requirement ok={props.ready}>Preparación Appium</Requirement>
-            <Requirement ok={installed}>{platform} instalado</Requirement>
+            <Requirement ok={selectedDeviceIds.length > 0}>
+              {selectedDeviceIds.length} equipo(s) seleccionado(s)
+            </Requirement>
+            <Requirement ok={availableDeviceIds.length > 0}>Preparación y {platform}</Requirement>
           </div>
           <button
             className="button primary full"
-            disabled={Boolean(props.busy) || !props.ready || !installed}
+            disabled={Boolean(props.busy) || !selectedDeviceIds.length}
           >
             {props.busy === "open-content"
               ? "Abriendo..."
-              : `Abrir sin interactuar en ${platform === "tiktok" ? "TikTok" : "Facebook"}`}
+              : `Abrir por ADB en ${selectedDeviceIds.length || "los"} equipo(s)`}
           </button>
+          {lastResult && (
+            <div className={`open-content-result ${lastFailures.length ? "failed" : "succeeded"}`}>
+              <strong>
+                {lastResult.devices.length - lastFailures.length} de {lastResult.devices.length} equipos
+                abrieron {platform}.
+              </strong>
+              {lastFailures.map((device) => (
+                <small key={device.deviceId}>
+                  {device.deviceId}: {device.message}
+                </small>
+              ))}
+            </div>
+          )}
+        </form>
+      </div>
+    </WorkspaceShell>
+  );
+}
+
+function FacebookShareWorkspace(props: WorkspaceProps) {
+  const [url, setUrl] = useState("");
+  const [context, setContext] = useState("");
+  const [deviceIds, setDeviceIds] = useState<string[]>([]);
+  const [lastResult, setLastResult] = useState<FacebookShareResult | null>(null);
+  const latest = latestOperation(props.snapshot, props.definition.slug, props.selectedDevice);
+  const preparedDeviceIds = new Set(
+    props.snapshot?.setup.devices
+      .filter(
+        (item) =>
+          item.status === "ready" &&
+          item.setup_revision === props.snapshot?.setup.revision,
+      )
+      .map((item) => item.device_id) ?? [],
+  );
+  const availableDevices = (props.snapshot?.devices ?? [])
+    .filter(
+      (device) =>
+        device.state === "device" &&
+        isConfiguredFacebookDevice(device.id) &&
+        Boolean(device.profile) &&
+        Boolean(device.capabilities?.facebook) &&
+        preparedDeviceIds.has(device.id),
+    )
+    .sort(
+      (left, right) =>
+        (left.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) -
+          (right.profile?.physical_order ?? Number.MAX_SAFE_INTEGER) ||
+        left.id.localeCompare(right.id),
+    );
+  const availableDeviceIds = availableDevices.map((device) => device.id);
+  const selectedDeviceIds = deviceIds.filter((id) => availableDeviceIds.includes(id));
+  const allSelected =
+    availableDeviceIds.length > 0 && selectedDeviceIds.length === availableDeviceIds.length;
+  const failures = lastResult?.devices.filter((device) => device.status === "failed") ?? [];
+
+  function toggleDevice(deviceId: string) {
+    setDeviceIds((current) =>
+      current.includes(deviceId)
+        ? current.filter((id) => id !== deviceId)
+        : [...current, deviceId],
+    );
+  }
+
+  function selectAllDevices() {
+    setDeviceIds(allSelected ? [] : availableDeviceIds);
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    await props.runAction(
+      "facebook-share",
+      async (signal) => {
+        const result = await api<FacebookShareResult>("/api/automations/facebook-share", {
+          method: "POST",
+          signal,
+          body: JSON.stringify({
+            deviceIds: selectedDeviceIds,
+            idempotencyKey: crypto.randomUUID(),
+            url,
+            context,
+          }),
+        });
+        setLastResult(result);
+      },
+      "La verificación de compartidos terminó; revisa el resultado de cada perfil.",
+    );
+  }
+
+  return (
+    <WorkspaceShell {...props} latest={latest}>
+      <div className="workspace-body two-column-workspace">
+        <div className="workspace-explainer">
+          <p className="eyebrow">Acción pública verificada</p>
+          <h3>Comparte solo en el perfil correcto.</h3>
+          <p>
+            Facebook debe mostrar la publicación objetivo, el destino “Compartir en tu perfil”
+            y una confirmación final. Si cualquiera falta, el equipo no publica.
+          </p>
+          <div className="action-boundary">
+            <strong>Publica en perfiles seleccionados</strong>
+            <span>Los equipos se procesan de uno en uno y cada resultado queda registrado.</span>
+          </div>
+        </div>
+        <form onSubmit={submit} className="workspace-form">
+          <label className="field">
+            <span>Enlace de Facebook</span>
+            <input
+              type="url"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder="https://www.facebook.com/share/p/..."
+              maxLength={2048}
+              required
+            />
+          </label>
+          <label className="field">
+            <span>Texto visible para verificar la publicación</span>
+            <textarea
+              value={context}
+              onChange={(event) => setContext(event.target.value)}
+              placeholder="Pega una frase distintiva de la publicación o Reel."
+              minLength={12}
+              maxLength={1200}
+              rows={5}
+              required
+            />
+            <small className="field-counter">{context.length}/1200</small>
+          </label>
+          <section className="open-content-devices" aria-label="Perfiles que compartirán">
+            <div className="subheading">
+              <span>FB</span>
+              <div>
+                <strong>Perfiles destino</strong>
+                <small>Solo equipos Facebook configurados, conectados y preparados.</small>
+              </div>
+              <button
+                type="button"
+                className="text-button"
+                onClick={selectAllDevices}
+                disabled={Boolean(props.busy) || !availableDeviceIds.length}
+              >
+                {allSelected ? "Quitar todos" : "Seleccionar todos"}
+              </button>
+            </div>
+            <div className="open-content-device-list">
+              {availableDevices.length ? (
+                availableDevices.map((device) => (
+                  <label key={device.id} className="open-content-device-option">
+                    <input
+                      type="checkbox"
+                      checked={selectedDeviceIds.includes(device.id)}
+                      onChange={() => toggleDevice(device.id)}
+                      disabled={Boolean(props.busy)}
+                    />
+                    <span>
+                      <strong>{device.profile?.alias || device.model}</strong>
+                      <small>{device.id}</small>
+                    </span>
+                  </label>
+                ))
+              ) : (
+                <p className="inline-error">No hay perfiles Facebook listos para compartir.</p>
+              )}
+            </div>
+          </section>
+          <div className="requirement-row">
+            <Requirement ok={selectedDeviceIds.length > 0}>
+              {selectedDeviceIds.length} perfil(es) seleccionado(s)
+            </Requirement>
+            <Requirement ok={context.trim().length >= 12}>Marcador verificable</Requirement>
+          </div>
+          <button
+            className="button danger full"
+            disabled={Boolean(props.busy) || !selectedDeviceIds.length || context.trim().length < 12}
+          >
+            {props.busy === "facebook-share"
+              ? "Compartiendo..."
+              : `Compartir en ${selectedDeviceIds.length || "los"} perfil(es)`}
+          </button>
+          {lastResult && (
+            <div className={`open-content-result ${failures.length ? "failed" : "succeeded"}`}>
+              <strong>
+                {lastResult.devices.length - failures.length} de {lastResult.devices.length} perfiles
+                confirmaron el compartido.
+              </strong>
+              {failures.map((device) => (
+                <small key={device.deviceId}>
+                  {device.deviceId}: {device.message}
+                </small>
+              ))}
+            </div>
+          )}
         </form>
       </div>
     </WorkspaceShell>
@@ -949,6 +1256,7 @@ function FacebookCurrentPost({
   const [allocations, setAllocations] = useState(() =>
     allocationsFromAssignments(post.assignments, initialDeviceIds.length),
   );
+  const [regeneratingAll, setRegeneratingAll] = useState(false);
   const [verifiedOutcomes, setVerifiedOutcomes] = useState<
     Record<string, "" | "sent" | "not_sent">
   >({});
@@ -986,6 +1294,15 @@ function FacebookCurrentPost({
     "outcome_unknown",
   ].includes(post.status) && !hasLockedAssignments;
   const configurationEditable = editable && !generationStarted;
+  const canRegenerateAll =
+    generationStarted &&
+    !["extracting", "generating", "running", "completed", "outcome_unknown", "skipped"].includes(
+      post.status,
+    ) &&
+    !post.assignments.some((assignment) =>
+      ["running", "sent", "outcome_unknown"].includes(assignment.status),
+    );
+  const allocationsEditable = configurationEditable || (regeneratingAll && canRegenerateAll);
   const eligibleDeviceIds = new Set(eligibleDevices.map((item) => item.id));
   const invalidDeviceIds = deviceIds.filter((id) => !eligibleDeviceIds.has(id));
   const invalidAssignmentIds = post.assignments
@@ -1071,10 +1388,11 @@ function FacebookCurrentPost({
 
   async function generateDrafts(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const replaceExisting = regeneratingAll;
     await runAction(
       "facebook-generate-batch",
-      (signal) =>
-        api(`/api/facebook/posts/${post.id}/drafts`, {
+      async (signal) => {
+        await api(`/api/facebook/posts/${post.id}/drafts`, {
           method: "POST",
           signal,
           body: JSON.stringify({
@@ -1085,9 +1403,14 @@ function FacebookCurrentPost({
               tone,
               count,
             })),
+            replaceExisting,
           }),
-        }),
-      "Los comentarios se generaron en una sola llamada y quedaron listos para ejecutar.",
+        });
+        setRegeneratingAll(false);
+      },
+      replaceExisting
+        ? "Todos los comentarios se regeneraron con la nueva distribución."
+        : "Los comentarios se generaron en una sola llamada y quedaron listos para ejecutar.",
     );
   }
 
@@ -1329,7 +1652,7 @@ function FacebookCurrentPost({
                     }
                     minLength={3}
                     maxLength={300}
-                    disabled={!configurationEditable}
+                    disabled={!allocationsEditable}
                     required
                   />
                   <small>
@@ -1347,7 +1670,7 @@ function FacebookCurrentPost({
                         tone: event.target.value as FacebookAllocation["tone"],
                       })
                     }
-                    disabled={!configurationEditable}
+                    disabled={!allocationsEditable}
                   >
                     {tones.map(([value, label]) => (
                       <option value={value} key={value}>{label}</option>
@@ -1367,11 +1690,11 @@ function FacebookCurrentPost({
                         count: Number(event.target.value),
                       })
                     }
-                    disabled={!configurationEditable}
+                    disabled={!allocationsEditable}
                     required
                   />
                 </label>
-                {allocations.length > 1 && configurationEditable && (
+                {allocations.length > 1 && allocationsEditable && (
                   <button
                     type="button"
                     className="text-button danger-text"
@@ -1392,7 +1715,7 @@ function FacebookCurrentPost({
               <option value={value} key={value}>{description}</option>
             ))}
           </datalist>
-          {configurationEditable && (
+          {allocationsEditable && (
             <button
               type="button"
               className="button secondary"
@@ -1432,6 +1755,49 @@ function FacebookCurrentPost({
                   ? `Reintentar ${missingDraftCount} comentario(s) pendiente(s)`
                    : "Generar todos en una llamada"}
             </button>
+          )}
+          {canRegenerateAll && !regeneratingAll && (
+            <button
+              type="button"
+              className="button secondary full"
+              onClick={() => setRegeneratingAll(true)}
+              disabled={Boolean(busy)}
+            >
+              Reasignar intenciones y regenerar todos
+            </button>
+          )}
+          {canRegenerateAll && regeneratingAll && (
+            <div className="facebook-regeneration-box">
+              <div>
+                <strong>Reemplazar todos los comentarios</strong>
+                <span>
+                  Ajusta las intenciones, tonos o cantidades. Los borradores actuales no se
+                  enviarán y quedarán registrados como reemplazados.
+                </span>
+              </div>
+              <div className="review-actions">
+                <button
+                  className="button ink"
+                  disabled={
+                    Boolean(busy) ||
+                    !deepSeekConfigured ||
+                    allocatedCount !== deviceIds.length
+                  }
+                >
+                  {busy === "facebook-generate-batch"
+                    ? "Regenerando..."
+                    : "Regenerar todos"}
+                </button>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={() => setRegeneratingAll(false)}
+                  disabled={Boolean(busy)}
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
           )}
         </section>
       </form>
@@ -1761,7 +2127,12 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
         "facebook-execute-rotation",
         async (signal) => {
           let current = batch;
-          while (current.status === "active" && current.current_round < current.total_rounds) {
+          while (
+            current.status === "active" &&
+            current.execution_status !== "paused" &&
+            current.execution_status !== "stopping" &&
+            current.current_round < current.total_rounds
+          ) {
             signal.throwIfAborted();
             setScheduledStepAt(current.next_execution_at);
             const waitMilliseconds = current.next_execution_at
@@ -2004,7 +2375,10 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                           type="button"
                           className="text-button"
                           onClick={() => reopenDevice(item.device_id)}
-                          disabled={Boolean(props.busy) || batch.execution_status === "running"}
+                          disabled={
+                            Boolean(props.busy) ||
+                            ["running", "stopping"].includes(batch.execution_status)
+                          }
                         >
                           {reopening ? "Reabriendo..." : "Reabrir"}
                         </button>
@@ -2020,10 +2394,16 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                   <strong>
                     {batch.execution_status === "running"
                       ? `Ejecutando ronda ${Math.min(batch.current_round + 1, batch.total_rounds)} de ${batch.total_rounds}`
-                      : `Rotación ${batch.current_round} de ${batch.total_rounds} rondas completadas`}
+                      : batch.execution_status === "stopping"
+                        ? "Deteniendo la rotación"
+                        : batch.execution_status === "paused"
+                          ? "Rotación pausada"
+                          : `Rotación ${batch.current_round} de ${batch.total_rounds} rondas completadas`}
                   </strong>
                   <span>
-                    Cada teléfono espera un tiempo propio entre cero y el máximo antes de comentar.
+                    {batch.execution_status === "paused"
+                      ? "Al reanudar se asignará un nuevo tiempo a cada dispositivo pendiente."
+                      : "Cada teléfono espera un tiempo propio entre cero y el máximo antes de comentar."}
                     {scheduledSeconds !== null && ` Próxima acción en ${scheduledSeconds} s.`}
                   </span>
                 </div>
@@ -2031,7 +2411,7 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                   <div className="facebook-timing-grid facebook-rotation-timing-grid">
                     <label className="field">
                       <span>Máximo de espera</span>
-                      <input type="number" min={0} max={1440} value={maxDelayMinutes} onChange={(event) => setMaxDelayMinutes(event.target.value)} disabled={Boolean(props.busy) || batch.execution_status === "running"} />
+                      <input type="number" min={0} max={1440} value={maxDelayMinutes} onChange={(event) => setMaxDelayMinutes(event.target.value)} disabled={Boolean(props.busy) || ["running", "stopping"].includes(batch.execution_status)} />
                       <small>minutos por dispositivo</small>
                     </label>
                   </div>
@@ -2041,7 +2421,7 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                     onClick={executeRotation}
                     disabled={
                       Boolean(props.busy) ||
-                      batch.execution_status === "running" ||
+                      ["running", "stopping"].includes(batch.execution_status) ||
                       !rotationPrepared ||
                       !rotationHasPending ||
                       !validRotationTiming
@@ -2049,8 +2429,10 @@ function FacebookBatchWorkspace(props: WorkspaceProps) {
                   >
                     {props.busy === "facebook-execute-rotation"
                       ? "Ejecutando..."
-                      : batch.current_round
-                        ? "Continuar rotación"
+                      : batch.execution_status === "paused"
+                        ? "Reanudar con nuevos horarios"
+                        : batch.current_round
+                          ? "Continuar rotación"
                         : "Iniciar rotación"}
                   </button>
                   {!rotationPrepared && (
@@ -2406,7 +2788,7 @@ export function ControlPanel() {
         cancelledOperations: number;
         stoppedGenerations: number;
         stoppedExtractions: number;
-        cancelledBatches: number;
+        pausedBatches: number;
         failures: string[];
       }>("/api/processes/abort-all", { method: "POST" });
       await loadSnapshot();
@@ -2419,9 +2801,9 @@ export function ControlPanel() {
         result.cancelledOperations ||
         result.stoppedGenerations ||
         result.stoppedExtractions ||
-        result.cancelledBatches
+        result.pausedBatches
       ) {
-        setNotice({ type: "success", text: "Se abortaron todos los procesos activos." });
+        setNotice({ type: "success", text: "Se detuvieron los procesos activos y las rotaciones pueden reanudarse." });
       } else {
         setNotice({ type: "success", text: "No había procesos activos." });
       }
@@ -2711,12 +3093,18 @@ export function ControlPanel() {
             <span className="section-number">02</span>
             <div>
               <p className="eyebrow">
-                {activeAutomation === "facebook-post-like-comment"
+                {[
+                  "facebook-post-like-comment",
+                  "facebook-post-share",
+                ].includes(activeAutomation)
                   ? "Campaña multidispositivo"
                   : "Operar un dispositivo"}
               </p>
               <h2 id="operations-title">
-                {activeAutomation === "facebook-post-like-comment"
+                {[
+                  "facebook-post-like-comment",
+                  "facebook-post-share",
+                ].includes(activeAutomation)
                   ? "Campaña Facebook"
                   : "Elige una acción"}
               </h2>
@@ -2784,6 +3172,9 @@ export function ControlPanel() {
               }
               if (definition.slug === "facebook-post-like-comment") {
                 return <FacebookBatchWorkspace {...commonProps} key={definition.slug} />;
+              }
+              if (definition.slug === "facebook-post-share") {
+                return <FacebookShareWorkspace {...commonProps} key={definition.slug} />;
               }
               if (definition.slug === "tiktok-live-tap-tap") {
                 return <TikTokLiveWorkspace {...commonProps} key={definition.slug} />;

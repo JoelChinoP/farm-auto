@@ -32,6 +32,8 @@ export function facebookLaunchAdbCommands(deviceId: string, url: string) {
       "android.intent.action.VIEW",
       "-d",
       normalizeFacebookDeviceUrl(url),
+      "-p",
+      FACEBOOK_PACKAGE,
     ],
   ];
 }

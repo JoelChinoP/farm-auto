@@ -9,6 +9,7 @@ import {
   facebookCloseAdbCommand,
   facebookLaunchAdbCommands,
 } from "@/lib/facebook-adb";
+import { tiktokLaunchAdbCommands } from "@/lib/tiktok-adb";
 
 const execFileAsync = promisify(execFile);
 export type AdbDevice = {
@@ -16,6 +17,11 @@ export type AdbDevice = {
   state: string;
   model: string;
   product?: string;
+};
+
+export type AdbActivity = {
+  packageName: string;
+  activityName: string;
 };
 
 function adbPath() {
@@ -98,6 +104,13 @@ export async function openFacebookUrl(deviceId: string, url: string) {
   }
 }
 
+export async function openTikTokUrl(deviceId: string, url: string) {
+  await assertConnected(deviceId);
+  for (const command of tiktokLaunchAdbCommands(deviceId, url)) {
+    await adb(command);
+  }
+}
+
 export async function closeFacebook(deviceId: string) {
   await assertConnected(deviceId);
   await adb(facebookCloseAdbCommand(deviceId));
@@ -106,6 +119,45 @@ export async function closeFacebook(deviceId: string) {
 export async function getFocusedPackage(deviceId: string) {
   await assertConnected(deviceId);
   return focusedPackageUnchecked(deviceId);
+}
+
+export async function getResumedActivity(deviceId: string) {
+  await assertConnected(deviceId);
+  return resumedActivityUnchecked(deviceId);
+}
+
+export async function waitForAdbForegroundPackage(
+  deviceId: string,
+  packageName: string,
+  timeoutMs: number,
+  signal?: AbortSignal,
+) {
+  await assertConnected(deviceId);
+  const deadline = Date.now() + timeoutMs;
+  let actual: string | null = null;
+  while (Date.now() < deadline) {
+    signal?.throwIfAborted();
+    actual = (await resumedActivityUnchecked(deviceId))?.packageName ??
+      (await focusedPackageUnchecked(deviceId));
+    if (actual === packageName) return actual;
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        signal?.removeEventListener("abort", abort);
+        resolve();
+      }, 250);
+      const abort = () => {
+        clearTimeout(timeout);
+        reject(signal?.reason);
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+    });
+  }
+  throw new AppError(
+    "Android no dejó la aplicación esperada en primer plano.",
+    502,
+    "UNEXPECTED_FOREGROUND_APP",
+    { expected: packageName, actual },
+  );
 }
 
 export async function getHomePackage(deviceId: string) {
@@ -143,6 +195,19 @@ async function focusedPackageUnchecked(deviceId: string) {
     .split(/\r?\n/)
     .find((line) => line.includes("mCurrentFocus=") && line.includes("/"));
   return focusLine?.match(/\s([a-zA-Z0-9._]+)\//)?.[1] ?? null;
+}
+
+async function resumedActivityUnchecked(deviceId: string) {
+  const output = await adb(["-s", deviceId, "shell", "dumpsys", "activity", "activities"]);
+  const line = output
+    .split(/\r?\n/)
+    .findLast((item) => /(?:ResumedActivity|mResumedActivity):/.test(item));
+  const match = line?.match(
+    /(?:ResumedActivity|mResumedActivity):.*?\s([a-zA-Z0-9._]+)\/([a-zA-Z0-9._$]+)/,
+  );
+  return match
+    ? { packageName: match[1], activityName: match[2] }
+    : null;
 }
 
 const capabilityCache = new Map<

@@ -32,7 +32,7 @@ export async function abortAllProcesses() {
     cancelledOperations,
     stoppedGenerations: stoppedGenerations + facebook.stoppedGenerations,
     stoppedExtractions: facebook.stoppedExtractions,
-    cancelledBatches: facebook.cancelledBatches,
+    pausedBatches: facebook.pausedBatches,
     failures,
   };
 }
