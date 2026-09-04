@@ -1,49 +1,27 @@
+import type {
+  AssignmentStatus,
+  CampaignStatus,
+  CommentStatus,
+  ContextStatus,
+  Platform,
+  PostStatus,
+  PreparationStatus,
+} from "@/lib/domain";
+
+export type {
+  AssignmentStatus,
+  CampaignStatus,
+  CommentStatus,
+  ContextStatus,
+  Platform,
+  PostStatus,
+  PreparationStatus,
+} from "@/lib/domain";
+
 export type ViewId = "devices" | "facebook" | "tiktok" | "history";
-export type Platform = "facebook" | "tiktok";
 export type HealthStatus = "checking" | "ready" | "degraded" | "unavailable";
 export type ConnectionStatus = "connected" | "offline" | "unauthorized";
-export type PreparationStatus = "not_ready" | "preparing" | "ready" | "failed";
 export type CapabilityStatus = "not_installed" | "session_required" | "ready";
-export type CampaignStatus =
-  | "draft"
-  | "preparing"
-  | "ready"
-  | "scheduled"
-  | "running"
-  | "completed"
-  | "completed_with_issues"
-  | "cancellation_requested"
-  | "cancelled"
-  | "cancelled_with_cleanup_errors";
-export type PostStatus =
-  | "queued"
-  | "extracting"
-  | "context_ready"
-  | "generating"
-  | "ready"
-  | "scheduled"
-  | "running"
-  | "completed"
-  | "partial_failed"
-  | "outcome_unknown"
-  | "cancelled";
-export type CommentStatus =
-  | "pending"
-  | "generating"
-  | "ready"
-  | "edited"
-  | "regenerating"
-  | "failed"
-  | "outcome_unknown";
-export type ContextStatus =
-  | "queued"
-  | "extracting"
-  | "ready"
-  | "cached"
-  | "edited"
-  | "failed"
-  | "session_required"
-  | "intervention_required";
 export type ScheduleStatus = "none" | "valid" | "stale" | "frozen";
 export type Tone = "Cercano" | "Entusiasta" | "Informativo" | "Breve";
 
@@ -119,7 +97,7 @@ export interface CampaignAssignment {
   id: string;
   postId: string;
   deviceId: string;
-  status: PostStatus;
+  status: AssignmentStatus;
   scheduledAt: string | null;
   actualAt: string | null;
 }
@@ -151,7 +129,7 @@ export interface HistoryAssignment {
   deviceSerial: string;
   plannedAt: string;
   actualAt: string | null;
-  status: PostStatus;
+  status: AssignmentStatus;
   comment: string | null;
   context: string;
   likeResult: "ok" | "failed" | "not_requested" | "outcome_unknown";

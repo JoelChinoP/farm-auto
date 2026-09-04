@@ -1,4 +1,5 @@
 import type {
+  AssignmentStatus,
   CampaignAssignment,
   CampaignDraft,
   CampaignPost,
@@ -23,7 +24,7 @@ import type {
 export const toneOptions: Tone[] = ["Cercano", "Entusiasta", "Informativo", "Breve"];
 
 export const statusLabels: Record<
-  HealthStatus | ConnectionStatus | PreparationStatus | CapabilityStatus | CampaignStatus | PostStatus | CommentStatus | ContextStatus,
+  HealthStatus | ConnectionStatus | PreparationStatus | CapabilityStatus | CampaignStatus | PostStatus | AssignmentStatus | CommentStatus | ContextStatus,
   string
 > = {
   checking: "Comprobando",
@@ -56,6 +57,9 @@ export const statusLabels: Record<
   regenerating: "Regenerando",
   cached: "Obtenido de caché",
   intervention_required: "Requiere intervención",
+  approved: "Aprobada",
+  sent: "Enviada",
+  recovery_required: "Requiere recuperación",
   ready: "Listo",
 };
 
@@ -192,7 +196,7 @@ export function buildAssignments(draft: CampaignDraft) {
       id: `${draft.platform}-assignment-${post.position}-${deviceId}`,
       postId: post.id,
       deviceId,
-      status: draft.actions.comment ? "queued" : "ready",
+      status: draft.actions.comment ? "pending" : "approved",
       scheduledAt: null,
       actualAt: null,
     })),
@@ -330,7 +334,7 @@ function historyAssignment(
   campaign: string,
   deviceId: string,
   postUrl: string,
-  status: PostStatus,
+  status: AssignmentStatus,
   overrides: Partial<HistoryAssignment> = {},
 ): HistoryAssignment {
   const registered = demoDevices.find((item) => item.id === deviceId) ?? demoDevices[0];
@@ -341,7 +345,7 @@ function historyAssignment(
     deviceAlias: registered.alias,
     deviceSerial: registered.serial,
     plannedAt: "2026-09-03T12:00:00.000Z",
-    actualAt: status === "queued" ? null : "2026-09-03T12:01:12.000Z",
+    actualAt: status === "pending" ? null : "2026-09-03T12:01:12.000Z",
     status,
     comment: "Una respuesta breve generada para esta publicación.",
     context: "Contexto extraído y conservado para auditoría.",
@@ -369,7 +373,7 @@ function campaign(
     postUrls: [...new Set(assignments.map((item) => item.postUrl))],
     actions: { like: true, comment: true },
     status,
-    completedAssignments: assignments.filter((item) => ["completed", "partial_failed", "outcome_unknown", "cancelled"].includes(item.status)).length,
+    completedAssignments: assignments.filter((item) => ["sent", "failed", "outcome_unknown", "cancelled"].includes(item.status)).length,
     totalAssignments: assignments.length,
     assignments,
     cancellationReason,
@@ -381,17 +385,17 @@ const demoTikTok = "https://www.tiktok.com/@demo/video/7410000000000000000";
 
 export const demoHistory: HistoryCampaign[] = [
   campaign("CMP-260903-A1F4", "facebook", "running", [
-    historyAssignment("A1F4", "device-01", demoPost, "completed"),
+    historyAssignment("A1F4", "device-01", demoPost, "sent"),
     historyAssignment("A1F4", "device-02", demoPost, "running", { actualAt: "2026-09-03T15:32:00.000Z" }),
-    historyAssignment("A1F4", "device-01", "https://fb.watch/demo-activo", "queued", { actualAt: null, likeResult: "not_requested", commentResult: "not_requested" }),
+    historyAssignment("A1F4", "device-01", "https://fb.watch/demo-activo", "pending", { actualAt: null, likeResult: "not_requested", commentResult: "not_requested" }),
   ], "2026-09-03T15:30:00.000Z"),
   campaign("CMP-260903-7C21", "facebook", "completed", [
-    historyAssignment("7C21", "device-01", demoPost, "completed"),
-    historyAssignment("7C21", "device-02", demoPost, "completed"),
+    historyAssignment("7C21", "device-01", demoPost, "sent"),
+    historyAssignment("7C21", "device-02", demoPost, "sent"),
   ], "2026-09-03T12:00:00.000Z"),
   campaign("CMP-260902-9E10", "tiktok", "completed_with_issues", [
-    historyAssignment("9E10", "device-03", demoTikTok, "completed"),
-    historyAssignment("9E10", "device-01", demoTikTok, "partial_failed", { commentResult: "failed", error: "Comentario rechazado en la simulación." }),
+    historyAssignment("9E10", "device-03", demoTikTok, "sent"),
+    historyAssignment("9E10", "device-01", demoTikTok, "failed", { commentResult: "failed", error: "Comentario rechazado en la simulación." }),
   ], "2026-09-02T18:45:00.000Z"),
   campaign("CMP-260902-110B", "facebook", "completed_with_issues", [
     historyAssignment("110B", "device-01", demoPost, "outcome_unknown", {

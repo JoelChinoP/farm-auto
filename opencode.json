@@ -9,9 +9,6 @@
     "context7": {
       "type": "remote",
       "url": "https://mcp.context7.com/mcp",
-      "headers": {
-        "Authorization": "Bearer {env:CONTEXT7_API_KEY}"
-      },
       "enabled": true,
       "timeout": 15000
     },
@@ -19,8 +16,8 @@
       "type": "local",
       "command": ["npx", "-y", "android-mcp-server@1.3.0"],
       "environment": {
-        "ANDROID_HOME": "{env:ANDROID_HOME}",
-        "JAVA_HOME": "{env:JAVA_HOME}"
+        "ANDROID_HOME": "C:\\Users\\Usuario\\AppData\\Local\\Android\\Sdk",
+        "JAVA_HOME": "C:\\Users\\Usuario\\AppData\\Local\\Programs\\Java\\jdk-17.0.20.1+1"
       },
       "enabled": true,
       "timeout": 120000
@@ -29,8 +26,8 @@
       "type": "local",
       "command": ["npx", "-y", "appium-mcp@1.92.13"],
       "environment": {
-        "ANDROID_HOME": "{env:ANDROID_HOME}",
-        "JAVA_HOME": "{env:JAVA_HOME}",
+        "ANDROID_HOME": "C:\\Users\\Usuario\\AppData\\Local\\Android\\Sdk",
+        "JAVA_HOME": "C:\\Users\\Usuario\\AppData\\Local\\Programs\\Java\\jdk-17.0.20.1+1",
         "NO_UI": "true",
         "REMOTE_SERVER_URL_ALLOW_REGEX": "^https?://(127\\.0\\.0\\.1|localhost|\\[::1\\])(?::[0-9]+)?(?:/.*)?$"
       },

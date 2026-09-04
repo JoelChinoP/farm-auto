@@ -495,7 +495,7 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
           deviceSerial: device?.serial ?? "—",
           plannedAt: assignment.scheduledAt ?? state.demoOperations.now,
           actualAt: null,
-          status: "queued" as const,
+          status: "pending" as const,
           comment: comment?.text ?? null,
           context: post?.context ?? "No requerido",
           likeResult: "not_requested" as const,
@@ -540,7 +540,7 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
         ...state,
         [key]: {
           ...draft,
-          assignments: draft.assignments.map((item, index) => index < limit ? { ...item, status: "completed" } : item),
+          assignments: draft.assignments.map((item, index) => index < limit ? { ...item, status: "sent" } : item),
           posts: draft.posts.map((post, index) => index === 0 ? { ...post, status: "completed" } : post),
         },
         history: state.history.map((campaign) => campaign.id === active.id
@@ -548,7 +548,7 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
               ...campaign,
               completedAssignments: limit,
               assignments: campaign.assignments.map((item, index) => index < limit
-                ? { ...item, status: "completed", actualAt: state.demoOperations.now, likeResult: campaign.actions.like ? "ok" : "not_requested", commentResult: campaign.actions.comment ? "ok" : "not_requested", attempts: 1, cleanup: "home_confirmed" }
+                ? { ...item, status: "sent", actualAt: state.demoOperations.now, likeResult: campaign.actions.like ? "ok" : "not_requested", commentResult: campaign.actions.comment ? "ok" : "not_requested", attempts: 1, cleanup: "home_confirmed" }
                 : { ...item, status: "running", actualAt: state.demoOperations.now, attempts: 1 })
             }
           : campaign),
