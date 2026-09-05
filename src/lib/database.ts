@@ -19,7 +19,7 @@ import {
   SESSION_STATUSES,
 } from "./domain.ts";
 
-export const DATABASE_VERSION = 12;
+export const DATABASE_VERSION = 13;
 
 function sqlValues(values: readonly string[]) {
   return values.map((value) => `'${value}'`).join(", ");
@@ -494,6 +494,19 @@ function migrateToVersion6(database: Database.Database) {
   `);
 }
 
+function migrateToVersion13(database: Database.Database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS device_recovery_requests (
+      singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+      status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+      requested_at INTEGER NOT NULL,
+      started_at INTEGER,
+      completed_at INTEGER,
+      error TEXT
+    );
+  `);
+}
+
 function hasTable(database: Database.Database, name: string) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
@@ -728,6 +741,7 @@ export function openDatabase(filename: string) {
         if (currentVersion < 5) migrateToVersion5(database);
         if (currentVersion < 6) migrateToVersion6(database);
       }
+      if (currentVersion < 13) migrateToVersion13(database);
       if (currentVersion < DATABASE_VERSION) database.pragma(`user_version = ${DATABASE_VERSION}`);
     }).immediate();
 

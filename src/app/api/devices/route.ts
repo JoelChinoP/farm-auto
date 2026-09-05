@@ -1,6 +1,6 @@
 import { getDatabase } from "@/lib/database";
 import { AdbClient } from "@/lib/adb";
-import { listDeviceSnapshots, registerConnectedDevices, upsertDeviceProfile } from "@/lib/device-runtime";
+import { clearDeviceList, listDeviceSnapshots, registerConnectedDevices, upsertDeviceProfile } from "@/lib/device-runtime";
 import { FacebookError, recordFacebookDeviceIdentity } from "@/lib/facebook";
 import { apiError, apiSuccess } from "@/lib/http";
 import { validateMutationRequest } from "@/lib/request-security";
@@ -60,5 +60,18 @@ export async function PUT(request: Request) {
   } catch (error) {
     if (error instanceof FacebookError) return apiError(error.code, error.message, error.status, error.details);
     return apiError("DEVICE_PROFILE_INVALID", error instanceof Error ? error.message : String(error), 400);
+  }
+}
+
+export async function DELETE(request: Request) {
+  const securityError = validateMutationRequest(request);
+  if (securityError) return apiError(securityError.code, securityError.message, 403);
+
+  try {
+    const database = getDatabase();
+    const cleared = clearDeviceList(database);
+    return apiSuccess({ cleared, devices: listDeviceSnapshots(database) });
+  } catch (error) {
+    return apiError("DEVICE_CLEAR_FAILED", error instanceof Error ? error.message : String(error), 400);
   }
 }

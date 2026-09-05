@@ -1,4 +1,5 @@
 import { getDatabase } from "@/lib/database";
+import { getDeviceProfile, queueDevicePreparation } from "@/lib/device-runtime";
 import { apiError, apiSuccess } from "@/lib/http";
 import { createOperation, IdempotencyConflictError } from "@/lib/operations";
 import { enqueueJob } from "@/lib/queue";
@@ -19,6 +20,7 @@ export async function POST(request: Request) {
 
     const database = getDatabase();
     const { created, job } = database.transaction(() => {
+      if (!getDeviceProfile(database, deviceId)) throw new TypeError("El dispositivo no esta registrado.");
       const created = createOperation(database, {
         kind: "device.prepare",
         idempotencyKey,
@@ -29,6 +31,7 @@ export async function POST(request: Request) {
         operationId: created.operation.id,
         maxAttempts: 1,
       });
+      queueDevicePreparation(database, deviceId, created.operation.id);
       return { created, job };
     }).immediate();
     const status = ["pending", "running"].includes(created.operation.status) ? 202 : 200;

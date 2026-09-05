@@ -19,10 +19,14 @@ import {
   assertRuntimeOwnership,
   claimRuntimeOwnership,
   CleanupUnknownError,
+  clearDeviceList,
   getDeviceProfile,
+  listDeviceSnapshots,
   prepareDevice,
+  queueDevicePreparation,
   registerConnectedDevices,
   recoverOwnedSessions,
+  recoverRequestedUncertainSessions,
   refreshDeviceInventory,
   releaseDeviceLock,
   releaseRuntimeOwnership,
@@ -144,14 +148,64 @@ test("prepares one allowlisted device and confirms owned-session cleanup", async
     completeJob(database, job.id, "worker-1", result);
 
     assert.equal(result.deviceId, SERIAL);
-    assert.equal(result.foregroundPackage, "com.android.chrome");
+    assert.equal(result.hardwareId, HARDWARE_ID);
     assert.equal(getOperation(database, operation.id)?.status, "succeeded");
     assert.equal((database.prepare("SELECT status FROM device_preparations").get() as { status: string }).status, "ready");
     assert.equal((database.prepare("SELECT status FROM appium_sessions").get() as { status: string }).status, "closed");
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 0);
     assert.equal(requests.filter((request) => request.method === "DELETE").length, 1);
     assert.ok(adb.calls.every((call) => call.startsWith("devices -l") || call.startsWith(`-s ${SERIAL} `)));
-    assert.ok(adb.calls.some((call) => call.includes("https://example.com/")));
+    assert.ok(adb.calls.every((call) => !call.includes("pm list packages") && !call.includes("KEYCODE_HOME") && !call.includes("https://example.com/")));
+  });
+});
+
+test("clears the visible list and restarts default names when devices are added again", async () => {
+  await withDatabase(async (database) => {
+    const adb = createAdb(database);
+    await registerConnectedDevices(database, adb.client, [SERIAL]);
+
+    assert.equal(clearDeviceList(database), 1);
+    assert.equal((database.prepare("SELECT status FROM device_retirements WHERE device_id = ?").get(SERIAL) as { status: string }).status, "completed");
+
+    const [registeredAgain] = await registerConnectedDevices(database, adb.client, [SERIAL]);
+    assert.equal(registeredAgain.alias, "Equipo 1");
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_retirements").get() as { total: number }).total, 0);
+  });
+});
+
+test("explains why an uncertain Appium session blocks clearing the device list", async () => {
+  await withDatabase(async (database) => {
+    upsertDeviceProfile(database, {
+      hardwareId: HARDWARE_ID,
+      deviceId: SERIAL,
+      alias: "Equipo 1",
+      physicalOrder: 1,
+      systemPort: 8200,
+    });
+    const operation = createOperation(database, {
+      kind: "assignment.execute",
+      idempotencyKey: randomUUID(),
+      request: { deviceId: SERIAL },
+      deviceId: SERIAL,
+    }).operation;
+    database.prepare(`
+      INSERT INTO appium_sessions (
+        id, operation_id, device_id, system_port, owner, status, cleanup_status, created_at, updated_at
+      ) VALUES (?, ?, ?, 8200, 'test', 'outcome_unknown', 'outcome_unknown', 1, 1)
+    `).run(randomUUID(), operation.id, SERIAL);
+
+    assert.throws(() => clearDeviceList(database), /resultado incierto/);
+  });
+});
+
+test("persists a queued Appium check for the next device snapshot", async () => {
+  await withDatabase(async (database) => {
+    const { operation } = setupPreparation(database);
+    queueDevicePreparation(database, SERIAL, operation.id);
+
+    const [device] = listDeviceSnapshots(database) as unknown as Array<{ preparationStatus: string; preparationStep: string }>;
+    assert.equal(device.preparationStatus, "preparing");
+    assert.equal(device.preparationStep, "En cola para comprobar Appium");
   });
 });
 
@@ -275,7 +329,7 @@ test("closes a known session id from a malformed Appium response", async () => {
     assert.deepEqual(session, {
       appium_session_id: "owned-partial",
       status: "failed",
-      cleanup_status: "home_confirmed",
+      cleanup_status: "session_closed",
     });
     assert.equal(deletes, 1);
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 0);
@@ -321,7 +375,7 @@ test("cancellation aborts work but not owned-session cleanup", async () => {
     }), /aborted/);
 
     assert.equal(deletes, 1);
-    assert.equal((database.prepare("SELECT cleanup_status FROM appium_sessions").get() as { cleanup_status: string }).cleanup_status, "home_confirmed");
+    assert.equal((database.prepare("SELECT cleanup_status FROM appium_sessions").get() as { cleanup_status: string }).cleanup_status, "session_closed");
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 0);
   });
 });
@@ -352,7 +406,7 @@ test("treats invalid session id as an already closed Appium session", async () =
     });
 
     assert.equal((database.prepare("SELECT status FROM appium_sessions").get() as { status: string }).status, "closed");
-    assert.equal((database.prepare("SELECT cleanup_status FROM appium_sessions").get() as { cleanup_status: string }).cleanup_status, "home_confirmed");
+    assert.equal((database.prepare("SELECT cleanup_status FROM appium_sessions").get() as { cleanup_status: string }).cleanup_status, "session_closed");
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 0);
   });
 });
@@ -389,22 +443,22 @@ test("does not persist cleanup after losing runtime ownership", async () => {
   });
 });
 
-test("releases the device after a definitive Appium rejection", async () => {
+test("releases the device after UiAutomator2 rejects a new session", async () => {
   await withDatabase(async (database, directory) => {
     const { operation } = setupPreparation(database);
     const adb = createAdb(database);
     const appium = new AppiumClient({
       baseUrl: "http://127.0.0.1:4723",
       fetch: async () => Response.json({
-        value: { error: "invalid argument", message: "capabilities rejected" },
-      }, { status: 400 }),
+        value: { error: "session not created", message: "UiAutomation not connected" },
+      }, { status: 500 }),
     });
 
     await assert.rejects(prepareDevice(database, operation.id, "worker-1", {
       adb: adb.client,
       appium,
       artifactsPath: join(directory, "artifacts"),
-    }), /capabilities rejected/);
+    }), /UiAutomation not connected/);
     assert.equal((database.prepare("SELECT status FROM appium_sessions").get() as { status: string }).status, "failed");
     assert.equal((database.prepare("SELECT status FROM device_preparations").get() as { status: string }).status, "failed");
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 0);
@@ -412,7 +466,30 @@ test("releases the device after a definitive Appium rejection", async () => {
   });
 });
 
-test("still closes Appium and returns Home when evidence storage fails", async () => {
+test("marks a preparation as blocked instead of leaving it queued", async () => {
+  await withDatabase(async (database, directory) => {
+    const { operation } = setupPreparation(database);
+    assert.equal(acquireDeviceLock(database, SERIAL, operation.id, "other-worker", Date.now(), 60_000), true);
+    const adb = createAdb(database);
+    const appium = new AppiumClient({
+      baseUrl: "http://127.0.0.1:4723",
+      fetch: async () => { throw new Error("Appium must not be contacted"); },
+    });
+
+    await assert.rejects(prepareDevice(database, operation.id, "worker-1", {
+      adb: adb.client,
+      appium,
+      artifactsPath: join(directory, "artifacts"),
+    }), /ocupado/);
+
+    assert.deepEqual(database.prepare("SELECT status, step FROM device_preparations").get(), {
+      status: "recovery_required",
+      step: "Dispositivo bloqueado",
+    });
+  });
+});
+
+test("still closes Appium when evidence storage fails", async () => {
   await withDatabase(async (database, directory) => {
     const { operation } = setupPreparation(database);
     const adb = createAdb(database);
@@ -505,6 +582,76 @@ test("keeps an orphan lock when the physical identity changed", async () => {
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 1);
     assert.equal((database.prepare("SELECT cleanup_status FROM operations").get() as { cleanup_status: string }).cleanup_status, "outcome_unknown");
     assert.equal((database.prepare("SELECT status FROM device_preparations").get() as { status: string }).status, "recovery_required");
+  });
+});
+
+test("releases an unidentified Appium reservation after confirming Home", async () => {
+  await withDatabase(async (database) => {
+    const { operation } = setupPreparation(database);
+    assert.equal(acquireDeviceLock(database, SERIAL, operation.id, "dead-worker", 1, 60_000), true);
+    database.prepare(`
+      INSERT INTO appium_sessions (
+        id, operation_id, device_id, system_port, owner, status, cleanup_status, created_at, updated_at
+      ) VALUES (?, ?, ?, 8200, 'dead-worker', 'outcome_unknown', 'outcome_unknown', 1, 1)
+    `).run(randomUUID(), operation.id, SERIAL);
+    const adb = createAdb(database);
+    const appium = new AppiumClient({
+      baseUrl: "http://127.0.0.1:4723",
+      fetch: async () => { throw new Error("No Appium session ID was persisted"); },
+    });
+    await recoverOwnedSessions(database, "worker-1", adb.client, appium, 1_000);
+
+    assert.equal((database.prepare("SELECT status FROM appium_sessions").get() as { status: string }).status, "closed");
+    assert.equal((database.prepare("SELECT cleanup_status FROM operations").get() as { cleanup_status: string }).cleanup_status, "home_confirmed");
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 0);
+    assert.ok(adb.calls.some((call) => call.includes("KEYCODE_HOME")));
+  });
+});
+
+test("worker recovery request only closes uncertain sessions", async () => {
+  await withDatabase(async (database) => {
+    const { operation: uncertain } = setupPreparation(database);
+    const activeDevice = "serial-2";
+    upsertDeviceProfile(database, {
+      hardwareId: calculateHardwareId("physical-2", "android-2"),
+      deviceId: activeDevice,
+      alias: "Equipo 2",
+      physicalOrder: 2,
+      systemPort: 8201,
+    });
+    const active = createOperation(database, {
+      kind: "device.prepare",
+      idempotencyKey: randomUUID(),
+      request: { deviceId: activeDevice },
+      deviceId: activeDevice,
+    }).operation;
+    const now = Date.now();
+    const insertSession = database.prepare(`
+      INSERT INTO appium_sessions (
+        id, appium_session_id, operation_id, device_id, system_port, owner,
+        status, cleanup_status, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'dead-worker', ?, ?, ?, ?)
+    `);
+    insertSession.run(randomUUID(), "uncertain-session", uncertain.id, SERIAL, 8200, "outcome_unknown", "outcome_unknown", now, now);
+    insertSession.run(randomUUID(), "active-session", active.id, activeDevice, 8201, "active", "pending", now, now);
+    database.prepare("INSERT INTO device_recovery_requests VALUES (1, 'pending', ?, NULL, NULL, NULL)").run(now);
+    claimRuntimeOwnership(database, "worker-1", process.pid, now, 60_000);
+
+    const adb = createAdb(database);
+    const deleted: string[] = [];
+    const appium = new AppiumClient({
+      baseUrl: "http://127.0.0.1:4723",
+      ownedSessionIds: ["uncertain-session", "active-session"],
+      fetch: async (input, init) => {
+        if (init?.method === "DELETE") deleted.push(String(input));
+        return Response.json({ value: null });
+      },
+    });
+
+    assert.equal(await recoverRequestedUncertainSessions(database, "worker-1", adb.client, appium, 100), true);
+    assert.deepEqual(deleted, ["http://127.0.0.1:4723/session/uncertain-session"]);
+    assert.equal((database.prepare("SELECT status FROM appium_sessions WHERE appium_session_id = 'active-session'").get() as { status: string }).status, "active");
+    assert.equal((database.prepare("SELECT status FROM device_recovery_requests").get() as { status: string }).status, "completed");
   });
 });
 

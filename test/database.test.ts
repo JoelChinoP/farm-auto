@@ -147,6 +147,7 @@ test("creates the complete schema from an empty database and persists every phas
       "device_observations",
       "device_preparations",
       "device_profiles",
+      "device_recovery_requests",
       "device_retirements",
       "evidence",
       "facebook_campaign_manifests",
@@ -192,6 +193,8 @@ test("creates the complete schema from an empty database and persists every phas
       .run("serial-1", "Cuenta controlada", "b".repeat(64), now, now);
     database.prepare("INSERT INTO device_retirements VALUES (?, ?, ?, ?)")
       .run("serial-1", "pending", now, null);
+    database.prepare("INSERT INTO device_recovery_requests VALUES (?, ?, ?, ?, ?, ?)")
+      .run(1, "completed", now, now, now, null);
     database.prepare(`
       INSERT INTO facebook_campaign_manifests (
         campaign_id, campaign_revision, scheduled_at, posts_json, devices_json,

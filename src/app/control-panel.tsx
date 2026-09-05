@@ -393,8 +393,17 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
   switch (action.type) {
     case "tick":
       return { ...state, demoOperations: { ...state.demoOperations, now: action.now } };
-    case "hydrate-devices":
-      return { ...state, devices: action.devices };
+    case "hydrate-devices": {
+      const deviceIds = new Set(action.devices.map((device) => device.id));
+      return {
+        ...state,
+        devices: action.devices,
+        demoOperations: {
+          ...state.demoOperations,
+          selectedDeviceIds: state.demoOperations.selectedDeviceIds.filter((deviceId) => deviceIds.has(deviceId)),
+        },
+      };
+    }
     case "hydrate-facebook":
       if (!action.force
          && state.facebookDraft.id === action.draft.id
@@ -551,13 +560,15 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
         notice: { kind: "status", title: "Retiro programado", message: "El equipo se retirará al finalizar; la campaña no fue cancelada." },
       };
     }
+    case "request-clear-devices":
+      return state.devices.length ? { ...state, activeModal: { type: "clear-devices" } } : state;
     case "start-device-preparation":
       return {
         ...state,
         devices: state.devices.map((item) => action.deviceIds.includes(item.id)
-          ? { ...item, preparation: "preparing", preparationStep: "Validando ADB" }
+          ? { ...item, preparation: "preparing", preparationStep: "En cola para comprobar Appium" }
           : item),
-        notice: { kind: "status", title: "Preparación simulada iniciada", message: `${action.deviceIds.length} equipos avanzan de forma independiente.` },
+        notice: { kind: "status", title: "Comprobación Appium iniciada", message: `${action.deviceIds.length} equipo(s) quedaron en cola. Se verificará ADB, la sesión UiAutomator2 y su jerarquía.` },
       };
     case "advance-device-preparation":
       return { ...state, devices: state.devices.map((item) => item.id === action.deviceId ? { ...item, preparationStep: action.step } : item) };
@@ -978,6 +989,10 @@ export function ControlPanel() {
   const [sharedAccountConfirmation, setSharedAccountConfirmation] = useState(false);
   const [facebookExecutionConfirmation, setFacebookExecutionConfirmation] = useState<FacebookExecutionConfirmation | null>(null);
   const [tiktokExecutionConfirmation, setTikTokExecutionConfirmation] = useState<TikTokExecutionConfirmation | null>(null);
+  const [clearingDevices, setClearingDevices] = useState(false);
+  const [clearDevicesError, setClearDevicesError] = useState<string | null>(null);
+  const [hasUncertainDeviceSessions, setHasUncertainDeviceSessions] = useState(false);
+  const [recoveringDeviceSessions, setRecoveringDeviceSessions] = useState(false);
   const [tiktokConfiguration, setTikTokConfiguration] = useState<TikTokConfiguration>({
     controlledAccount: null,
     postEffectsEnabled: false,
@@ -1000,23 +1015,36 @@ export function ControlPanel() {
     let active = true;
     let refreshing = false;
     let reportedError = false;
+    let lastCampaignsAt = 0;
+    let lastView = stateRef.current.activeView;
     const scheduledTimers = timers.current;
-    const refresh = async () => {
+    const CAMPAIGN_POLL_MS = 30_000;
+    const refresh = async (campaignsDue = false) => {
       if (refreshing) return;
       refreshing = true;
       try {
+         const activeView = stateRef.current.activeView;
+         const now = Date.now();
+         const wantCampaigns = campaignsDue || now - lastCampaignsAt >= CAMPAIGN_POLL_MS;
+         if (wantCampaigns) lastCampaignsAt = now;
          const [deviceData, campaignData, tiktokData] = await Promise.all([
            apiRequest<{ devices: DeviceSnapshot[] }>("/api/devices"),
-           apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[] }>("/api/facebook/campaigns"),
-           apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[]; configuration: TikTokConfiguration }>("/api/tiktok/campaigns"),
+           wantCampaigns && (activeView === "facebook" || activeView === "history")
+             ? apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[] }>("/api/facebook/campaigns")
+             : Promise.resolve(null),
+           wantCampaigns && (activeView === "tiktok" || activeView === "history")
+             ? apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[]; configuration: TikTokConfiguration }>("/api/tiktok/campaigns")
+             : Promise.resolve(null),
          ]);
          if (!active) return;
          const devices = mapDeviceSnapshots(deviceData.devices);
          rawDispatch({ type: "hydrate-devices", devices });
-         rawDispatch({ type: "hydrate-history", platform: "facebook", history: mapCampaignHistory(campaignData.history, devices) });
-         rawDispatch({ type: "hydrate-history", platform: "tiktok", history: mapCampaignHistory(tiktokData.history, devices) });
-         setTikTokConfiguration(tiktokData.configuration);
-         if (campaignData.campaign) {
+         if (campaignData) rawDispatch({ type: "hydrate-history", platform: "facebook", history: mapCampaignHistory(campaignData.history, devices) });
+         if (tiktokData) {
+           rawDispatch({ type: "hydrate-history", platform: "tiktok", history: mapCampaignHistory(tiktokData.history, devices) });
+           setTikTokConfiguration(tiktokData.configuration);
+         }
+         if (campaignData?.campaign) {
            const incoming = mapCampaignSnapshot(campaignData.campaign);
            rawDispatch({
              type: "hydrate-facebook",
@@ -1024,7 +1052,7 @@ export function ControlPanel() {
              force: dirtyFacebookFields.current.size > 0,
            });
          }
-         if (tiktokData.campaign) {
+         if (tiktokData?.campaign) {
            const incoming = mapCampaignSnapshot(tiktokData.campaign);
            rawDispatch({
              type: "hydrate-tiktok",
@@ -1045,14 +1073,24 @@ export function ControlPanel() {
         refreshing = false;
       }
     };
-    rawDispatch({ type: "tick", now: new Date().toISOString() });
-    void refresh();
-    const timer = window.setInterval(() => {
+    const tick = () => {
+      if (document.hidden) return;
+      const view = stateRef.current.activeView;
+      const viewChanged = view !== lastView;
+      lastView = view;
       rawDispatch({ type: "tick", now: new Date().toISOString() });
-      void refresh();
-    }, 1_000);
+      void refresh(viewChanged);
+    };
+    const onVisibilityChange = () => {
+      if (!document.hidden) void refresh(true);
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    rawDispatch({ type: "tick", now: new Date().toISOString() });
+    void refresh(true);
+    const timer = window.setInterval(tick, 5_000);
     return () => {
       active = false;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.clearInterval(timer);
       scheduledTimers.forEach(window.clearTimeout);
     };
@@ -1151,6 +1189,55 @@ export function ControlPanel() {
         type: "set-notice",
         notice: { kind: "error", title: "No se pudieron incorporar los dispositivos", message: error instanceof Error ? error.message : String(error) },
       }));
+      return;
+    }
+
+    if (action.type === "request-clear-devices") {
+      setClearDevicesError(null);
+      setHasUncertainDeviceSessions(false);
+      rawDispatch(action);
+      return;
+    }
+
+    if (action.type === "confirm-clear-devices") {
+      if (clearingDevices) return;
+      setClearingDevices(true);
+      setClearDevicesError(null);
+      void apiRequest<{ cleared: number; devices: DeviceSnapshot[] }>("/api/devices", {
+        method: "DELETE",
+        headers: { "x-control-panel-client": "control-panel" },
+      }).then(({ cleared, devices }) => {
+        setHasUncertainDeviceSessions(false);
+        rawDispatch({ type: "close-modal" });
+        rawDispatch({ type: "hydrate-devices", devices: mapDeviceSnapshots(devices) });
+        rawDispatch({
+          type: "set-notice",
+          notice: { kind: "status", title: "Lista de dispositivos borrada", message: `${cleared} equipo(s) se retiraron de la lista. El historial se conserva.` },
+        });
+      }).catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        setClearDevicesError(message);
+        setHasUncertainDeviceSessions(message.includes("resultado incierto"));
+      }).finally(() => setClearingDevices(false));
+      return;
+    }
+
+    if (action.type === "recover-device-sessions") {
+      if (recoveringDeviceSessions) return;
+      setRecoveringDeviceSessions(true);
+      setClearDevicesError(null);
+      void apiRequest<{ queued: boolean; devices: DeviceSnapshot[] }>("/api/devices/recover", {
+        method: "POST",
+        headers: { "x-control-panel-client": "control-panel" },
+      }).then(({ devices, queued }) => {
+        rawDispatch({ type: "hydrate-devices", devices: mapDeviceSnapshots(devices) });
+        rawDispatch({ type: "set-notice", notice: queued
+          ? { kind: "status", title: "Recuperación solicitada", message: "El worker recuperará solo sesiones inciertas. Después puedes volver a borrar la lista." }
+          : { kind: "status", title: "Sesiones recuperadas", message: "El resultado incierto sigue disponible para reconciliarse desde Historial." },
+        });
+      }).catch((error: unknown) => {
+        setClearDevicesError(error instanceof Error ? error.message : String(error));
+      }).finally(() => setRecoveringDeviceSessions(false));
       return;
     }
 
@@ -1529,13 +1616,14 @@ export function ControlPanel() {
     }
 
     if (action.type === "start-device-preparation") {
+      rawDispatch(action);
       void Promise.all(action.deviceIds.map((deviceId) => apiRequest("/api/devices/prepare", {
         method: "POST",
         headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
         body: JSON.stringify({ deviceId, idempotencyKey: crypto.randomUUID() }),
       }))).then(() => rawDispatch({
         type: "set-notice",
-        notice: { kind: "status", title: "Preparación en cola", message: `${action.deviceIds.length} dispositivo(s) serán preparados por el worker.` },
+        notice: { kind: "status", title: "Comprobación Appium en cola", message: `${action.deviceIds.length} dispositivo(s) mostrarán cada paso mientras el worker los valida.` },
       })).catch((error: unknown) => rawDispatch({
         type: "set-notice",
         notice: { kind: "error", title: "No se pudo preparar el dispositivo", message: error instanceof Error ? error.message : String(error) },
@@ -1571,6 +1659,7 @@ export function ControlPanel() {
   const activeCampaigns = state.history.filter((item) => ["running", "cancellation_requested"].includes(item.status)).length;
   const busyDevices = state.devices.filter((item) => item.activity === "busy").length;
   const modal = state.activeModal;
+  const hasUnknownClearError = hasUncertainDeviceSessions;
   const editedDevice = modal?.type === "edit-device" ? state.devices.find((item) => item.id === modal.deviceId) : undefined;
   const editor = state.demoOperations.deviceEditor;
   const regeneratePost = modal?.type === "regenerate-post" ? state[draftKey(modal.platform)].posts.find((item) => item.id === modal.postId) : undefined;
@@ -1720,6 +1809,24 @@ export function ControlPanel() {
           <Group justify="flex-end">
             <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Conservar</Button>
             <Button color="red" onClick={() => dispatch({ type: "confirm-device-retirement" })}>Retirar al finalizar</Button>
+          </Group>
+        </Stack>
+      </Modal>
+
+      <Modal opened={modal?.type === "clear-devices"} onClose={() => dispatch({ type: "close-modal" })} title="Borrar todos los dispositivos" closeOnClickOutside={!clearingDevices && !recoveringDeviceSessions} closeOnEscape={!clearingDevices && !recoveringDeviceSessions}>
+        <Stack>
+          <Text>Se quitarán todos los equipos de la lista para poder incorporarlos de nuevo.</Text>
+          <Text size="sm" c="dimmed">El historial y la evidencia se conservarán. Esta acción solo está disponible sin trabajos ni sesiones Appium activos.</Text>
+          {clearDevicesError && <Alert color="red" title="No se pudo borrar">{clearDevicesError}</Alert>}
+          <Group justify="flex-end">
+            {hasUnknownClearError && <Button color="yellow" loading={recoveringDeviceSessions} disabled={clearingDevices} onClick={() => dispatch({ type: "recover-device-sessions" })}>Recuperar sesiones</Button>}
+            {hasUnknownClearError && <Button variant="default" disabled={clearingDevices || recoveringDeviceSessions} onClick={() => {
+              dispatch({ type: "close-modal" });
+              dispatch({ type: "navigate", view: "history" });
+              dispatch({ type: "set-history-filter", field: "status", value: "outcome_unknown" });
+            }}>Ver y reconciliar</Button>}
+            <Button variant="default" disabled={clearingDevices || recoveringDeviceSessions} onClick={() => dispatch({ type: "close-modal" })}>Cancelar</Button>
+            <Button color="red" loading={clearingDevices} disabled={recoveringDeviceSessions} onClick={() => dispatch({ type: "confirm-clear-devices" })}>Borrar todos</Button>
           </Group>
         </Stack>
       </Modal>

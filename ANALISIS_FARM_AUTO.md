@@ -359,14 +359,14 @@ Cambiar `systemPort` de un equipo con lock produce conflicto. Cambiar transporte
 
 ### Preparacion
 
-**Preparar N dispositivos** se ejecuta de forma secuencial. Por equipo valida:
+**Comprobar Appium** se ejecuta de forma secuencial y muestra en la fila cuando está en cola, comprobando ADB, creando la sesión o validando UiAutomator2. Por equipo valida:
 
 1. Perfil registrado e identidad fisica coincidente.
 2. Dispositivo ADB conectado/autorizado.
-3. Salud de Appium.
-4. Sesion UiAutomator2.
-5. Jerarquia accesible Android con `<hierarchy>`.
-6. Retorno confirmado a Inicio.
+3. Sesion UiAutomator2 (crea el servicio del dispositivo si aún no está listo).
+4. Jerarquia accesible Android con `<hierarchy>`.
+
+No fuerza Inicio ni abre una URL durante esta comprobación; esas acciones pertenecen al cleanup de automatizaciones reales.
 
 Una automatizacion requiere estado `ready` y revision de preparacion `SETUP_REVISION = 1`. Al cambiar requisitos de setup se puede invalidar globalmente equipos antes listos.
 
@@ -374,7 +374,7 @@ La configuracion estatica `src/config/facebook-devices.json` declara 12 telefono
 
 ## 8. Persistencia, concurrencia e idempotencia
 
-SQLite activa WAL, claves foraneas y `busy_timeout = 5000`. La version de esquema del codigo es 11.
+SQLite activa WAL, claves foraneas y `busy_timeout = 5000`. La version de esquema del codigo es 13.
 
 | Tabla | Responsabilidad |
 | --- | --- |
@@ -388,6 +388,7 @@ SQLite activa WAL, claves foraneas y `busy_timeout = 5000`. La version de esquem
 | `facebook_assignments` | Relacion post-dispositivo, texto y resultado. |
 | `facebook_rotation_slots` | Mapa post/dispositivo/ronda/orden y programacion de apertura. |
 | `control_panel_runtime` | Propiedad de runtime para recuperacion tras reinicio. |
+| `device_recovery_requests` | Solicitud persistida para que el worker activo recupere residuos inciertos. |
 
 ### Operaciones individuales
 
@@ -402,6 +403,8 @@ Para HM, AB y LV se crea un registro con SHA-256 de `{ kind, deviceId, request }
 Cada sesion usa UiAutomator2, `noReset`, `autoLaunch: false`, `systemPort` del perfil y timeout explicito. No pueden coexistir sesiones sobre el mismo serial o puerto. Si no puede confirmar cierre de sesion, el dispositivo queda bloqueado como `DEVICE_CLEANUP_UNKNOWN`.
 
 Ante error con sesion viva almacena screenshot, XML y metadatos en `data/appium-artifacts/<operacion>/`.
+
+Desde Dispositivos, **Recuperar sesiones** toma el lease local o deja una solicitud persistida para el worker activo, intenta cerrar las sesiones Appium propias pendientes y confirma Inicio. Una reserva sin ID de sesión no pudo ejecutar comandos Appium ni efectos públicos: tras confirmar identidad e Inicio, se cierra localmente y libera su lock. No marca un efecto público como enviado o no enviado: esa decisión queda disponible en Historial mediante reconciliación manual.
 
 ### Recuperacion y efectos publicos
 

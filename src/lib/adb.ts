@@ -42,6 +42,14 @@ export interface AdbDeviceInspection {
   launcher: ForegroundActivity;
 }
 
+export interface AdbDeviceIdentity {
+  deviceId: string;
+  state: "device";
+  roSerialNo: string;
+  androidId: string;
+  hardwareId: string;
+}
+
 export interface AdbExecutionOptions {
   timeout: number;
   maxBuffer: number;
@@ -244,6 +252,27 @@ export class AdbClient {
       throw new HardwareIdentityMismatchError(serial, profile.hardwareId, inspection.hardwareId);
     }
     return inspection;
+  }
+
+  async verifyDeviceIdentity(serial: string, options: AdbCommandOptions = {}): Promise<AdbDeviceIdentity> {
+    this.validateSerial(serial);
+    const profile = this.requireProfile(serial);
+    const inventoryDevice = (await this.listDevices(options)).find((device) => device.serial === serial);
+    if (!inventoryDevice) throw new Error(`El dispositivo ${serial} no esta conectado por ADB.`);
+    if (inventoryDevice.state !== "device") throw new Error(`El dispositivo ${serial} esta ${inventoryDevice.state}.`);
+
+    const execute = (args: readonly string[]) => this.invoke(["-s", serial, ...args], options);
+    const [roSerialNoResult, androidIdResult] = await Promise.all([
+      execute(["shell", "getprop", "ro.serialno"]),
+      execute(["shell", "settings", "get", "secure", "android_id"]),
+    ]);
+    const roSerialNo = this.requiredOutput(roSerialNoResult.stdout, "ro.serialno");
+    const androidId = this.requiredOutput(androidIdResult.stdout, "android_id");
+    const hardwareId = calculateHardwareId(roSerialNo, androidId);
+    if (hardwareId !== profile.hardwareId) {
+      throw new HardwareIdentityMismatchError(serial, profile.hardwareId, hardwareId);
+    }
+    return { deviceId: serial, state: "device", roSerialNo, androidId, hardwareId };
   }
 
   async inspectUnregisteredDevice(serial: string, options: AdbCommandOptions = {}): Promise<AdbDeviceInspection> {

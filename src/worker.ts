@@ -14,6 +14,7 @@ import {
   prepareDevice,
   refreshDeviceInventory,
   recoverOwnedSessions,
+  recoverRequestedUncertainSessions,
   releaseRuntimeOwnership,
 } from "./lib/device-runtime.ts";
 import { FacebookBrowser } from "./lib/facebook-browser.ts";
@@ -202,6 +203,16 @@ export async function runWorker(options: WorkerDependencies = {}) {
           signal.throwIfAborted();
           nextInventoryAt = Date.now() + 5_000;
         }
+        await recoverRequestedUncertainSessions(
+          database,
+          owner,
+          adb,
+          appium,
+          appConfig.cleanupTimeoutMs,
+          appConfig.artifactsPath,
+          leaseController.signal,
+        );
+        signal.throwIfAborted();
         const excludeKinds = [
           ...(activeDeviceJobs.size >= deviceConcurrency ? ["assignment.execute"] : []),
           ...(activeAiJobs.size >= aiConcurrency ? ["comments.generate"] : []),
@@ -247,7 +258,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const stop = () => controller.abort(new Error("Worker detenido"));
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  runWorker({ signal: controller.signal }).catch((error: unknown) => {
+  runWorker({ signal: controller.signal, once: process.argv.includes("--once") }).catch((error: unknown) => {
     if (!controller.signal.aborted) console.error(error);
     process.exitCode = controller.signal.aborted ? 0 : 1;
   });

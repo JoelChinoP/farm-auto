@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { AdbClient, HardwareIdentityMismatchError, SAFE_ADB_URL } from "./adb.ts";
+import { AdbClient, HardwareIdentityMismatchError } from "./adb.ts";
 import type { AdbDeviceInspection } from "./adb.ts";
 import { AppiumClient, AppiumClientError } from "./appium-client.ts";
 import { appConfig } from "./config.ts";
@@ -62,6 +62,7 @@ function messageOf(error: unknown) {
 function sessionCreationDefinitelyFailed(error: unknown) {
   return error instanceof AppiumClientError
     && (error.code === "APPIUM_UNREACHABLE"
+      || error.code === "session not created"
       || (error.status !== undefined && error.status >= 400 && error.status < 500));
 }
 
@@ -211,14 +212,27 @@ export async function registerConnectedDevices(
 
   return database.transaction(() => {
     const profiles = database.prepare("SELECT * FROM device_profiles").all() as Array<Parameters<typeof mapProfile>[0]>;
+    const retirementStatuses = new Map((database.prepare("SELECT device_id, status FROM device_retirements").all() as Array<{
+      device_id: string;
+      status: "pending" | "completed";
+    }>).map((retirement) => [retirement.device_id, retirement.status]));
     const usedPorts = new Set(profiles.map((profile) => profile.system_port));
     let nextOrder = Math.max(0, ...profiles.map((profile) => profile.physical_order));
+    let nextAlias = Math.max(
+      0,
+      ...profiles
+        .filter((profile) => retirementStatuses.get(profile.device_id) !== "completed")
+        .map((profile) => profile.physical_order),
+    );
     return inspections.map((inspection) => {
       const existingRow = profiles.find((profile) => profile.device_id === inspection.deviceId || profile.hardware_id === inspection.hardwareId);
       const existing = existingRow ? mapProfile(existingRow) : null;
-      if (existing && database.prepare("SELECT 1 FROM device_retirements WHERE device_id = ?").get(existing.deviceId)) {
-        throw new Error(`El dispositivo ${inspection.deviceId} tiene un retiro registrado.`);
+      const retirementStatus = existing ? retirementStatuses.get(existing.deviceId) : null;
+      if (retirementStatus === "pending") {
+        throw new Error(`El dispositivo ${inspection.deviceId} tiene un retiro pendiente.`);
       }
+      const restored = retirementStatus === "completed";
+      if (restored) database.prepare("DELETE FROM device_retirements WHERE device_id = ?").run(existing!.deviceId);
       let systemPort = existing?.systemPort;
       if (systemPort === undefined) {
         systemPort = Array.from({ length: 100 }, (_, index) => 8200 + index).find((port) => !usedPorts.has(port));
@@ -228,13 +242,48 @@ export async function registerConnectedDevices(
       const profile = upsertDeviceProfile(database, {
         hardwareId: inspection.hardwareId,
         deviceId: inspection.deviceId,
-        alias: existing?.alias ?? `Equipo ${++nextOrder}`,
-        physicalOrder: existing?.physicalOrder ?? nextOrder,
+        alias: existing && !restored ? existing.alias : `Equipo ${++nextAlias}`,
+        physicalOrder: existing?.physicalOrder ?? ++nextOrder,
         systemPort,
       });
       persistInspection(database, inspection, Date.now());
       return profile;
     });
+  }).immediate();
+}
+
+export function clearDeviceList(database: Database.Database, now = Date.now()) {
+  return database.transaction(() => {
+    const active = database.prepare(`
+      SELECT o.kind, j.status, 'trabajo' AS source
+      FROM jobs j JOIN operations o ON o.id = j.operation_id
+      WHERE o.device_id IS NOT NULL AND j.status IN ('pending', 'running')
+      UNION ALL
+      SELECT o.kind, s.status, 'sesion' AS source
+      FROM appium_sessions s JOIN operations o ON o.id = s.operation_id
+      WHERE s.status IN ('starting', 'active', 'closing', 'outcome_unknown')
+      UNION ALL
+      SELECT o.kind, 'locked', 'bloqueo' AS source
+      FROM device_locks l JOIN operations o ON o.id = l.operation_id
+      LIMIT 1
+    `).get() as { kind: string; status: string; source: "trabajo" | "sesion" | "bloqueo" } | undefined;
+    if (active) {
+      if (active.status === "outcome_unknown") {
+        throw new Error("Hay una sesion Appium con resultado incierto. Recupérala o reconcíliala desde Historial antes de borrar los equipos.");
+      }
+      throw new Error(`No se puede borrar la lista: hay ${active.source} ${active.status} de ${active.kind}.`);
+    }
+
+    const deviceIds = (database.prepare("SELECT device_id FROM device_profiles").all() as Array<{ device_id: string }>)
+      .map((profile) => profile.device_id);
+    const retire = database.prepare(`
+      INSERT INTO device_retirements (device_id, status, requested_at, completed_at)
+      VALUES (?, 'completed', ?, ?)
+      ON CONFLICT(device_id) DO UPDATE SET
+        status = 'completed', requested_at = excluded.requested_at, completed_at = excluded.completed_at
+    `);
+    for (const deviceId of deviceIds) retire.run(deviceId, now, now);
+    return deviceIds.length;
   }).immediate();
 }
 
@@ -350,6 +399,16 @@ export function releaseRuntimeOwnership(database: Database.Database, owner: stri
   return database.prepare("DELETE FROM runtime_ownership WHERE singleton = 1 AND owner = ?").run(owner).changes === 1;
 }
 
+export function requestUncertainSessionRecovery(database: Database.Database, now = Date.now()) {
+  database.prepare(`
+    INSERT INTO device_recovery_requests (singleton, status, requested_at, started_at, completed_at, error)
+    VALUES (1, 'pending', ?, NULL, NULL, NULL)
+    ON CONFLICT(singleton) DO UPDATE SET
+      status = 'pending', requested_at = excluded.requested_at, started_at = NULL,
+      completed_at = NULL, error = NULL
+  `).run(now);
+}
+
 export function assertRuntimeOwnership(database: Database.Database, owner: string, now = Date.now()) {
   const row = database.prepare(`
     SELECT owner FROM runtime_ownership
@@ -426,6 +485,21 @@ function persistInspection(database: Database.Database, inspection: AdbDeviceIns
     inspection.launcher.packageName,
     now,
   );
+}
+
+function persistVerifiedIdentity(
+  database: Database.Database,
+  identity: { deviceId: string; roSerialNo: string; androidId: string; hardwareId: string },
+  now: number,
+) {
+  database.prepare(`
+    INSERT INTO device_observations (
+      device_id, connection, ro_serialno, android_id, hardware_id, packages_json, observed_at, error
+    ) VALUES (?, 'connected', ?, ?, ?, '[]', ?, NULL)
+    ON CONFLICT(device_id) DO UPDATE SET
+      connection = 'connected', ro_serialno = excluded.ro_serialno, android_id = excluded.android_id,
+      hardware_id = excluded.hardware_id, observed_at = excluded.observed_at, error = NULL
+  `).run(identity.deviceId, identity.roSerialNo, identity.androidId, identity.hardwareId, now);
 }
 
 export async function refreshDeviceInventory(
@@ -536,6 +610,10 @@ function setPreparation(
     now,
     ["ready", "failed", "recovery_required"].includes(status) ? now : null,
   );
+}
+
+export function queueDevicePreparation(database: Database.Database, deviceId: string, operationId: string) {
+  setPreparation(database, deviceId, operationId, "preparing", "En cola para comprobar Appium", null, Date.now());
 }
 
 function updateOperationRuntime(
@@ -740,6 +818,25 @@ async function cleanupSession(
   return { sessionClosed, errors };
 }
 
+async function closePreparationSession(
+  appium: AppiumClient,
+  sessionId: string,
+  timeoutMs: number,
+  parentSignal?: AbortSignal,
+) {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
+  try {
+    await appium.deleteSession(sessionId, { signal });
+    return { sessionClosed: true, errors: [] as string[] };
+  } catch (error) {
+    if (error instanceof AppiumClientError && error.code === "invalid session id") {
+      return { sessionClosed: true, errors: [] as string[] };
+    }
+    return { sessionClosed: false, errors: [`Appium: ${messageOf(error)}`] };
+  }
+}
+
 export async function prepareDevice(
   database: Database.Database,
   operationId: string,
@@ -756,20 +853,23 @@ export async function prepareDevice(
   const locked = withRuntimeOwnership(database, owner, () => {
     const acquired = acquireDeviceLock(database, profile.deviceId, operationId, owner, Date.now(), appConfig.workerLeaseMs);
     if (acquired) {
-      setPreparation(database, profile.deviceId, operationId, "preparing", "Leyendo estado ADB", null, Date.now());
+      setPreparation(database, profile.deviceId, operationId, "preparing", "Comprobando conexion ADB", null, Date.now());
     }
     return acquired;
   });
   if (!locked) {
+    withRuntimeOwnership(database, owner, () => {
+      setPreparation(database, profile.deviceId, operationId, "recovery_required", "Dispositivo bloqueado", "El dispositivo ya esta ocupado por Farm Appium.", Date.now());
+    });
     throw new Error("El dispositivo ya esta ocupado por Farm Appium.");
   }
 
   let session: SessionRow | null = null;
   let appiumSessionId: string | null = null;
   try {
-    const inspection = await dependencies.adb.inspectDevice(profile.deviceId, { signal: dependencies.signal });
+    const identity = await dependencies.adb.verifyDeviceIdentity(profile.deviceId, { signal: dependencies.signal });
     session = withRuntimeOwnership(database, owner, () => {
-      persistInspection(database, inspection, Date.now());
+      persistVerifiedIdentity(database, identity, Date.now());
       setPreparation(database, profile.deviceId, operationId, "preparing", "Creando sesion Appium", null, Date.now());
       const reserved = reserveSession(database, operationId, profile.deviceId, profile.systemPort, owner, Date.now());
       updateOperationRuntime(database, operationId, "starting", "pending", Date.now());
@@ -849,23 +949,15 @@ export async function prepareDevice(
         cleanupStatus: "pending",
       }, Date.now());
       updateOperationRuntime(database, operationId, "active", "pending", Date.now());
-      setPreparation(database, profile.deviceId, operationId, "preparing", "Validando jerarquia Android", null, Date.now());
+      setPreparation(database, profile.deviceId, operationId, "preparing", "Validando acceso UiAutomator2", null, Date.now());
     });
     await dependencies.appium.getPageSource(appiumSessionId, { signal: dependencies.signal });
-    await dependencies.adb.goHome(profile.deviceId, { signal: dependencies.signal });
-    assertRuntimeOwnership(database, owner);
-    const safeUrlHandler = await dependencies.adb.resolveSafeUrlHandler(profile.deviceId, { signal: dependencies.signal });
-    await dependencies.adb.openSafeUrl(profile.deviceId, SAFE_ADB_URL, { signal: dependencies.signal });
-    const foreground = await dependencies.adb.waitForForeground(profile.deviceId, safeUrlHandler.packageName, { signal: dependencies.signal });
 
     assertRuntimeOwnership(database, owner);
-    const cleanup = await cleanupSession(
-      dependencies.adb,
+    const cleanup = await closePreparationSession(
       dependencies.appium,
-      profile.deviceId,
       appiumSessionId,
       dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs,
-      false,
       dependencies.leaseSignal,
     );
     assertRuntimeOwnership(database, owner);
@@ -899,21 +991,19 @@ export async function prepareDevice(
     }
 
     withRuntimeOwnership(database, owner, () => {
-      updateSession(database, session!.id, {
-        status: "closed",
-        cleanupStatus: "home_confirmed",
-        closed: true,
-      }, Date.now());
-      updateOperationRuntime(database, operationId, "closed", "home_confirmed", Date.now());
-      setPreparation(database, profile.deviceId, operationId, "ready", "Preparacion completada", null, Date.now());
-      releaseDeviceLock(database, profile.deviceId, operationId, owner);
-    });
-    return {
-      deviceId: profile.deviceId,
-      model: inspection.model,
-      foregroundPackage: foreground.packageName,
-      homePackage: inspection.launcher.packageName,
-    };
+        updateSession(database, session!.id, {
+          status: "closed",
+          cleanupStatus: "session_closed",
+          closed: true,
+        }, Date.now());
+        updateOperationRuntime(database, operationId, "closed", "session_closed", Date.now());
+        setPreparation(database, profile.deviceId, operationId, "ready", "Listo para Appium", null, Date.now());
+        releaseDeviceLock(database, profile.deviceId, operationId, owner);
+      });
+      return {
+        deviceId: profile.deviceId,
+        hardwareId: identity.hardwareId,
+      };
   } catch (error) {
     try {
       assertRuntimeOwnership(database, owner);
@@ -944,13 +1034,10 @@ export async function prepareDevice(
       error,
       evidenceSignal,
     );
-    const cleanup = await cleanupSession(
-      dependencies.adb,
+    const cleanup = await closePreparationSession(
       dependencies.appium,
-      profile.deviceId,
       appiumSessionId,
       cleanupTimeoutMs,
-      false,
       dependencies.leaseSignal,
     );
     assertRuntimeOwnership(database, owner);
@@ -972,11 +1059,11 @@ export async function prepareDevice(
     withRuntimeOwnership(database, owner, () => {
       updateSession(database, session!.id, {
         status: "failed",
-        cleanupStatus: "home_confirmed",
+        cleanupStatus: "session_closed",
         error: [messageOf(error), evidenceError].filter(Boolean).join("; "),
         closed: true,
       }, Date.now());
-      updateOperationRuntime(database, operationId, "closed", "home_confirmed", Date.now());
+      updateOperationRuntime(database, operationId, "closed", "session_closed", Date.now());
       setPreparation(
         database,
         profile.deviceId,
@@ -1288,31 +1375,58 @@ export async function recoverOwnedSessions(
   cleanupTimeoutMs = appConfig.cleanupTimeoutMs,
   artifactsPath = appConfig.artifactsPath,
   signal?: AbortSignal,
+  onlyUncertain = false,
 ) {
   assertRuntimeOwnership(database, owner);
   const sessions = database.prepare(`
     SELECT s.*, o.kind AS operation_kind FROM appium_sessions s
     JOIN operations o ON o.id = s.operation_id
-    WHERE s.status IN ('starting', 'active', 'closing', 'outcome_unknown')
-       OR s.cleanup_status = 'outcome_unknown'
+    WHERE ${onlyUncertain
+      ? "s.status = 'outcome_unknown' OR s.cleanup_status = 'outcome_unknown'"
+      : "s.status IN ('starting', 'active', 'closing', 'outcome_unknown') OR s.cleanup_status = 'outcome_unknown'"}
     ORDER BY s.created_at
   `).all() as SessionRow[];
 
   for (const session of sessions) {
     if (!session.appium_session_id) {
+      const timeoutSignal = AbortSignal.timeout(cleanupTimeoutMs);
+      const cleanupSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      try {
+        // No Appium command can run before its session ID is persisted, so no public effect occurred.
+        await adb.inspectDevice(session.device_id, { signal: cleanupSignal, timeoutMs: cleanupTimeoutMs });
+        await adb.goHome(session.device_id, { signal: cleanupSignal, timeoutMs: cleanupTimeoutMs });
+      } catch (error) {
+        const now = Date.now();
+        withRuntimeOwnership(database, owner, () => {
+          const message = [session.error, `Identidad/Home: ${messageOf(error)}`].filter(Boolean).join("; ");
+          updateSession(database, session.id, {
+            status: "outcome_unknown",
+            cleanupStatus: "outcome_unknown",
+            error: message,
+          }, now);
+          updateOperationRuntime(database, session.operation_id, "outcome_unknown", "outcome_unknown", now);
+          if (session.operation_kind === "device.prepare") {
+            setPreparation(database, session.device_id, session.operation_id, "recovery_required", "Inicio incierto durante recovery", message, now);
+          } else {
+            markDeviceRecoveryRequired(database, session.device_id, message, now);
+          }
+        });
+        continue;
+      }
+
       const now = Date.now();
       withRuntimeOwnership(database, owner, () => {
         updateSession(database, session.id, {
-          status: "outcome_unknown",
-          cleanupStatus: "outcome_unknown",
-          error: session.error ?? "Sesion interrumpida antes de persistir el ID de Appium",
+          status: "closed",
+          cleanupStatus: "home_confirmed",
+          error: [session.error, "ID de sesion Appium no persistido; Inicio confirmado"].filter(Boolean).join("; "),
+          closed: true,
         }, now);
-        updateOperationRuntime(database, session.operation_id, "outcome_unknown", "outcome_unknown", now);
+        updateOperationRuntime(database, session.operation_id, "closed", "home_confirmed", now);
         if (session.operation_kind === "device.prepare") {
-          setPreparation(database, session.device_id, session.operation_id, "recovery_required", "Sesion Appium incierta", session.error, now);
-        } else {
-          markDeviceRecoveryRequired(database, session.device_id, session.error ?? "Sesion Appium incierta", now);
+          setPreparation(database, session.device_id, session.operation_id, "failed", "Sesion no identificada; Inicio confirmado", null, now);
         }
+        releaseDeviceLock(database, session.device_id, session.operation_id, session.owner);
       });
       continue;
     }
@@ -1415,7 +1529,7 @@ export async function recoverOwnedSessions(
     JOIN operations o ON o.id = l.operation_id
     LEFT JOIN appium_sessions s ON s.operation_id = l.operation_id
       AND (s.status IN ('starting', 'active', 'closing', 'outcome_unknown') OR s.cleanup_status = 'outcome_unknown')
-    WHERE s.id IS NULL
+    WHERE s.id IS NULL${onlyUncertain ? " AND (o.status = 'outcome_unknown' OR o.cleanup_status = 'outcome_unknown')" : ""}
   `).all() as Array<{ device_id: string; operation_id: string; owner: string; operation_kind: string }>;
   for (const lock of orphanLocks) {
     try {
@@ -1443,4 +1557,45 @@ export async function recoverOwnedSessions(
       });
     }
   }
+}
+
+export async function recoverRequestedUncertainSessions(
+  database: Database.Database,
+  owner: string,
+  adb: AdbClient,
+  appium: AppiumClient,
+  cleanupTimeoutMs = appConfig.cleanupTimeoutMs,
+  artifactsPath = appConfig.artifactsPath,
+  signal?: AbortSignal,
+) {
+  const request = database.prepare("SELECT status FROM device_recovery_requests WHERE singleton = 1 AND status = 'pending'").get();
+  if (!request) return false;
+
+  withRuntimeOwnership(database, owner, () => {
+    database.prepare(`
+      UPDATE device_recovery_requests
+      SET status = 'running', started_at = ?, completed_at = NULL, error = NULL
+      WHERE singleton = 1 AND status = 'pending'
+    `).run(Date.now());
+  });
+
+  try {
+    await recoverOwnedSessions(database, owner, adb, appium, cleanupTimeoutMs, artifactsPath, signal, true);
+    withRuntimeOwnership(database, owner, () => {
+      database.prepare(`
+        UPDATE device_recovery_requests
+        SET status = 'completed', completed_at = ?, error = NULL
+        WHERE singleton = 1 AND status = 'running'
+      `).run(Date.now());
+    });
+  } catch (error) {
+    withRuntimeOwnership(database, owner, () => {
+      database.prepare(`
+        UPDATE device_recovery_requests
+        SET status = 'failed', completed_at = ?, error = ?
+        WHERE singleton = 1 AND status = 'running'
+      `).run(Date.now(), messageOf(error));
+    });
+  }
+  return true;
 }

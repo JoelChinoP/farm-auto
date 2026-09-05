@@ -43,6 +43,7 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
   const facebookReady = state.devices.filter((device) => device.capabilities.facebook === "ready" && device.preparation === "ready").length;
   const tiktokReady = state.devices.filter((device) => device.capabilities.tiktok === "ready" && device.preparation === "ready").length;
   const busy = state.devices.filter((device) => device.activity === "busy").length;
+  const selectedPreparing = selected.some((deviceId) => state.devices.some((device) => device.id === deviceId && device.preparation === "preparing"));
 
   return (
     <div className="view-content">
@@ -90,7 +91,7 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
                 aria-describedby="device-import-errors"
               />
               <div className="import-aside">
-                <Text size="sm">ADB verifica identidad, modelo y aplicaciones antes de persistir cada perfil. Las sesiones se validan durante la preparación.</Text>
+                <Text size="sm">ADB registra la identidad física. Al comprobar Appium se crea una sesión UiAutomator2 y se valida su jerarquía.</Text>
                 <Button onClick={() => dispatch({ type: "add-devices" })}>Agregar dispositivos</Button>
               </div>
             </div>
@@ -111,7 +112,7 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
             <span className="section-code">ALLOWLIST / {visible.length} VISIBLES</span>
             <Title order={2} id="device-table-title">Banco de equipos</Title>
           </div>
-          <Group align="flex-end" wrap="nowrap">
+          <Group align="flex-end" wrap="wrap">
             <TextInput
               className="device-search"
               label="Buscar equipo"
@@ -120,11 +121,13 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
               onChange={(event) => dispatch({ type: "set-device-search", value: event.currentTarget.value })}
             />
             <Button
-              disabled={selected.length === 0}
+              disabled={selected.length === 0 || selectedPreparing}
+              loading={selectedPreparing}
               onClick={() => dispatch({ type: "start-device-preparation", deviceIds: selected })}
             >
-              Preparar {selected.length || "N"} dispositivos
+              {selectedPreparing ? "Comprobando Appium..." : `Comprobar Appium (${selected.length || "N"})`}
             </Button>
+            <Button color="red" variant="subtle" disabled={state.devices.length === 0} onClick={() => dispatch({ type: "request-clear-devices" })}>Borrar todos</Button>
           </Group>
         </div>
 
@@ -170,7 +173,7 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
                   <td>
                     <Group gap={5} wrap="nowrap">
                       <Button size="compact-xs" variant="default" onClick={() => dispatch({ type: "open-device-editor", deviceId: device.id })}>Editar</Button>
-                      <Button size="compact-xs" variant="light" onClick={() => dispatch({ type: "start-device-preparation", deviceIds: [device.id] })}>Preparar</Button>
+                      <Button size="compact-xs" variant="light" loading={device.preparation === "preparing"} onClick={() => dispatch({ type: "start-device-preparation", deviceIds: [device.id] })}>Comprobar</Button>
                       <Button size="compact-xs" color="red" variant="subtle" onClick={() => dispatch({ type: "request-device-retirement", deviceId: device.id })}>Retirar</Button>
                     </Group>
                   </td>
@@ -186,6 +189,6 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
 }
 
 function preparationProgress(step?: string) {
-  const steps = ["Validando ADB", "Comprobando Appium", "Leyendo jerarquía", "Volviendo a Inicio", "Listo"];
+  const steps = ["En cola para comprobar Appium", "Comprobando conexion ADB", "Creando sesion Appium", "Validando acceso UiAutomator2", "Listo para Appium"];
   return Math.max(8, ((steps.indexOf(step ?? "") + 1) / steps.length) * 100);
 }

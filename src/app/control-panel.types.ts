@@ -211,6 +211,7 @@ export type ActiveModal =
   | null
   | { type: "edit-device"; deviceId: string }
   | { type: "retire-device"; deviceId: string }
+  | { type: "clear-devices" }
   | { type: "start-campaign"; platform: Platform }
   | { type: "regenerate-post"; platform: Platform; postId: string }
   | { type: "abort-all" }
@@ -281,6 +282,9 @@ export type ControlAction =
   | { type: "save-device" }
   | { type: "request-device-retirement"; deviceId: string }
   | { type: "confirm-device-retirement" }
+  | { type: "request-clear-devices" }
+  | { type: "confirm-clear-devices" }
+  | { type: "recover-device-sessions" }
   | { type: "start-device-preparation"; deviceIds: string[] }
   | { type: "advance-device-preparation"; deviceId: string; step: string }
   | { type: "finish-device-preparation"; deviceId: string; failed?: boolean }
