@@ -30,6 +30,7 @@ import {
   refreshDeviceInventory,
   releaseDeviceLock,
   releaseRuntimeOwnership,
+  runOwnedDeviceAutomation,
   upsertDeviceProfile,
 } from "../src/lib/device-runtime.ts";
 import { createOperation, getOperation } from "../src/lib/operations.ts";
@@ -486,6 +487,45 @@ test("marks a preparation as blocked instead of leaving it queued", async () => 
       status: "recovery_required",
       step: "Dispositivo bloqueado",
     });
+  });
+});
+
+test("invalidates a ready preparation when an execution session is rejected", async () => {
+  await withDatabase(async (database, directory) => {
+    const { operation: preparation } = setupPreparation(database);
+    database.prepare(`
+      INSERT INTO device_preparations (
+        id, device_id, operation_id, status, step, created_at, updated_at, completed_at, setup_revision
+      ) VALUES (?, ?, ?, 'ready', 'Preparacion completada', 1, 1, 1, 1)
+    `).run(randomUUID(), SERIAL, preparation.id);
+    const execution = createOperation(database, {
+      kind: "assignment.execute",
+      idempotencyKey: randomUUID(),
+      request: { deviceId: SERIAL },
+      deviceId: SERIAL,
+    }).operation;
+    database.prepare("UPDATE operations SET status = 'running' WHERE id = ?").run(execution.id);
+    const adb = createAdb(database);
+    const appium = new AppiumClient({
+      baseUrl: "http://127.0.0.1:4723",
+      fetch: async () => Response.json({
+        value: { error: "session not created", message: "UiAutomation not connected" },
+      }, { status: 500 }),
+    });
+
+    await assert.rejects(runOwnedDeviceAutomation(database, execution.id, "worker-1", {
+      adb: adb.client,
+      appium,
+      requiredPackage: "com.android.chrome",
+      artifactsPath: join(directory, "artifacts"),
+    }, async () => { throw new Error("El flujo no debio ejecutarse."); }), /UiAutomation not connected/);
+
+    assert.deepEqual(database.prepare("SELECT status, step FROM device_preparations WHERE device_id = ?").get(SERIAL), {
+      status: "recovery_required",
+      step: "Sesion Appium rechazada",
+    });
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM device_locks").get() as { total: number }).total, 0);
+    assert.equal((database.prepare("SELECT status FROM appium_sessions").get() as { status: string }).status, "failed");
   });
 });
 

@@ -1089,17 +1089,23 @@ export type DeviceAutomationDependencies = {
   leaseSignal?: AbortSignal;
 };
 
-function markDeviceRecoveryRequired(database: Database.Database, deviceId: string, message: string, now: number) {
+function markDeviceRecoveryRequired(
+  database: Database.Database,
+  deviceId: string,
+  message: string,
+  now: number,
+  step = "Cleanup incierto",
+) {
   database.prepare(`
     UPDATE device_preparations
-    SET status = 'recovery_required', step = 'Cleanup incierto', error = ?,
+    SET status = 'recovery_required', step = ?, error = ?,
         updated_at = ?, completed_at = ?
     WHERE id = (
       SELECT id FROM device_preparations
       WHERE device_id = ? AND setup_revision = ?
       ORDER BY updated_at DESC LIMIT 1
     )
-  `).run(message, now, now, deviceId, CURRENT_SETUP_REVISION);
+  `).run(step, message, now, now, deviceId, CURRENT_SETUP_REVISION);
 }
 
 export async function runOwnedDeviceAutomation<T>(
@@ -1179,6 +1185,7 @@ export async function runOwnedDeviceAutomation<T>(
             closed: true,
           }, Date.now());
           updateOperationRuntime(database, operationId, "failed", "not_required", Date.now());
+          markDeviceRecoveryRequired(database, profile.deviceId, messageOf(error), Date.now(), "Sesion Appium rechazada");
           releaseDeviceLock(database, profile.deviceId, operationId, owner);
         });
         throw error;
