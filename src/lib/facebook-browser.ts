@@ -7,7 +7,7 @@ import type { BrowserContext, Locator, Page } from "playwright-core";
 import { appConfig } from "./config.ts";
 import { FacebookError, normalizeFacebookUrl } from "./facebook.ts";
 
-const EXTRACTOR_VERSION = "facebook-edge-v1";
+const EXTRACTOR_VERSION = "facebook-edge-v2";
 const MESSAGE_SELECTOR = '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-testid="post_message"]';
 const COLLAPSED_DESCRIPTION = /(?:…|\.\.\.)\s*(?:(?:ver|see)\s+)?(?:más|mas|more)\s*$/iu;
 const BOILERPLATE = [
@@ -60,7 +60,7 @@ export function buildFacebookPostContext(messages: string[], metadata = "", maxL
 }
 
 async function findPostScope(page: Page) {
-  for (const selector of ['[role="dialog"]:visible', '[role="main"] [role="article"]:visible', '[role="article"]:visible']) {
+  for (const selector of ['[role="dialog"]:visible:not([aria-label="Messenger"])', '[role="main"] [role="article"]:visible', '[role="article"]:visible']) {
     const scopes = page.locator(selector);
     const matches: Array<{ scope: Locator; signature: string; textLength: number }> = [];
     const count = Math.min(await scopes.count(), 10);
@@ -119,6 +119,88 @@ async function readPostContext(page: Page) {
   }
   if (previous.length < 5) throw new FacebookError("FACEBOOK_CONTENT_EMPTY", "Facebook no expuso contexto visible.", 422);
   return previous;
+}
+
+function isReelTarget(value: string) {
+  return /^\/reels?\//iu.test(new URL(value).pathname);
+}
+
+export function reelCaptionFromLines(raw: string) {
+  const lines = raw
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/[\s\uFEFF]+/gu, " ").trim())
+    .filter(Boolean);
+  const headerIndex = lines.findIndex((line) => /^[^·]*·\s*(?:audio original|original audio)$/iu.test(line));
+  if (headerIndex === -1) return "";
+  return lines
+    .slice(headerIndex + 1)
+    .join(" ")
+    .replace(/\s*(?:ver más|ver menos|see more|see less)$/iu, "")
+    .replace(/[…]+$/gu, "")
+    .trim();
+}
+
+const REEL_HEADER_PATTERN = /·\s*(?:audio original|original audio)/iu;
+const REEL_TOGGLE_PATTERN = /(?:ver más|ver menos|see more|see less)/iu;
+
+function reelPatterns() {
+  return {
+    headerSource: REEL_HEADER_PATTERN.source,
+    headerFlags: REEL_HEADER_PATTERN.flags,
+    toggleSource: REEL_TOGGLE_PATTERN.source,
+    toggleFlags: REEL_TOGGLE_PATTERN.flags,
+  };
+}
+
+async function readReelContext(page: Page) {
+  let previous = "";
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await page.evaluate((patterns) => {
+      const header = new RegExp(patterns.headerSource, patterns.headerFlags);
+      const toggle = new RegExp(patterns.toggleSource, patterns.toggleFlags);
+      const candidates = [...document.querySelectorAll("body div")].filter((node) => {
+        const text = node.textContent ?? "";
+        return header.test(text) && toggle.test(text);
+      });
+      const container = candidates
+        .sort((left, right) => left.querySelectorAll("*").length - right.querySelectorAll("*").length)[0] as HTMLElement | undefined;
+      if (!container) return;
+      const expand = [...container.querySelectorAll("*")].find((node) => node.children.length === 0
+        && /^(?:…|\.\.\.)?\s*(?:ver más|see more)$/iu.test((node.textContent ?? "").replace(/[\s\uFEFF]+/gu, " ").trim())) as HTMLElement | undefined;
+      if (expand) expand.click();
+    }, reelPatterns());
+    await page.waitForTimeout(400);
+    const raw = await page.evaluate((patterns) => {
+      const header = new RegExp(patterns.headerSource, patterns.headerFlags);
+      const toggle = new RegExp(patterns.toggleSource, patterns.toggleFlags);
+      const candidates = [...document.querySelectorAll("body div")].filter((node) => {
+        const text = node.textContent ?? "";
+        return header.test(text) && toggle.test(text);
+      });
+      const container = candidates
+        .sort((left, right) => left.querySelectorAll("*").length - right.querySelectorAll("*").length)[0] as HTMLElement | undefined;
+      return container ? container.innerText : "";
+    }, reelPatterns());
+    const context = reelCaptionFromLines(raw);
+    if (context.length >= 5 && context === previous) return context;
+    previous = context;
+  }
+  if (COLLAPSED_DESCRIPTION.test(previous)) {
+    throw new FacebookError("FACEBOOK_CONTENT_TRUNCATED", "Facebook no expandio el contenido completo.", 422);
+  }
+  if (previous.length < 5) throw new FacebookError("FACEBOOK_CONTENT_EMPTY", "Facebook no expuso contexto visible.", 422);
+  return previous;
+}
+
+async function readPostContextWithReelFallback(page: Page, reelFallback: boolean) {
+  try {
+    return await readPostContext(page);
+  } catch (error) {
+    if (reelFallback && error instanceof FacebookError && error.code === "FACEBOOK_CONTENT_EMPTY") {
+      return await readReelContext(page);
+    }
+    throw error;
+  }
 }
 
 export class FacebookBrowser {
@@ -272,7 +354,7 @@ export class FacebookBrowser {
       if (!isAllowedFacebookTargetRedirect(requestedUrl.sourceUrl, finalUrl)) {
         throw new FacebookError("FACEBOOK_TARGET_REDIRECTED", "El enlace no resolvio a la publicacion esperada.", 422);
       }
-      const contextText = await readPostContext(page);
+      const contextText = await readPostContextWithReelFallback(page, isReelTarget(finalUrl));
       signal?.throwIfAborted();
       return { context: contextText, finalUrl, extractorVersion: EXTRACTOR_VERSION };
     } finally {

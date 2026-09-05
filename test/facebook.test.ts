@@ -4,7 +4,7 @@ import test from "node:test";
 
 import type Database from "better-sqlite3";
 
-import { isAllowedFacebookTargetRedirect } from "../src/lib/facebook-browser.ts";
+import { isAllowedFacebookTargetRedirect, reelCaptionFromLines } from "../src/lib/facebook-browser.ts";
 import { openDatabase } from "../src/lib/database.ts";
 import {
   claimRuntimeOwnership,
@@ -119,6 +119,23 @@ test("allows official Facebook share links to resolve to identifiable canonical 
     "https://www.facebook.com/example/posts/one",
     "https://www.facebook.com/example/posts/two",
   ), false);
+});
+
+test("extracts the caption from a reel player container", () => {
+  const expanded = "Yoel Paya\n\uFEFFYoel Paya · Audio original\nLa delincuencia en el Perú ya no puede tratarse como un problema secundario. Extorsiones, robos y amenazas afectan diariamente a trabajadores, transportistas y pequeños negocios. La población necesita resultados concretos Ver menos";
+  assert.equal(
+    reelCaptionFromLines(expanded),
+    "La delincuencia en el Perú ya no puede tratarse como un problema secundario. Extorsiones, robos y amenazas afectan diariamente a trabajadores, transportistas y pequeños negocios. La población necesita resultados concretos",
+  );
+  assert.equal(
+    reelCaptionFromLines("Autor\nAutor · Audio original\nTexto corto… Ver más"),
+    "Texto corto",
+  );
+  assert.equal(
+    reelCaptionFromLines("Author\nAuthor · Original audio\nA short caption See less"),
+    "A short caption",
+  );
+  assert.equal(reelCaptionFromLines("Sin cabecera de reel\nOtro texto"), "");
 });
 
 test("creates one stable post per URL and the exact post by device product", () => {
