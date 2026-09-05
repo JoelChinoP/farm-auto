@@ -146,7 +146,7 @@ export function campaignCanPrepare(state: ControlState, platform: Platform) {
   });
   const distributionTotal = draft.distribution.reduce((total, row) => total + row.count, 0);
   return selectedAreEligible
-    && (platform === "tiktok" ? draft.selectedDeviceIds.length === 1 && draft.urls.length === 1 : draft.urls.length >= 1 && draft.urls.length <= 10)
+    && draft.urls.length >= 1 && draft.urls.length <= 10
     && draft.urlErrors.length === 0
     && (draft.actions.like || draft.actions.comment)
     && (!draft.actions.comment || (distributionTotal === draft.selectedDeviceIds.length && draft.distribution.every((row) => row.intention.trim() && row.count > 0)));
@@ -400,7 +400,7 @@ export function createInitialState(now = new Date().toISOString()): ControlState
     notice: {
       kind: "status",
       title: "Fase 6 TikTok",
-      message: "TikTok post opera 1×1; Live permanece bloqueado hasta una prueba física independiente.",
+      message: "TikTok post opera N×M; Live permanece bloqueado hasta una prueba física independiente.",
     },
     activeModal: null,
     demoOperations: {

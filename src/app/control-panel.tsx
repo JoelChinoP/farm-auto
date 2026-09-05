@@ -147,9 +147,7 @@ type FacebookExecutionConfirmation = {
   }>;
 };
 
-type TikTokExecutionConfirmation = Omit<FacebookExecutionConfirmation, "scheduledAt" | "assignments"> & {
-  assignments: [FacebookExecutionConfirmation["assignments"][number]];
-};
+type TikTokExecutionConfirmation = Omit<FacebookExecutionConfirmation, "scheduledAt">;
 
 function isoDate(value: number | null) {
   return value === null ? null : new Date(value).toISOString();
@@ -206,7 +204,7 @@ function mapCampaignSnapshot(snapshot: FacebookSnapshot): CampaignDraft {
     controlledAccount: snapshot.controlledAccount,
     distribution: distribution.length
       ? distribution
-      : [{ id: `${snapshot.platform}-intent-1`, intention: "Reacción natural", tone: "Cercano", count: snapshot.platform === "tiktok" ? 1 : 0 }],
+      : [{ id: `${snapshot.platform}-intent-1`, intention: "Reacción natural", tone: "Cercano", count: 0 }],
     posts: snapshot.posts.map((post) => ({
       id: post.id,
       position: post.position,
@@ -1294,34 +1292,42 @@ export function ControlPanel() {
 
     if (action.type === "request-start-campaign" && action.platform === "tiktok") {
       const draft = state.tiktokDraft;
-      const assignment = draft.assignments[0];
-      const post = draft.posts[0];
-      const device = assignment && state.devices.find((item) => item.id === assignment.deviceId);
-      const comment = post?.comments.find((item) => item.assignmentId === assignment?.id);
       if (dirtyTikTokFields.current.size) {
         rawDispatch({ type: "set-notice", notice: { kind: "error", title: "Hay cambios sin guardar", message: "Guarda el contexto y el comentario antes de autorizar efectos públicos." } });
         return;
       }
-      if (!draft.id || !draft.revision || !assignment || !post || !device || !tiktokConfiguration.controlledAccount
-        || (draft.actions.comment && (!comment?.version || !comment.textHash))) {
-        rawDispatch({ type: "set-notice", notice: { kind: "error", title: "Falta configuración TikTok", message: "Configura la cuenta controlada, los selectores y completa el comentario 1×1." } });
+      if (!draft.id || !draft.revision || !draft.assignments.length || !tiktokConfiguration.controlledAccount) {
+        rawDispatch({ type: "set-notice", notice: { kind: "error", title: "Falta configuración TikTok", message: "Configura la cuenta controlada, los selectores y completa los comentarios." } });
         return;
       }
-      setPublicConfirmation(false);
-      setExpectedTargetTexts({ [post.id]: post.context.trim().slice(0, 500) });
-      setTikTokExecutionConfirmation({
-        campaignId: draft.id,
-        revision: draft.revision,
-        actions: { ...draft.actions },
-        assignments: [{
+      const assignments = draft.assignments.map((assignment) => {
+        const post = draft.posts.find((item) => item.id === assignment.postId);
+        const device = state.devices.find((item) => item.id === assignment.deviceId);
+        const comment = post?.comments.find((item) => item.assignmentId === assignment.id);
+        if (!post || !device || (draft.actions.comment && (!comment?.version || !comment.textHash))) return null;
+        return {
           assignmentId: assignment.id,
           postId: post.id,
           deviceId: assignment.deviceId,
           deviceLabel: `${device.alias} / ${device.serial}`,
           expectedAccount: tiktokConfiguration.controlledAccount,
           postUrl: post.finalUrl || post.url,
-          comment: comment ? { id: comment.id, version: comment.version!, text: comment.text, textHash: comment.textHash! } : null,
-        }],
+          comment: comment
+            ? { id: comment.id, version: comment.version!, text: comment.text, textHash: comment.textHash! }
+            : null,
+        };
+      });
+      if (assignments.some((assignment) => !assignment)) {
+        rawDispatch({ type: "set-notice", notice: { kind: "error", title: "Falta completar comentarios TikTok", message: "Genera o edita el comentario exacto de cada asignación antes de autorizar." } });
+        return;
+      }
+      setPublicConfirmation(false);
+      setExpectedTargetTexts(Object.fromEntries(draft.posts.map((post) => [post.id, post.context.trim().slice(0, 500)])));
+      setTikTokExecutionConfirmation({
+        campaignId: draft.id,
+        revision: draft.revision,
+        actions: { ...draft.actions },
+        assignments: assignments as TikTokExecutionConfirmation["assignments"],
       });
       rawDispatch(action);
       return;
@@ -1377,11 +1383,10 @@ export function ControlPanel() {
 
     if (action.type === "start-campaign" && action.platform === "tiktok") {
       const confirmation = tiktokExecutionConfirmation;
-      const assignment = confirmation?.assignments[0];
-      if (!confirmation || !assignment || !publicConfirmation || !tiktokConfiguration.postEffectsEnabled
+      if (!confirmation || !publicConfirmation || !tiktokConfiguration.postEffectsEnabled
         || !tiktokConfiguration.postSelectorsConfigured
         || (confirmation.actions.comment && !tiktokConfiguration.commentSelectorsConfigured)
-        || (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) < 5) return;
+        || confirmation.assignments.some((assignment) => (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) < 5)) return;
       rawDispatch({ type: "close-modal" });
       void apiRequest<{ operation: { id: string } }>(`/api/tiktok/campaigns/${confirmation.campaignId}`, {
         method: "POST",
@@ -1389,21 +1394,27 @@ export function ControlPanel() {
         body: JSON.stringify({
           idempotencyKey: crypto.randomUUID(),
           expectedRevision: confirmation.revision,
-          expectedAccount: assignment.expectedAccount,
-          expectedAssignmentId: assignment.assignmentId,
-          expectedPostId: assignment.postId,
-          expectedDeviceId: assignment.deviceId,
-          expectedPostUrl: assignment.postUrl,
           expectedActions: confirmation.actions,
-          expectedComment: assignment.comment && { id: assignment.comment.id, version: assignment.comment.version, textHash: assignment.comment.textHash },
-          expectedTargetText: expectedTargetTexts[assignment.postId].trim(),
+          assignments: confirmation.assignments.map((assignment) => ({
+            assignmentId: assignment.assignmentId,
+            postId: assignment.postId,
+            deviceId: assignment.deviceId,
+            expectedAccount: assignment.expectedAccount,
+            expectedPostUrl: assignment.postUrl,
+            expectedTargetText: expectedTargetTexts[assignment.postId].trim(),
+            expectedComment: assignment.comment && {
+              id: assignment.comment.id,
+              version: assignment.comment.version,
+              textHash: assignment.comment.textHash,
+            },
+          })),
           confirmed: true,
           controlledAccount: true,
           controlledContent: true,
         }),
       }).then(({ operation }) => {
         pollOperation(operation.id, "tiktok");
-        rawDispatch({ type: "set-notice", notice: { kind: "status", title: "Ejecución TikTok en cola", message: "El worker revalidará dispositivo, cuenta, publicación y estado del Like." } });
+        rawDispatch({ type: "set-notice", notice: { kind: "status", title: "Ejecución TikTok en cola", message: "El worker revalidará cada dispositivo, cuenta, publicación y estado del Like." } });
       }).catch((error: unknown) => rawDispatch({ type: "set-notice", notice: { kind: "error", title: "No se pudo autorizar TikTok", message: error instanceof Error ? error.message : String(error) } }));
       return;
     }
@@ -1482,7 +1493,7 @@ export function ControlPanel() {
         pollOperation(operation.id, action.platform);
         rawDispatch({
           type: "set-notice",
-          notice: { kind: "status", title: "Campaña aceptada", message: action.platform === "tiktok" ? "El worker está creando el objetivo persistente 1×1." : "El worker está creando el plan persistente read-only." },
+          notice: { kind: "status", title: "Campaña aceptada", message: action.platform === "tiktok" ? "El worker está creando el plan persistente TikTok N×M." : "El worker está creando el plan persistente read-only." },
         });
       }).catch((error: unknown) => {
         rawDispatch({ type: "campaign-request-failed", platform: action.platform });
@@ -1739,7 +1750,7 @@ export function ControlPanel() {
           ))}
           <div className="nav-footnote">
             <span className="status-dot" aria-hidden="true" />
-            <p><strong>Efectos bajo confirmación</strong>Facebook N×M y TikTok 1×1 usan planes persistentes.</p>
+            <p><strong>Efectos bajo confirmación</strong>Facebook y TikTok N×M usan planes persistentes.</p>
           </div>
         </nav>
 
@@ -1831,7 +1842,7 @@ export function ControlPanel() {
         </Stack>
       </Modal>
 
-      <Modal opened={modal?.type === "start-campaign"} onClose={() => dispatch({ type: "close-modal" })} title={modal?.type === "start-campaign" && modal.platform === "facebook" ? "Autorizar plan público N×M" : "Autorizar TikTok post 1×1"} size="lg">
+      <Modal opened={modal?.type === "start-campaign"} onClose={() => dispatch({ type: "close-modal" })} title={modal?.type === "start-campaign" && modal.platform === "facebook" ? "Autorizar plan público N×M" : "Autorizar plan público TikTok N×M"} size="lg">
         {modal?.type === "start-campaign" && (
           <Stack>
             {modal.platform === "facebook" ? (
@@ -1877,10 +1888,10 @@ export function ControlPanel() {
                 ))}
                 {!tiktokConfiguration.postEffectsEnabled && <Alert color="yellow">Bloqueado por `TIKTOK_PUBLIC_EFFECTS_ENABLED`; no se crearán jobs públicos.</Alert>}
                 {!tiktokPostConfigured && <Alert color="yellow">Falta configurar la estructura móvil TikTok verificada para esta combinación de acciones.</Alert>}
-                <Checkbox checked={publicConfirmation} onChange={(event) => setPublicConfirmation(event.currentTarget.checked)} label="Confirmo que la cuenta y publicación son controladas y autorizo exactamente esta ejecución 1×1." />
+                <Checkbox checked={publicConfirmation} onChange={(event) => setPublicConfirmation(event.currentTarget.checked)} label="Confirmo que la cuenta y las publicaciones son controladas y autorizo exactamente las ejecuciones mostradas." />
                 <Group justify="flex-end">
                   <Button variant="default" onClick={() => dispatch({ type: "close-modal" })}>Volver a revisión</Button>
-                  <Button color="red" disabled={!publicConfirmation || !tiktokExecutionConfirmation || !tiktokConfiguration.postEffectsEnabled || !tiktokPostConfigured || !tiktokExecutionConfirmation.assignments.every((assignment) => (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) >= 5)} onClick={() => dispatch({ type: "start-campaign", platform: "tiktok" })}>Autorizar ejecución TikTok</Button>
+                  <Button color="red" disabled={!publicConfirmation || !tiktokExecutionConfirmation || !tiktokConfiguration.postEffectsEnabled || !tiktokPostConfigured || !tiktokExecutionConfirmation.assignments.every((assignment) => (expectedTargetTexts[assignment.postId]?.trim().length ?? 0) >= 5)} onClick={() => dispatch({ type: "start-campaign", platform: "tiktok" })}>Autorizar {tiktokExecutionConfirmation?.assignments.length ?? 0} ejecuciones TikTok</Button>
                 </Group>
               </>
             )}

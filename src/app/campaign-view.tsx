@@ -25,9 +25,9 @@ export function CampaignView({ platform, label, accent, allowedHosts, requiredCa
     <div className="view-content campaign-view" data-accent={accent}>
       <header className="view-heading campaign-heading">
         <div>
-          <span className="section-code">{platform === "facebook" ? "02 / CONSTRUCTOR N×M" : "03 / TIKTOK POST 1×1"}</span>
+          <span className="section-code">{platform === "facebook" ? "02 / CONSTRUCTOR N×M" : "03 / TIKTOK POST N×M"}</span>
           <Title order={1}>{label}</Title>
-          <Text>{platform === "facebook" ? "Todos los equipos seleccionados procesan todas las publicaciones." : "Un dispositivo controlado procesa una publicación verificada."}</Text>
+          <Text>{platform === "facebook" ? "Todos los equipos seleccionados procesan todas las publicaciones." : "Cada equipo seleccionado procesa cada publicación verificada."}</Text>
         </div>
         <div className="campaign-state"><span>ESTADO DE CAMPAÑA</span><Badge size="lg" variant="light">{statusLabels[draft.status]}</Badge><small>{requiredCapability}</small></div>
       </header>

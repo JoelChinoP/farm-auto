@@ -31,6 +31,7 @@ import {
 import { runWorker } from "../src/worker.ts";
 
 const DEVICE_ID = "tiktok-device-1";
+const DEVICE_ID_2 = "tiktok-device-2";
 const ACCOUNT = "@controlled.qa";
 
 function config(overrides: Partial<TikTokConfig> = {}): TikTokConfig {
@@ -56,39 +57,43 @@ function config(overrides: Partial<TikTokConfig> = {}): TikTokConfig {
   };
 }
 
-function addEligibleDevice(database: Database.Database) {
-  const hardwareId = "a".repeat(64);
+function addEligibleDevice(database: Database.Database, deviceId = DEVICE_ID, systemPort = 8200, physicalOrder = 1, hardwareId = "a".repeat(64)) {
   database.prepare("INSERT INTO device_profiles VALUES (?, ?, ?, ?, ?, ?, ?)")
-    .run(hardwareId, DEVICE_ID, "TikTok QA", 1, 8200, 1, 1);
+    .run(hardwareId, deviceId, "TikTok QA", physicalOrder, systemPort, 1, 1);
   database.prepare(`
     INSERT INTO device_observations (device_id, connection, hardware_id, packages_json, observed_at)
     VALUES (?, 'connected', ?, ?, 1)
-  `).run(DEVICE_ID, hardwareId, JSON.stringify([TIKTOK_APP_PACKAGE]));
+  `).run(deviceId, hardwareId, JSON.stringify([TIKTOK_APP_PACKAGE]));
   const operation = createOperation(database, {
     kind: "device.prepare",
     idempotencyKey: randomUUID(),
-    request: { deviceId: DEVICE_ID },
-    deviceId: DEVICE_ID,
+    request: { deviceId },
+    deviceId,
   }).operation;
   database.prepare(`
     INSERT INTO device_preparations (
       id, device_id, operation_id, status, step, created_at, updated_at, completed_at, setup_revision
     ) VALUES (?, ?, ?, 'ready', 'Listo', 1, 1, 1, ?)
-  `).run(randomUUID(), DEVICE_ID, operation.id, CURRENT_SETUP_REVISION);
+  `).run(randomUUID(), deviceId, operation.id, CURRENT_SETUP_REVISION);
 }
 
-function campaignRequest(comment = true) {
+function campaignRequest(options: { comment?: boolean; deviceIds?: string[]; urls?: string[] } = {}) {
+  const comment = options.comment ?? true;
+  const deviceIds = options.deviceIds ?? [DEVICE_ID];
+  const urls = options.urls ?? ["https://www.tiktok.com/@controlled/video/7410000000000000000"];
   return {
     platform: "tiktok" as const,
-    urls: ["https://www.tiktok.com/@controlled/video/7410000000000000000"],
-    deviceIds: [DEVICE_ID],
+    urls,
+    deviceIds,
     actions: { like: true, comment },
-    distribution: comment ? [{ intention: "Afinidad", tone: "Cercano" as const, count: 1 as const }] : [],
+    distribution: comment
+      ? deviceIds.map(() => ({ intention: "Afinidad", tone: "Cercano" as const, count: 1 as const }))
+      : [],
   };
 }
 
-function createCampaign(database: Database.Database, comment = true) {
-  const request = campaignRequest(comment);
+function createCampaign(database: Database.Database, options: { comment?: boolean; deviceIds?: string[]; urls?: string[] } = {}) {
+  const request = campaignRequest(options);
   const operation = createOperation(database, {
     kind: "campaign.create",
     idempotencyKey: randomUUID(),
@@ -118,18 +123,35 @@ test("accepts only safe TikTok domains and strict Live URLs", () => {
   assert.throws(() => validateTikTokCampaignRequest({ ...campaignRequest(), urls: ["https://www.tiktok.com/@qa/live"] }), /no admite una URL Live/);
 });
 
-test("enforces one post by one device and prepared TikTok package eligibility", () => {
+test("enforces multi-device campaigns with exact comment distribution", () => {
   const database = openDatabase(":memory:");
   try {
     addEligibleDevice(database);
     assert.doesNotThrow(() => assertTikTokDeviceEligible(database, DEVICE_ID));
     const validated = validateTikTokCampaignRequest(campaignRequest());
     assert.deepEqual(validated.deviceIds, [DEVICE_ID]);
-    assert.throws(() => validateTikTokCampaignRequest({ ...campaignRequest(), urls: [
-      campaignRequest().urls[0],
-      "https://www.tiktok.com/@controlled/video/2",
-    ] }), (error) => error instanceof TikTokError && error.code === "TIKTOK_REQUIRES_1X1");
-    assert.throws(() => validateTikTokCampaignRequest({ ...campaignRequest(), deviceIds: [DEVICE_ID, "other"] }), /exactamente un dispositivo/);
+    const multi = validateTikTokCampaignRequest(campaignRequest({
+      deviceIds: [DEVICE_ID, DEVICE_ID_2],
+      urls: [
+        "https://www.tiktok.com/@controlled/video/7410000000000000000",
+        "https://www.tiktok.com/@controlled/video/7410000000000000001",
+      ],
+    }));
+    assert.equal(multi.urls.length, 2);
+    assert.equal(multi.deviceIds.length, 2);
+    assert.equal(multi.distribution.length, 2);
+    assert.throws(() => validateTikTokCampaignRequest(campaignRequest({ deviceIds: [DEVICE_ID, DEVICE_ID] })), /solo puede seleccionarse una vez/);
+    assert.throws(() => validateTikTokCampaignRequest(campaignRequest({
+      deviceIds: [DEVICE_ID, DEVICE_ID_2],
+      urls: [
+        "https://www.tiktok.com/@controlled/video/7410000000000000000",
+        "https://www.tiktok.com/@controlled/video/7410000000000000000",
+      ],
+    })), (error) => error instanceof TikTokError && error.code === "DUPLICATE_TIKTOK_URL");
+    assert.throws(() => validateTikTokCampaignRequest({
+      ...campaignRequest({ deviceIds: [DEVICE_ID, DEVICE_ID_2] }),
+      distribution: [{ intention: "Afinidad", tone: "Cercano", count: 1 }],
+    }), /cubrir exactamente/);
 
     database.prepare("UPDATE device_observations SET packages_json = '[]' WHERE device_id = ?").run(DEVICE_ID);
     assert.throws(() => assertTikTokDeviceEligible(database, DEVICE_ID), (error) => error instanceof TikTokError && error.code === "TIKTOK_NOT_INSTALLED");
@@ -138,14 +160,15 @@ test("enforces one post by one device and prepared TikTok package eligibility", 
   }
 });
 
-test("creates a manual-context campaign and generates exactly one comment without extraction", async () => {
+test("creates a manual-context N×M campaign and generates one comment per assignment", async () => {
   const database = openDatabase(":memory:");
   try {
     addEligibleDevice(database);
-    const campaign = createCampaign(database);
+    addEligibleDevice(database, DEVICE_ID_2, 8201, 2, "b".repeat(64));
+    const campaign = createCampaign(database, { deviceIds: [DEVICE_ID, DEVICE_ID_2] });
     assert.equal(campaign.mode, "post");
     assert.equal(campaign.posts.length, 1);
-    assert.equal(campaign.assignments.length, 1);
+    assert.equal(campaign.assignments.length, 2);
     assert.equal(campaign.posts[0].contextStatus, "queued");
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'post.extract'").get() as { total: number }).total, 0);
     assert.throws(() => requestTikTokCommentGeneration(database, {
@@ -158,16 +181,16 @@ test("creates a manual-context campaign and generates exactly one comment withou
     const key = randomUUID();
     const generation = requestTikTokCommentGeneration(database, { postId: campaign.posts[0].id, idempotencyKey: key });
     assert.equal(requestTikTokCommentGeneration(database, { postId: campaign.posts[0].id, idempotencyKey: key }).replayed, true);
-    const assignmentId = edited.assignments[0].id;
+    const assignmentIds = edited.assignments.map((assignment) => assignment.id);
     const generated = await generateTikTokComment(database, generation.operation.id, async () => Response.json({
-      choices: [{ message: { content: JSON.stringify({ comments: [{
+      choices: [{ message: { content: JSON.stringify({ comments: assignmentIds.map((assignmentId) => ({
         assignmentId,
-        text: "Este comentario valida el contexto manual",
-      }] }) } }],
+        text: `Este comentario valida el contexto manual ${assignmentId.slice(0, 8)}`,
+      })) }) } }],
     }), undefined, "test-key");
     assert.equal(generated.status, "ready");
-    assert.equal(generated.posts[0].comments.length, 1);
-    assert.equal(generated.posts[0].comments[0].text, "Este comentario valida el contexto manual");
+    assert.equal(generated.posts[0].comments.length, 2);
+    assert.ok(generated.posts[0].comments.every((comment) => comment.text.startsWith("Este comentario valida")));
   } finally {
     database.close();
   }
@@ -177,20 +200,22 @@ test("persists an explicit post authorization with no automatic retry", () => {
   const database = openDatabase(":memory:");
   try {
     addEligibleDevice(database);
-    const campaign = createCampaign(database, false);
+    const campaign = createCampaign(database, { comment: false });
     const post = campaign.posts[0];
     const assignment = campaign.assignments[0];
     const request = {
       idempotencyKey: randomUUID(),
       expectedRevision: campaign.revision,
-      expectedAccount: ACCOUNT,
-      expectedAssignmentId: assignment.id,
-      expectedPostId: post.id,
-      expectedDeviceId: assignment.deviceId,
-      expectedPostUrl: post.url,
       expectedActions: campaign.actions,
-      expectedComment: null,
-      expectedTargetText: "Post controlado exacto",
+      assignments: [{
+        assignmentId: assignment.id,
+        postId: post.id,
+        deviceId: assignment.deviceId,
+        expectedAccount: ACCOUNT,
+        expectedPostUrl: post.url,
+        expectedComment: null,
+        expectedTargetText: "Post controlado exacto",
+      }],
       confirmed: true,
       controlledAccount: true,
       controlledContent: true,
@@ -206,6 +231,7 @@ test("persists an explicit post authorization with no automatic retry", () => {
     assert.equal((authorized.operation.request as { mode: string; authorization: { environmentGate: string } }).mode, "post");
     assert.equal((authorized.operation.request as { authorization: { environmentGate: string } }).authorization.environmentGate, "TIKTOK_PUBLIC_EFFECTS_ENABLED");
     assert.equal(requestTikTokPostExecution(database, campaign.id, request, config()).replayed, true);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'assignment.execute'").get() as { total: number }).total, 1);
   } finally {
     database.close();
   }
@@ -268,7 +294,7 @@ test("the worker dispatches TikTok campaign jobs by their persisted platform", a
   const database = openDatabase(":memory:");
   try {
     addEligibleDevice(database);
-    const request = campaignRequest(false);
+    const request = campaignRequest({ comment: false });
     const operation = createOperation(database, {
       kind: "campaign.create",
       idempotencyKey: randomUUID(),

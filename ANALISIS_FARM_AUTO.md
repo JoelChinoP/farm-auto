@@ -480,14 +480,14 @@ Transiciones relevantes Facebook:
 6. Ejecutar; el backend valida, toma lock, registra operacion, crea sesion Appium y realiza el flujo.
 7. Consultar aviso y Actividad; si hay riesgo de efecto publico no confirmado, verificar manualmente antes de repetir.
 
-### Flujo TikTok post
+### Flujo TikTok post N×M
 
-1. Elegir TK y registrar URL destino.
-2. Ingresar contexto, intencion y tono.
-3. Generar borrador en DeepSeek.
-4. Seleccionar/revisar el texto, que ya llega `approved`.
-5. Copiar o enviar explicitamente like + comentario.
-6. Revisar `sent`, `failed` u `outcome_unknown`.
+1. Elegir TK, registrar de 1 a 10 URLs destino y seleccionar varios dispositivos elegibles.
+2. Ingresar contexto manual por publicacion; distribuir intencion y tono entre dispositivos.
+3. Generar comentarios en DeepSeek (uno por asignacion, en una sola llamada por publicacion).
+4. Revisar el texto exacto por asignacion.
+5. Autorizar la matriz completa: un job `assignment.execute` por publicacion × dispositivo, con prioridad secuencial por dispositivo.
+6. Revisar `sent`, `failed` u `outcome_unknown` por asignacion; reconciliar efectos inciertos desde Historial.
 
 ### Flujo Facebook de rotacion
 

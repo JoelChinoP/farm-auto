@@ -232,39 +232,67 @@ export function normalizeTikTokLiveUrl(value: string) {
 
 export function validateTikTokCampaignRequest(value: unknown): TikTokCampaignRequest {
   const input = objectValue(value);
-  if (!Array.isArray(input.urls) || input.urls.length !== 1 || typeof input.urls[0] !== "string") {
-    throw new TikTokError("TIKTOK_REQUIRES_1X1", "TikTok post requiere exactamente una publicacion.");
+  if (!Array.isArray(input.urls) || input.urls.length < 1 || input.urls.length > 10) {
+    throw new TikTokError("INVALID_TIKTOK_URLS", "La campana TikTok requiere entre 1 y 10 URLs.");
   }
-  if (!Array.isArray(input.deviceIds) || input.deviceIds.length !== 1) {
-    throw new TikTokError("TIKTOK_REQUIRES_1X1", "TikTok post requiere exactamente un dispositivo.");
+  const urls: string[] = [];
+  const seenUrls = new Set<string>();
+  for (const rawUrl of input.urls) {
+    if (typeof rawUrl !== "string") throw new TikTokError("INVALID_TIKTOK_URL", "Cada URL debe ser texto.");
+    const normalized = normalizeTikTokUrl(rawUrl);
+    if (/^\/@[^/]+\/live$/u.test(new URL(normalized.normalizedUrl).pathname)) {
+      throw new TikTokError("INVALID_TIKTOK_POST_URL", "TikTok post no admite una URL Live.");
+    }
+    if (seenUrls.has(normalized.normalizedUrl)) {
+      throw new TikTokError("DUPLICATE_TIKTOK_URL", "La lista contiene publicaciones duplicadas.");
+    }
+    seenUrls.add(normalized.normalizedUrl);
+    urls.push(normalized.sourceUrl);
   }
-  const deviceId = nonEmptyString(input.deviceIds[0], "deviceIds[0]", 120);
-  const normalizedUrl = normalizeTikTokUrl(input.urls[0]);
-  if (/^\/@[^/]+\/live$/u.test(new URL(normalizedUrl.normalizedUrl).pathname)) {
-    throw new TikTokError("INVALID_TIKTOK_POST_URL", "TikTok post no admite una URL Live.");
+
+  if (!Array.isArray(input.deviceIds) || input.deviceIds.length < 1 || input.deviceIds.length > 100) {
+    throw new TikTokError("INVALID_DEVICE_SELECTION", "Selecciona al menos un dispositivo elegible.");
   }
-  const url = normalizedUrl.sourceUrl;
+  const deviceIds = input.deviceIds.map((deviceId, index) => nonEmptyString(deviceId, `deviceIds[${index}]`, 120));
+  if (new Set(deviceIds).size !== deviceIds.length) {
+    throw new TikTokError("DUPLICATE_DEVICE", "Cada dispositivo solo puede seleccionarse una vez.");
+  }
+
   const rawActions = objectValue(input.actions, "actions es obligatorio.");
   if (typeof rawActions.like !== "boolean" || typeof rawActions.comment !== "boolean" || (!rawActions.like && !rawActions.comment)) {
     throw new TikTokError("INVALID_ACTIONS", "Selecciona Like, Comentario o ambos.");
   }
   const actions = { like: rawActions.like, comment: rawActions.comment };
-  if (!actions.comment) return { platform: "tiktok", urls: [url], deviceIds: [deviceId], actions, distribution: [] };
-  if (!Array.isArray(input.distribution) || input.distribution.length !== 1) {
-    throw new TikTokError("INVALID_DISTRIBUTION", "TikTok 1x1 requiere una unica configuracion de comentario.");
+  if (!actions.comment) return { platform: "tiktok", urls, deviceIds, actions, distribution: [] };
+  if (!Array.isArray(input.distribution) || input.distribution.length < 1 || input.distribution.length > 20) {
+    throw new TikTokError("INVALID_DISTRIBUTION", "La distribucion de comentarios no es valida.");
   }
-  const row = objectValue(input.distribution[0], "distribution[0] no es valida.");
-  const intention = nonEmptyString(row.intention, "distribution[0].intention", 300);
-  if (typeof row.tone !== "string" || !TIKTOK_TONES.includes(row.tone as (typeof TIKTOK_TONES)[number]) || row.count !== 1) {
-    throw new TikTokError("INVALID_DISTRIBUTION", "La distribucion debe usar un tono valido y cantidad 1.");
+  const distribution = input.distribution.map((value, index) => {
+    const row = objectValue(value, `distribution[${index}] no es valida.`);
+    const intention = nonEmptyString(row.intention, `distribution[${index}].intention`, 300);
+    if (typeof row.tone !== "string" || !TIKTOK_TONES.includes(row.tone as (typeof TIKTOK_TONES)[number])) {
+      throw new TikTokError("INVALID_DISTRIBUTION", `distribution[${index}].tone no es valido.`);
+    }
+    if (!Number.isInteger(row.count) || Number(row.count) < 1 || Number(row.count) > deviceIds.length) {
+      throw new TikTokError("INVALID_DISTRIBUTION", `distribution[${index}].count no es valido.`);
+    }
+    return { intention, tone: row.tone as (typeof TIKTOK_TONES)[number], count: Number(row.count) };
+  });
+  if (distribution.reduce((total, row) => total + row.count, 0) !== deviceIds.length) {
+    throw new TikTokError("INVALID_DISTRIBUTION", "La distribucion debe cubrir exactamente los dispositivos elegidos.");
   }
-  return {
-    platform: "tiktok",
-    urls: [url],
-    deviceIds: [deviceId],
-    actions,
-    distribution: [{ intention, tone: row.tone as (typeof TIKTOK_TONES)[number], count: 1 }],
-  };
+  return { platform: "tiktok", urls, deviceIds, actions, distribution };
+}
+
+function commentProfiles(input: TikTokCampaignRequest) {
+  const profiles: Array<{ deviceId: string; intention: string; tone: string }> = [];
+  let deviceIndex = 0;
+  for (const row of input.distribution) {
+    for (let index = 0; index < row.count; index++) {
+      profiles.push({ deviceId: input.deviceIds[deviceIndex++], intention: row.intention, tone: row.tone });
+    }
+  }
+  return profiles;
 }
 
 export function validateTikTokLiveRequest(value: unknown): TikTokLiveRequest {
@@ -377,33 +405,48 @@ export function createTikTokCampaign(database: Database.Database, operationId: s
     const operation = getOperation(database, operationId);
     if (!operation || operation.kind !== "campaign.create") throw new Error("La operacion de campana TikTok no existe.");
     if (operation.campaignId) return getTikTokCampaignSnapshot(database, operation.campaignId);
-    assertTikTokDeviceEligible(database, input.deviceIds[0]);
+    for (const deviceId of input.deviceIds) assertTikTokDeviceEligible(database, deviceId);
     const campaignId = randomUUID();
-    const postId = randomUUID();
-    const assignmentId = randomUUID();
     const now = Date.now();
-    const { sourceUrl, normalizedUrl } = normalizeTikTokUrl(input.urls[0]);
     database.prepare(`
       INSERT INTO campaigns (id, platform, status, like_enabled, comment_enabled, created_at, updated_at)
       VALUES (?, 'tiktok', ?, ?, ?, ?, ?)
     `).run(campaignId, input.actions.comment ? "preparing" : "ready", Number(input.actions.like), Number(input.actions.comment), now, now);
-    database.prepare(`
-      INSERT INTO posts (
-        id, campaign_id, position, source_url, normalized_url, status,
-        context_status, created_at, updated_at
-      ) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
-    `).run(postId, campaignId, sourceUrl, normalizedUrl, input.actions.comment ? "queued" : "ready", input.actions.comment ? "queued" : "ready", now, now);
-    database.prepare(`
-      INSERT INTO assignments (id, campaign_id, post_id, device_id, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(assignmentId, campaignId, postId, input.deviceIds[0], input.actions.comment ? "pending" : "approved", now, now);
-    if (input.actions.comment) {
-      const profile = input.distribution[0];
+    const profiles = commentProfiles(input);
+    for (const [postIndex, value] of input.urls.entries()) {
+      const { sourceUrl, normalizedUrl } = normalizeTikTokUrl(value);
+      const postId = randomUUID();
       database.prepare(`
-        INSERT INTO comments (
-          id, assignment_id, version, intention, tone, text, status, source, created_at, updated_at
-        ) VALUES (?, ?, 1, ?, ?, '', 'pending', 'generated', ?, ?)
-      `).run(randomUUID(), assignmentId, profile.intention, profile.tone, now, now);
+        INSERT INTO posts (
+          id, campaign_id, position, source_url, normalized_url, status,
+          context_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        postId,
+        campaignId,
+        postIndex + 1,
+        sourceUrl,
+        normalizedUrl,
+        input.actions.comment ? "queued" : "ready",
+        input.actions.comment ? "queued" : "ready",
+        now,
+        now,
+      );
+      for (const [deviceIndex, deviceId] of input.deviceIds.entries()) {
+        const assignmentId = randomUUID();
+        database.prepare(`
+          INSERT INTO assignments (id, campaign_id, post_id, device_id, status, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(assignmentId, campaignId, postId, deviceId, input.actions.comment ? "pending" : "approved", now, now);
+        if (input.actions.comment) {
+          const profile = profiles[deviceIndex];
+          database.prepare(`
+            INSERT INTO comments (
+              id, assignment_id, version, intention, tone, text, status, source, created_at, updated_at
+            ) VALUES (?, ?, 1, ?, ?, '', 'pending', 'generated', ?, ?)
+          `).run(randomUUID(), assignmentId, profile.intention, profile.tone, now, now);
+        }
+      }
     }
     const result = stableJson({ domainCommitted: true });
     database.prepare("UPDATE operations SET campaign_id = ?, result_json = ?, updated_at = ? WHERE id = ?")
@@ -495,10 +538,17 @@ export function requestTikTokCommentGeneration(
     if (!post.context?.trim() || post.context_status !== "edited") {
       throw new TikTokError("MANUAL_CONTEXT_REQUIRED", "Guarda contexto manual antes de generar el comentario.", 409);
     }
-    const assignment = database.prepare("SELECT id FROM assignments WHERE post_id = ?").get(post.id) as { id: string };
-    const comment = currentComment(database, assignment.id);
-    if (!input.overwriteManual && (comment?.source === "manual" || comment?.status === "edited")) {
-      throw new TikTokError("MANUAL_COMMENT_PRESENT", "Confirma antes de sobrescribir el comentario editado manualmente.", 409);
+    const assignments = database.prepare("SELECT id FROM assignments WHERE post_id = ? ORDER BY id")
+      .all(post.id) as Array<{ id: string }>;
+    if (!assignments.length) throw new TikTokError("ASSIGNMENT_NOT_FOUND", "La publicacion TikTok no tiene asignaciones.", 404);
+    if (!input.overwriteManual) {
+      const manual = database.prepare(`
+        SELECT 1 FROM comments c
+        WHERE c.assignment_id IN (SELECT id FROM assignments WHERE post_id = ?)
+          AND c.version = (SELECT MAX(c2.version) FROM comments c2 WHERE c2.assignment_id = c.assignment_id)
+          AND (c.source = 'manual' OR c.status = 'edited') LIMIT 1
+      `).get(post.id);
+      if (manual) throw new TikTokError("MANUAL_COMMENT_PRESENT", "Confirma antes de sobrescribir el comentario editado manualmente.", 409);
     }
     const created = createOperation(database, {
       kind: "comments.generate",
@@ -527,7 +577,7 @@ export function requestTikTokCommentGeneration(
   }).immediate();
 }
 
-export function parseGeneratedTikTokComment(content: string, assignmentId: string, minWords: number, maxWords: number) {
+export function parseGeneratedTikTokComments(content: string, assignmentIds: string[], minWords: number, maxWords: number) {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content.trim().replace(/^```(?:json)?\s*|\s*```$/giu, ""));
@@ -535,19 +585,26 @@ export function parseGeneratedTikTokComment(content: string, assignmentId: strin
     throw new TikTokError("INVALID_MODEL_RESPONSE", "DeepSeek devolvio JSON invalido.", 502);
   }
   const root = objectValue(parsed, "DeepSeek devolvio una respuesta invalida.");
-  if (Object.keys(root).length !== 1 || !Array.isArray(root.comments) || root.comments.length !== 1) {
-    throw new TikTokError("INVALID_MODEL_RESPONSE", "DeepSeek debe devolver exactamente un comentario.", 502);
+  if (Object.keys(root).length !== 1 || !Array.isArray(root.comments) || root.comments.length !== assignmentIds.length) {
+    throw new TikTokError("INVALID_MODEL_RESPONSE", "DeepSeek no devolvio la cantidad exacta de comentarios.", 502);
   }
-  const row = objectValue(root.comments[0], "DeepSeek devolvio un comentario invalido.");
-  if (Object.keys(row).length !== 2 || row.assignmentId !== assignmentId || typeof row.text !== "string") {
-    throw new TikTokError("INVALID_MODEL_RESPONSE", "El comentario no identifica la asignacion esperada.", 502);
-  }
-  const text = row.text.trim();
-  const words = text.split(/\s+/u).filter(Boolean).length;
-  if (text.length < 2 || text.length > 500 || words < minWords || words > maxWords) {
-    throw new TikTokError("INVALID_MODEL_RESPONSE", "El comentario esta fuera del contrato esperado.", 502);
-  }
-  return { assignmentId, text };
+  const expected = new Set(assignmentIds);
+  const seen = new Set<string>();
+  const comments = root.comments.map((value) => {
+    const row = objectValue(value, "DeepSeek devolvio un comentario invalido.");
+    if (Object.keys(row).length !== 2 || typeof row.assignmentId !== "string" || typeof row.text !== "string") {
+      throw new TikTokError("INVALID_MODEL_RESPONSE", "Cada comentario debe identificar assignmentId y text.", 502);
+    }
+    const text = row.text.trim();
+    const words = text.split(/\s+/u).filter(Boolean).length;
+    if (!expected.has(row.assignmentId) || seen.has(row.assignmentId) || text.length < 2 || text.length > 500 || words < minWords || words > maxWords) {
+      throw new TikTokError("INVALID_MODEL_RESPONSE", "DeepSeek devolvio comentarios fuera del contrato esperado.", 502);
+    }
+    seen.add(row.assignmentId);
+    return { assignmentId: row.assignmentId, text };
+  });
+  if (seen.size !== expected.size) throw new TikTokError("INVALID_MODEL_RESPONSE", "Faltan asignaciones en la respuesta de DeepSeek.", 502);
+  return comments;
 }
 
 export async function generateTikTokComment(
@@ -569,20 +626,25 @@ export async function generateTikTokComment(
   if (!post?.context || !post.context_hash || post.context_status !== "edited") {
     throw new TikTokError("MANUAL_CONTEXT_REQUIRED", "La generacion requiere contexto manual vigente.", 409);
   }
-  const assignment = database.prepare("SELECT id FROM assignments WHERE post_id = ?").get(operation.postId) as { id: string } | undefined;
-  if (!assignment) throw new TikTokError("ASSIGNMENT_NOT_FOUND", "La asignacion TikTok no existe.", 404);
-  const previous = currentComment(database, assignment.id);
-  if (!previous) throw new TikTokError("COMMENT_NOT_FOUND", "El comentario TikTok no existe.", 404);
   const request = objectValue(operation.request);
-  if (!request.overwriteManual && (previous.source === "manual" || previous.status === "edited")) {
-    throw new TikTokError("MANUAL_COMMENT_PRESENT", "Confirma antes de sobrescribir el comentario manual.", 409);
+  const assignments = database.prepare("SELECT id FROM assignments WHERE post_id = ? ORDER BY id")
+    .all(operation.postId) as Array<{ id: string }>;
+  if (!assignments.length) throw new TikTokError("ASSIGNMENT_NOT_FOUND", "La publicacion TikTok no tiene asignaciones.", 404);
+  const previous = assignments.map((assignment) => {
+    const comment = currentComment(database, assignment.id);
+    if (!comment) throw new TikTokError("COMMENT_NOT_FOUND", "Falta un comentario TikTok para una asignacion.", 404);
+    return { assignmentId: assignment.id, comment };
+  });
+  if (!request.overwriteManual && previous.some((item) => item.comment.source === "manual" || item.comment.status === "edited")) {
+    throw new TikTokError("MANUAL_COMMENT_PRESENT", "Confirma antes de sobrescribir los comentarios manuales.", 409);
   }
   if (!apiKey) throw new TikTokError("DEEPSEEK_NOT_CONFIGURED", "Falta API_DEEPSEEK en el servidor.", 503);
   const startedAt = Date.now();
   database.transaction(() => {
     database.prepare("UPDATE posts SET status = 'generating', error = NULL, updated_at = ? WHERE id = ?").run(startedAt, operation.postId);
-    database.prepare("UPDATE assignments SET status = 'generating', updated_at = ? WHERE id = ?").run(startedAt, assignment.id);
-    database.prepare("UPDATE comments SET status = 'generating', error = NULL, updated_at = ? WHERE id = ?").run(startedAt, previous.id);
+    database.prepare("UPDATE assignments SET status = 'generating', updated_at = ? WHERE post_id = ?").run(startedAt, operation.postId);
+    const commentUpdate = database.prepare("UPDATE comments SET status = 'generating', error = NULL, updated_at = ? WHERE id = ?");
+    for (const item of previous) commentUpdate.run(startedAt, item.comment.id);
     touchCampaign(database, operation.campaignId!, startedAt);
   })();
   try {
@@ -597,9 +659,9 @@ export async function generateTikTokComment(
         messages: [
           {
             role: "system",
-            content: `${appConfig.commentGenerationPrompt}\nDevuelve solo {"comments":[{"assignmentId":"...","text":"..."}]}. Genera exactamente un comentario de ${appConfig.commentMinWords} a ${appConfig.commentMaxWords} palabras y 2..500 caracteres.`,
+            content: `${appConfig.commentGenerationPrompt}\nDevuelve solo {"comments":[{"assignmentId":"...","text":"..."}]}. Genera exactamente un comentario por asignacion, de ${appConfig.commentMinWords} a ${appConfig.commentMaxWords} palabras y 2..500 caracteres.`,
           },
-          { role: "user", content: JSON.stringify({ context: post.context, assignment: { id: assignment.id, intention: previous.intention, tone: previous.tone } }) },
+          { role: "user", content: JSON.stringify({ context: post.context, assignments: previous.map((item) => ({ id: item.assignmentId, intention: item.comment.intention, tone: item.comment.tone })) }) },
         ],
       }),
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
@@ -614,20 +676,28 @@ export async function generateTikTokComment(
     const body = await response.json() as { choices?: Array<{ message?: { content?: unknown } }> };
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== "string") throw new TikTokError("EMPTY_MODEL_RESPONSE", "DeepSeek no devolvio un comentario.", 502);
-    const generated = parseGeneratedTikTokComment(content, assignment.id, appConfig.commentMinWords, appConfig.commentMaxWords);
+    const generated = parseGeneratedTikTokComments(content, previous.map((item) => item.assignmentId), appConfig.commentMinWords, appConfig.commentMaxWords);
     assertOperationNotCancelled(database, operationId, signal);
     database.transaction(() => {
       const currentHash = (database.prepare("SELECT context_hash FROM posts WHERE id = ?").get(operation.postId) as { context_hash: string | null }).context_hash;
       if (currentHash !== post.context_hash) throw new TikTokError("CONTEXT_CHANGED", "El contexto cambio durante la generacion.", 409);
       const now = Date.now();
-      database.prepare(`
+      const insert = database.prepare(`
         INSERT INTO comments (
           id, assignment_id, version, intention, tone, text, status, stale, source, created_at, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 0, 'generated', ?, ?)
-      `).run(randomUUID(), assignment.id, previous.version + 1, previous.intention, previous.tone, generated.text, now, now);
-      database.prepare("UPDATE assignments SET status = 'draft', updated_at = ? WHERE id = ?").run(now, assignment.id);
+      `);
+      const previousById = new Map(previous.map((item) => [item.assignmentId, item.comment]));
+      for (const comment of generated) {
+        const prior = previousById.get(comment.assignmentId)!;
+        insert.run(randomUUID(), comment.assignmentId, prior.version + 1, prior.intention, prior.tone, comment.text, now, now);
+      }
+      database.prepare("UPDATE assignments SET status = 'draft', updated_at = ? WHERE post_id = ?").run(now, operation.postId);
       database.prepare("UPDATE posts SET status = 'ready', error = NULL, updated_at = ? WHERE id = ?").run(now, operation.postId);
-      database.prepare("UPDATE campaigns SET status = 'ready' WHERE id = ?").run(operation.campaignId);
+      database.prepare(`
+        UPDATE campaigns SET status = 'ready', updated_at = ?
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM posts WHERE campaign_id = ? AND status != 'ready')
+      `).run(now, operation.campaignId, operation.campaignId);
       const result = stableJson({ domainCommitted: true });
       database.prepare("UPDATE operations SET result_json = ?, updated_at = ? WHERE id = ?").run(result, now, operationId);
       database.prepare("UPDATE jobs SET result_json = ?, updated_at = ? WHERE operation_id = ?").run(result, now, operationId);
@@ -644,10 +714,16 @@ export async function generateTikTokComment(
       const message = error instanceof Error ? error.message : String(error);
       database.prepare("UPDATE posts SET status = ?, error = ?, updated_at = ? WHERE id = ?")
         .run(cancelled ? "context_ready" : "partial_failed", message, now, operation.postId);
-      database.prepare("UPDATE assignments SET status = ?, updated_at = ? WHERE id = ?")
-        .run(cancelled ? "pending" : "failed", now, assignment.id);
-      database.prepare("UPDATE comments SET status = 'failed', error = ?, updated_at = ? WHERE id = ?")
-        .run(message, now, previous.id);
+      database.prepare("UPDATE assignments SET status = ?, updated_at = ? WHERE post_id = ?")
+        .run(cancelled ? "pending" : "failed", now, operation.postId);
+      database.prepare(`
+        UPDATE comments SET status = 'failed', error = ?, updated_at = ?
+        WHERE id IN (
+          SELECT c.id FROM comments c WHERE c.assignment_id IN (SELECT id FROM assignments WHERE post_id = ?)
+            AND c.version = (SELECT MAX(c2.version) FROM comments c2 WHERE c2.assignment_id = c.assignment_id)
+            AND c.status = 'generating'
+        )
+      `).run(message, now, operation.postId);
       touchCampaign(database, operation.campaignId!, now);
     })();
     throw error;
@@ -700,7 +776,10 @@ export function editTikTokComment(
     `).run(randomUUID(), current.assignment_id, current.version + 1, intention, value.tone, text, now, now);
     database.prepare("UPDATE assignments SET status = 'draft', updated_at = ? WHERE id = ?").run(now, current.assignment_id);
     database.prepare("UPDATE posts SET status = 'ready', updated_at = ? WHERE id = ?").run(now, current.post_id);
-    database.prepare("UPDATE campaigns SET status = 'ready' WHERE id = ?").run(current.campaign_id);
+    database.prepare(`
+      UPDATE campaigns SET status = 'ready', updated_at = ?
+      WHERE id = ? AND NOT EXISTS (SELECT 1 FROM posts WHERE campaign_id = ? AND status != 'ready')
+    `).run(now, current.campaign_id, current.campaign_id);
     touchCampaign(database, current.campaign_id, now);
     return getTikTokCampaignSnapshot(database, current.campaign_id)!;
   }).immediate();
@@ -719,6 +798,7 @@ export function requestTikTokPostExecution(
   if (input.confirmed !== true || input.controlledAccount !== true || input.controlledContent !== true) {
     throw new TikTokError("EXPLICIT_CONFIRMATION_REQUIRED", "Confirma la cuenta, el contenido y los efectos publicos.", 409);
   }
+  const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : "";
   if (!Number.isInteger(input.expectedRevision) || Number(input.expectedRevision) < 1) {
     throw new TikTokError("INVALID_CONFIRMATION", "La revision confirmada no es valida.");
   }
@@ -727,9 +807,8 @@ export function requestTikTokPostExecution(
     throw new TikTokError("INVALID_CONFIRMATION", "Las acciones confirmadas no son validas.");
   }
   const actions = { like: expectedActionsInput.like, comment: expectedActionsInput.comment };
-  const expectedAccount = nonEmptyString(input.expectedAccount, "expectedAccount", 300);
-  if (!config.controlledAccount || expectedAccount !== config.controlledAccount) {
-    throw new TikTokError("CONTROLLED_ACCOUNT_CHANGED", "La cuenta TikTok controlada cambio o no esta configurada.", 409);
+  if (!config.controlledAccount) {
+    throw new TikTokError("CONTROLLED_ACCOUNT_NOT_CONFIGURED", "Configura la cuenta TikTok controlada antes de ejecutar.", 503);
   }
   const expectedAccountResourceId = requiredConfig(config.accountResourceId, "TIKTOK_ACCOUNT_RESOURCE_ID");
   const expectedPostContainerResourceId = requiredConfig(config.postContainerResourceId, "TIKTOK_POST_CONTAINER_RESOURCE_ID");
@@ -738,24 +817,46 @@ export function requestTikTokPostExecution(
   const expectedCommentEditorResourceId = actions.comment ? requiredConfig(config.commentEditorResourceId, "TIKTOK_COMMENT_EDITOR_RESOURCE_ID") : null;
   const expectedCommentSubmitResourceId = actions.comment ? requiredConfig(config.commentSubmitResourceId, "TIKTOK_COMMENT_SUBMIT_RESOURCE_ID") : null;
   const expectedCommentResultContainerResourceId = actions.comment ? requiredConfig(config.commentResultContainerResourceId, "TIKTOK_COMMENT_RESULT_CONTAINER_RESOURCE_ID") : null;
-  const expectedAssignmentId = nonEmptyString(input.expectedAssignmentId, "expectedAssignmentId", 200);
-  const expectedPostId = nonEmptyString(input.expectedPostId, "expectedPostId", 200);
-  const expectedDeviceId = nonEmptyString(input.expectedDeviceId, "expectedDeviceId", 120);
-  const expectedPostUrl = normalizeTikTokUrl(nonEmptyString(input.expectedPostUrl, "expectedPostUrl", 2_048)).sourceUrl;
-  const expectedTargetText = nonEmptyString(input.expectedTargetText, "expectedTargetText", 500);
-  if (expectedTargetText.length < 5) throw new TikTokError("TARGET_TEXT_INVALID", "La referencia visible debe tener al menos 5 caracteres.");
-  let expectedComment: null | { id: string; version: number; textHash: string } = null;
-  if (input.expectedComment !== null) {
-    const comment = objectValue(input.expectedComment, "expectedComment no es valido.");
-    if (!Number.isInteger(comment.version) || Number(comment.version) < 1 || typeof comment.textHash !== "string" || !/^[a-f0-9]{64}$/u.test(comment.textHash)) {
-      throw new TikTokError("INVALID_CONFIRMATION", "La version o hash del comentario no es valido.");
-    }
-    expectedComment = {
-      id: nonEmptyString(comment.id, "expectedComment.id", 200),
-      version: Number(comment.version),
-      textHash: comment.textHash,
-    };
+  if (!Array.isArray(input.assignments) || input.assignments.length < 1 || input.assignments.length > 1_000) {
+    throw new TikTokError("INVALID_CONFIRMATION", "La confirmacion debe incluir cada asignacion.");
   }
+  const confirmations = input.assignments.map((raw, index) => {
+    const confirmation = objectValue(raw, `assignments[${index}] no es valida.`);
+    const expectedTargetText = nonEmptyString(confirmation.expectedTargetText, `assignments[${index}].expectedTargetText`, 500);
+    if (expectedTargetText.length < 5) {
+      throw new TikTokError("TARGET_TEXT_INVALID", "Cada referencia visible debe tener al menos 5 caracteres.");
+    }
+    const expectedAccount = nonEmptyString(confirmation.expectedAccount, `assignments[${index}].expectedAccount`, 300);
+    if (expectedAccount !== config.controlledAccount) {
+      throw new TikTokError("CONTROLLED_ACCOUNT_CHANGED", "La cuenta TikTok controlada cambio o no esta configurada.", 409);
+    }
+    const expectedPostUrl = normalizeTikTokUrl(nonEmptyString(confirmation.expectedPostUrl, `assignments[${index}].expectedPostUrl`, 2_048)).sourceUrl;
+    let expectedComment: null | { id: string; version: number; textHash: string } = null;
+    if (confirmation.expectedComment !== null) {
+      const comment = objectValue(confirmation.expectedComment, `assignments[${index}].expectedComment no es valido.`);
+      if (!Number.isInteger(comment.version) || Number(comment.version) < 1 || typeof comment.textHash !== "string" || !/^[a-f0-9]{64}$/u.test(comment.textHash)) {
+        throw new TikTokError("INVALID_CONFIRMATION", "La version o hash del comentario no es valido.");
+      }
+      expectedComment = {
+        id: nonEmptyString(comment.id, `assignments[${index}].expectedComment.id`, 200),
+        version: Number(comment.version),
+        textHash: comment.textHash,
+      };
+    }
+    return {
+      assignmentId: nonEmptyString(confirmation.assignmentId, `assignments[${index}].assignmentId`, 200),
+      postId: nonEmptyString(confirmation.postId, `assignments[${index}].postId`, 200),
+      deviceId: nonEmptyString(confirmation.deviceId, `assignments[${index}].deviceId`, 120),
+      expectedAccount,
+      expectedPostUrl,
+      expectedTargetText,
+      expectedComment,
+    };
+  });
+  if (new Set(confirmations.map((confirmation) => confirmation.assignmentId)).size !== confirmations.length) {
+    throw new TikTokError("INVALID_CONFIRMATION", "Cada asignacion debe confirmarse exactamente una vez.");
+  }
+
   return database.transaction(() => {
     const campaign = database.prepare(`
       SELECT status, revision, like_enabled, comment_enabled FROM campaigns
@@ -769,127 +870,158 @@ export function requestTikTokPostExecution(
       throw new TikTokError("TIKTOK_POST_REQUIRED", "La ejecucion solicitada pertenece a TikTok Live.", 409);
     }
     const rows = database.prepare(`
-      SELECT a.id, a.post_id, a.device_id, a.status, p.status AS post_status,
+      SELECT a.id, a.post_id, a.device_id, a.status, p.position, p.status AS post_status,
         p.source_url, p.final_url, p.context_hash
-      FROM assignments a JOIN posts p ON p.id = a.post_id WHERE a.campaign_id = ?
+      FROM assignments a JOIN posts p ON p.id = a.post_id
+      JOIN device_profiles d ON d.device_id = a.device_id
+      WHERE a.campaign_id = ? ORDER BY p.position, d.physical_order, a.id
     `).all(campaignId) as Array<{
       id: string;
       post_id: string;
       device_id: string;
       status: string;
+      position: number;
       post_status: string;
       source_url: string;
       final_url: string | null;
       context_hash: string | null;
     }>;
-    if (rows.length !== 1) throw new TikTokError("TIKTOK_REQUIRES_1X1", "La campana TikTok ya no es 1x1.", 409);
-    const row = rows[0];
-    if (row.id !== expectedAssignmentId || row.post_id !== expectedPostId || row.device_id !== expectedDeviceId) {
-      throw new TikTokError("CONFIRMED_TARGET_CHANGED", "La asignacion TikTok confirmada cambio.", 409);
+    if (rows.length !== confirmations.length) {
+      throw new TikTokError("CONFIRMED_TARGET_CHANGED", "La matriz confirmada no coincide con la campana.", 409);
     }
-    const effectiveUrl = row.final_url ?? row.source_url;
-    if (normalizeTikTokUrl(effectiveUrl).normalizedUrl !== normalizeTikTokUrl(expectedPostUrl).normalizedUrl) {
-      throw new TikTokError("CONFIRMED_TARGET_CHANGED", "La URL TikTok efectiva cambio.", 409);
-    }
-    const comment = campaign.comment_enabled ? currentComment(database, row.id) : undefined;
-    const payload: TikTokPostExecutionPayload = {
-      mode: "post",
-      assignmentId: row.id,
-      campaignId,
-      postId: row.post_id,
-      deviceId: row.device_id,
-      expectedRevision: Number(input.expectedRevision),
-      expectedAccount,
-      expectedAccountResourceId,
-      expectedPostContainerResourceId,
-      expectedPostUrlResourceId,
-      expectedLikeActiveLabels: config.likeActiveLabels,
-      expectedLikeInactiveLabels: config.likeInactiveLabels,
-      expectedCommentLabels: config.commentLabels,
-      expectedCommentComposerResourceId,
-      expectedCommentEditorResourceId,
-      expectedCommentSubmitResourceId,
-      expectedCommentResultContainerResourceId,
-      expectedTargetText,
-      postUrl: effectiveUrl,
-      contextHash: row.context_hash,
-      actions,
-      comment: expectedComment && comment ? { ...expectedComment, text: comment.text } : null,
-      authorization: {
-        publicEffects: true,
-        controlledAccount: true,
-        controlledContent: true,
-        environmentGate: "TIKTOK_PUBLIC_EFFECTS_ENABLED",
-      },
-    };
-    const created = createOperation(database, {
-      kind: "assignment.execute",
-      idempotencyKey: typeof input.idempotencyKey === "string" ? input.idempotencyKey : "",
-      request: payload,
-      campaignId,
-      postId: row.post_id,
-      assignmentId: row.id,
-      deviceId: row.device_id,
+    const confirmationByAssignment = new Map(confirmations.map((confirmation) => [confirmation.assignmentId, confirmation]));
+    const payloads = rows.map((row) => {
+      const confirmation = confirmationByAssignment.get(row.id);
+      const comment = campaign.comment_enabled ? currentComment(database, row.id) : undefined;
+      if (!confirmation || confirmation.postId !== row.post_id || confirmation.deviceId !== row.device_id
+        || normalizeTikTokUrl(confirmation.expectedPostUrl).normalizedUrl
+          !== normalizeTikTokUrl(row.final_url ?? row.source_url).normalizedUrl) {
+        throw new TikTokError("CONFIRMED_TARGET_CHANGED", "Una asignacion, dispositivo o URL efectiva cambio.", 409);
+      }
+      if (campaign.comment_enabled && (!comment || !confirmation.expectedComment
+        || comment.id !== confirmation.expectedComment.id
+        || comment.version !== confirmation.expectedComment.version
+        || hashText(comment.text) !== confirmation.expectedComment.textHash
+        || !["ready", "edited"].includes(comment.status) || comment.stale)) {
+        throw new TikTokError("CONFIRMED_COMMENT_CHANGED", "Un comentario cambio o no esta listo; revisa y confirma de nuevo.", 409);
+      }
+      if (!campaign.comment_enabled && confirmation.expectedComment) {
+        throw new TikTokError("CONFIRMED_COMMENT_CHANGED", "La confirmacion incluye un comentario no seleccionado.", 409);
+      }
+      const payload: TikTokPostExecutionPayload = {
+        mode: "post",
+        assignmentId: row.id,
+        campaignId,
+        postId: row.post_id,
+        deviceId: row.device_id,
+        expectedRevision: Number(input.expectedRevision),
+        expectedAccount: confirmation.expectedAccount,
+        expectedAccountResourceId,
+        expectedPostContainerResourceId,
+        expectedPostUrlResourceId,
+        expectedLikeActiveLabels: config.likeActiveLabels,
+        expectedLikeInactiveLabels: config.likeInactiveLabels,
+        expectedCommentLabels: config.commentLabels,
+        expectedCommentComposerResourceId,
+        expectedCommentEditorResourceId,
+        expectedCommentSubmitResourceId,
+        expectedCommentResultContainerResourceId,
+        expectedTargetText: confirmation.expectedTargetText,
+        postUrl: row.final_url ?? row.source_url,
+        contextHash: row.context_hash,
+        actions,
+        comment: confirmation.expectedComment && comment ? { ...confirmation.expectedComment, text: comment.text } : null,
+        authorization: {
+          publicEffects: true,
+          controlledAccount: true,
+          controlledContent: true,
+          environmentGate: "TIKTOK_PUBLIC_EFFECTS_ENABLED",
+        },
+      };
+      return { row, payload };
     });
-    if (created.replayed) {
-      const previousJob = database.prepare("SELECT id FROM jobs WHERE operation_id = ?").get(created.operation.id) as { id: string } | undefined;
+    const first = createOperation(database, {
+      kind: "assignment.execute",
+      idempotencyKey,
+      request: payloads[0].payload,
+      campaignId,
+      postId: payloads[0].row.post_id,
+      assignmentId: payloads[0].row.id,
+      deviceId: payloads[0].row.device_id,
+    });
+    if (first.replayed) {
+      const previousJob = database.prepare("SELECT id FROM jobs WHERE operation_id = ?").get(first.operation.id) as { id: string } | undefined;
       if (!previousJob) throw new Error("La autorizacion idempotente no conserva su job.");
-      return { operation: created.operation, job: getJob(database, previousJob.id)!, replayed: true };
+      return { operation: first.operation, job: getJob(database, previousJob.id)!, replayed: true };
     }
-    if (campaign.revision !== payload.expectedRevision) throw new TikTokError("CAMPAIGN_REVISION_CHANGED", "La campana cambio; confirma de nuevo.", 409);
+    if (campaign.revision !== Number(input.expectedRevision)) {
+      throw new TikTokError("CAMPAIGN_REVISION_CHANGED", "La campana cambio; revisa el contenido y confirma de nuevo.", 409);
+    }
     if (Boolean(campaign.like_enabled) !== actions.like || Boolean(campaign.comment_enabled) !== actions.comment) {
       throw new TikTokError("CONFIRMED_ACTIONS_CHANGED", "Las acciones seleccionadas cambiaron.", 409);
     }
-    if (campaign.status !== "ready" || row.post_status !== "ready" || !["draft", "approved", "failed", "cancelled"].includes(row.status)) {
+    if (campaign.status !== "ready" || rows.some((row) => row.post_status !== "ready" || !["draft", "approved", "failed", "cancelled"].includes(row.status))) {
       throw new TikTokError("CAMPAIGN_NOT_EXECUTABLE", "La campana TikTok no esta lista.", 409);
     }
-    if (actions.comment && (!comment || !expectedComment || comment.id !== expectedComment.id
-      || comment.version !== expectedComment.version || hashText(comment.text) !== expectedComment.textHash
-      || !["ready", "edited"].includes(comment.status) || comment.stale)) {
-      throw new TikTokError("CONFIRMED_COMMENT_CHANGED", "El comentario TikTok cambio o no esta listo.", 409);
+    for (const row of rows) {
+      const blocked = database.prepare(`
+        SELECT EXISTS(
+          SELECT 1 FROM operations WHERE assignment_id = ? AND kind = 'assignment.execute'
+            AND status IN ('pending', 'running') AND id != ?
+        ) AS active,
+        EXISTS(
+          SELECT 1 FROM assignment_action_results WHERE assignment_id = ?
+            AND status IN ('effect_possible', 'outcome_unknown')
+        ) AS uncertain
+      `).get(row.id, first.operation.id, row.id) as { active: 0 | 1; uncertain: 0 | 1 };
+      if (blocked.uncertain) throw new TikTokError("RECONCILIATION_REQUIRED", "Existe un efecto TikTok incierto que debe reconciliarse manualmente.", 409);
+      if (blocked.active) throw new TikTokError("OPERATION_IN_PROGRESS", "La asignacion TikTok ya tiene una ejecucion activa.", 409);
     }
-    if (!actions.comment && expectedComment) throw new TikTokError("CONFIRMED_COMMENT_CHANGED", "La confirmacion incluye un comentario no seleccionado.", 409);
-    const blocked = database.prepare(`
-      SELECT EXISTS(
-        SELECT 1 FROM operations WHERE assignment_id = ? AND kind = 'assignment.execute'
-          AND status IN ('pending', 'running') AND id != ?
-      ) AS active,
-      EXISTS(
-        SELECT 1 FROM assignment_action_results WHERE assignment_id = ?
-          AND status IN ('effect_possible', 'outcome_unknown')
-      ) AS uncertain
-    `).get(row.id, created.operation.id, row.id) as { active: 0 | 1; uncertain: 0 | 1 };
-    if (blocked.uncertain) throw new TikTokError("RECONCILIATION_REQUIRED", "Existe un efecto TikTok incierto que debe reconciliarse manualmente.", 409);
-    if (blocked.active) throw new TikTokError("OPERATION_IN_PROGRESS", "La asignacion TikTok ya tiene una ejecucion activa.", 409);
-    assertTikTokDeviceEligible(database, row.device_id);
+    const deviceIds = [...new Set(rows.map((row) => row.device_id))];
+    for (const deviceId of deviceIds) assertTikTokDeviceEligible(database, deviceId);
     const now = Date.now();
+    database.prepare("UPDATE assignments SET status = 'approved', scheduled_at = ?, completed_at = NULL, updated_at = ? WHERE campaign_id = ?")
+      .run(now, now, campaignId);
     const insertAction = database.prepare(`
       INSERT INTO assignment_action_results (
         id, assignment_id, operation_id, action, status, result,
         comment_id, comment_version, text_hash, created_at, updated_at, completed_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    if (actions.like) {
-      const prior = database.prepare(`
-        SELECT 1 FROM assignment_action_results
-        WHERE assignment_id = ? AND action = 'like' AND status = 'confirmed' LIMIT 1
-      `).get(row.id);
-      insertAction.run(randomUUID(), row.id, created.operation.id, "like", prior ? "confirmed" : "pending", prior ? "preserved" : null, null, null, null, now, now, prior ? now : null);
+    let firstJob = null as ReturnType<typeof getJob>;
+    for (const [index, item] of payloads.entries()) {
+      const operation = index === 0 ? first.operation : createOperation(database, {
+        kind: "assignment.execute",
+        idempotencyKey: randomUUID(),
+        request: item.payload,
+        campaignId,
+        postId: item.row.post_id,
+        assignmentId: item.row.id,
+        deviceId: item.row.device_id,
+      }).operation;
+      if (campaign.like_enabled) {
+        const prior = database.prepare(`
+          SELECT 1 FROM assignment_action_results
+          WHERE assignment_id = ? AND action = 'like' AND status = 'confirmed' LIMIT 1
+        `).get(item.row.id);
+        insertAction.run(randomUUID(), item.row.id, operation.id, "like", prior ? "confirmed" : "pending", prior ? "preserved" : null, null, null, null, now, now, prior ? now : null);
+      }
+      if (campaign.comment_enabled) {
+        insertAction.run(randomUUID(), item.row.id, operation.id, "comment", "pending", null, item.payload.comment!.id, item.payload.comment!.version, item.payload.comment!.textHash, now, now, null);
+      }
+      const job = enqueueJob(database, "assignment.execute", item.payload, {
+        campaignId,
+        postId: item.row.post_id,
+        assignmentId: item.row.id,
+        operationId: operation.id,
+        priority: rows.length - item.row.position,
+        maxAttempts: 1,
+        effectPhase: "before_effect",
+      });
+      if (index === 0) firstJob = job;
     }
-    if (actions.comment) {
-      insertAction.run(randomUUID(), row.id, created.operation.id, "comment", "pending", null, comment!.id, comment!.version, hashText(comment!.text), now, now, null);
-    }
-    database.prepare("UPDATE assignments SET status = 'approved', completed_at = NULL, updated_at = ? WHERE id = ?").run(now, row.id);
-    const job = enqueueJob(database, "assignment.execute", payload, {
-      campaignId,
-      postId: row.post_id,
-      assignmentId: row.id,
-      operationId: created.operation.id,
-      maxAttempts: 1,
-      effectPhase: "before_effect",
-    });
     touchCampaign(database, campaignId, now);
-    return { operation: created.operation, job, replayed: false };
+    return { operation: first.operation, job: firstJob!, replayed: false };
   }).immediate();
 }
 
@@ -1026,43 +1158,59 @@ export function requestTikTokLiveExecution(database: Database.Database, value: u
 
 const TERMINAL_ASSIGNMENTS = new Set(["sent", "failed", "outcome_unknown", "cancelled"]);
 
+function reducedPostStatus(statuses: string[]) {
+  if (statuses.includes("outcome_unknown")) return "outcome_unknown";
+  if (statuses.every((status) => status === "sent")) return "completed";
+  if (statuses.every((status) => status === "cancelled")) return "cancelled";
+  if (statuses.every((status) => TERMINAL_ASSIGNMENTS.has(status))) return "partial_failed";
+  if (statuses.some((status) => ["running", "cancellation_requested", "sent", "failed", "cancelled"].includes(status))) return "running";
+  if (statuses.some((status) => status === "scheduled")) return "scheduled";
+  if (statuses.some((status) => status === "approved")) return "ready";
+  return null;
+}
+
 export function reduceTikTokCampaignExecution(database: Database.Database, campaignId: string, now = Date.now()) {
   const campaign = database.prepare("SELECT status FROM campaigns WHERE id = ? AND platform = 'tiktok'")
     .get(campaignId) as { status: string } | undefined;
-  const assignments = database.prepare("SELECT id, post_id, status FROM assignments WHERE campaign_id = ?")
-    .all(campaignId) as Array<{ id: string; post_id: string; status: string }>;
-  if (!campaign || assignments.length !== 1) throw new TikTokError("CAMPAIGN_NOT_FOUND", "La campana TikTok 1x1 no existe.", 404);
-  const assignment = assignments[0];
-  const postStatus = assignment.status === "sent"
-    ? "completed"
-    : assignment.status === "outcome_unknown"
-      ? "outcome_unknown"
-      : ["failed", "cancelled"].includes(assignment.status)
-        ? "partial_failed"
-        : ["running", "cancellation_requested"].includes(assignment.status)
-          ? "running"
-          : assignment.status === "scheduled"
-            ? "scheduled"
-            : null;
-  if (postStatus) database.prepare("UPDATE posts SET status = ?, updated_at = ? WHERE id = ?").run(postStatus, now, assignment.post_id);
-  const cleanupIssue = Boolean(database.prepare(`
-    SELECT 1 FROM operations WHERE assignment_id = ? AND kind = 'assignment.execute'
-      AND cleanup_status IN ('failed', 'outcome_unknown') LIMIT 1
-  `).get(assignment.id));
-  const campaignStatus = campaign.status === "cancellation_requested" && !TERMINAL_ASSIGNMENTS.has(assignment.status)
+  const assignments = database.prepare(`
+    SELECT a.post_id, a.status FROM assignments a
+    JOIN campaigns c ON c.id = a.campaign_id
+    WHERE a.campaign_id = ? AND c.platform = 'tiktok'
+  `).all(campaignId) as Array<{ post_id: string; status: string }>;
+  if (!campaign || !assignments.length) throw new TikTokError("CAMPAIGN_NOT_FOUND", "La campana TikTok no existe.", 404);
+  const byPost = Map.groupBy(assignments, (assignment) => assignment.post_id);
+  for (const [postId, rows] of byPost) {
+    const status = reducedPostStatus(rows.map((row) => row.status));
+    if (status) database.prepare("UPDATE posts SET status = ?, updated_at = ? WHERE id = ?").run(status, now, postId);
+  }
+  const statuses = assignments.map((assignment) => assignment.status);
+  const allTerminal = statuses.every((status) => TERMINAL_ASSIGNMENTS.has(status));
+  const hasCleanupErrors = Boolean(database.prepare(`
+    SELECT 1 FROM operations
+    WHERE campaign_id = ? AND kind = 'assignment.execute'
+      AND cleanup_status IN ('failed', 'outcome_unknown')
+    LIMIT 1
+  `).get(campaignId));
+  const campaignStatus = campaign.status === "cancellation_requested" && !allTerminal
     ? "cancellation_requested"
-    : assignment.status === "sent"
-      ? cleanupIssue ? "completed_with_issues" : "completed"
-      : assignment.status === "cancelled"
-        ? cleanupIssue ? "cancelled_with_cleanup_errors" : "cancelled"
-        : TERMINAL_ASSIGNMENTS.has(assignment.status)
+    : statuses.every((status) => status === "sent")
+      ? hasCleanupErrors ? "completed_with_issues" : "completed"
+      : statuses.every((status) => status === "cancelled")
+        ? hasCleanupErrors ? "cancelled_with_cleanup_errors" : "cancelled"
+        : allTerminal
           ? "completed_with_issues"
-          : ["running", "cancellation_requested"].includes(assignment.status)
+          : statuses.some((status) => ["running", "cancellation_requested", "sent", "failed", "outcome_unknown", "cancelled"].includes(status))
             ? "running"
-            : null;
+            : statuses.some((status) => status === "scheduled")
+              ? "scheduled"
+              : statuses.some((status) => status === "approved")
+                ? "ready"
+                : null;
   if (campaignStatus) {
-    database.prepare("UPDATE campaigns SET status = ?, completed_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?")
-      .run(campaignStatus, TERMINAL_ASSIGNMENTS.has(assignment.status) ? now : null, now, campaignId);
+    const completedAt = ["completed", "completed_with_issues", "cancelled", "cancelled_with_cleanup_errors"].includes(campaignStatus) ? now : null;
+    database.prepare(`
+      UPDATE campaigns SET status = ?, completed_at = ?, updated_at = ?, revision = revision + 1 WHERE id = ?
+    `).run(campaignStatus, completedAt, now, campaignId);
   }
   return getTikTokCampaignSnapshot(database, campaignId)!;
 }
@@ -1181,19 +1329,48 @@ export function getTikTokCampaignSnapshot(database: Database.Database, campaignI
     updated_at: number;
   } | undefined;
   if (!campaign) return null;
-  const assignment = database.prepare(`
-    SELECT id, post_id, device_id, status, scheduled_at, actual_at
-    FROM assignments WHERE campaign_id = ?
-  `).get(campaignId) as {
+  const assignments = database.prepare(`
+    SELECT a.id, a.post_id, a.device_id, a.status, a.scheduled_at, a.actual_at,
+      p.physical_order
+    FROM assignments a JOIN device_profiles p ON p.device_id = a.device_id
+    JOIN posts post ON post.id = a.post_id
+    WHERE a.campaign_id = ?
+    ORDER BY post.position, p.physical_order, a.id
+  `).all(campaignId) as Array<{
     id: string;
     post_id: string;
     device_id: string;
     status: string;
     scheduled_at: number | null;
     actual_at: number | null;
-  } | undefined;
-  const post = database.prepare("SELECT * FROM posts WHERE campaign_id = ?")
-    .get(campaignId) as (Record<string, unknown> & {
+    physical_order: number;
+  }>;
+  if (!assignments.length) return null;
+  const comments = database.prepare(`
+    SELECT c.id, c.assignment_id, c.version, c.intention, c.tone, c.text,
+      c.status, c.stale, c.source, c.error
+    FROM comments c
+    JOIN (
+      SELECT assignment_id, MAX(version) AS version FROM comments GROUP BY assignment_id
+    ) current ON current.assignment_id = c.assignment_id AND current.version = c.version
+    JOIN assignments a ON a.id = c.assignment_id
+    WHERE a.campaign_id = ?
+  `).all(campaignId) as Array<{
+    id: string;
+    assignment_id: string;
+    version: number;
+    intention: string;
+    tone: string;
+    text: string;
+    status: string;
+    stale: 0 | 1;
+    source: string;
+    error: string | null;
+  }>;
+  const commentByAssignment = new Map(comments.map((comment) => [comment.assignment_id, comment]));
+  const assignmentsByPost = Map.groupBy(assignments, (assignment) => assignment.post_id);
+  const posts = database.prepare("SELECT * FROM posts WHERE campaign_id = ? ORDER BY position")
+    .all(campaignId) as Array<Record<string, unknown> & {
       id: string;
       position: number;
       source_url: string;
@@ -1206,17 +1383,16 @@ export function getTikTokCampaignSnapshot(database: Database.Database, campaignI
       context_source: string | null;
       context_version: number;
       error: string | null;
-    }) | undefined;
-  if (!assignment || !post) return null;
-  const comment = currentComment(database, assignment.id);
-  const execution = database.prepare(`
-    SELECT o.id, o.request_json, o.status, o.effect_phase, o.session_status, o.cleanup_status,
-      o.error, o.created_at, j.attempts
+    }>;
+  const executionRows = database.prepare(`
+    SELECT o.id, o.assignment_id, o.request_json, o.status, o.effect_phase, o.session_status,
+      o.cleanup_status, o.error, o.created_at, j.attempts
     FROM operations o LEFT JOIN jobs j ON j.operation_id = o.id
-    WHERE o.assignment_id = ? AND o.kind = 'assignment.execute'
-    ORDER BY o.created_at DESC, o.id DESC LIMIT 1
-  `).get(assignment.id) as {
+    WHERE o.campaign_id = ? AND o.kind = 'assignment.execute'
+    ORDER BY o.created_at DESC, o.id DESC
+  `).all(campaignId) as Array<{
     id: string;
+    assignment_id: string;
     request_json: string;
     status: string;
     effect_phase: string;
@@ -1225,24 +1401,53 @@ export function getTikTokCampaignSnapshot(database: Database.Database, campaignI
     error: string | null;
     created_at: number;
     attempts: number | null;
-  } | undefined;
-  const executionPayload = execution ? JSON.parse(execution.request_json) as Partial<TikTokExecutionPayload> : null;
-  const mode = executionPayload?.mode === "live" ? "live" : "post";
-  const actions = execution ? database.prepare(`
-    SELECT action, status, result, error FROM assignment_action_results WHERE operation_id = ?
-  `).all(execution.id) as Array<{ action: "like" | "comment"; status: string; result: string | null; error: string | null }> : [];
-  const action = (name: "like" | "comment") => {
-    const row = actions.find((item) => item.action === name);
-    return row ? { status: row.status, result: row.result, error: row.error } : null;
-  };
-  const checkpoints = execution ? database.prepare(`
-    SELECT id, phase, sequence, created_at FROM checkpoints WHERE operation_id = ? ORDER BY created_at, sequence
-  `).all(execution.id) as Array<{ id: string; phase: string; sequence: number; created_at: number }> : [];
-  const evidence = execution ? database.prepare(`
-    SELECT checkpoint_id, kind, path, created_at FROM evidence WHERE operation_id = ? ORDER BY created_at
-  `).all(execution.id) as Array<{ checkpoint_id: string | null; kind: "metadata" | "screenshot" | "page_source"; path: string; created_at: number }> : [];
-  const like = action("like");
-  const commentAction = action("comment");
+  }>;
+  const latestExecution = new Map<string, (typeof executionRows)[number]>();
+  for (const execution of executionRows) {
+    if (!latestExecution.has(execution.assignment_id)) latestExecution.set(execution.assignment_id, execution);
+  }
+  const liveExecutions = executionRows.filter((execution) => {
+    const payload = JSON.parse(execution.request_json) as Partial<TikTokExecutionPayload>;
+    return payload.mode === "live";
+  });
+  const actionRows = database.prepare(`
+    SELECT r.operation_id, r.action, r.status, r.result, r.error
+    FROM assignment_action_results r
+    JOIN assignments a ON a.id = r.assignment_id
+    WHERE a.campaign_id = ?
+  `).all(campaignId) as Array<{
+    operation_id: string;
+    action: "like" | "comment";
+    status: string;
+    result: string | null;
+    error: string | null;
+  }>;
+  const actionByExecution = new Map(actionRows.map((action) => [`${action.operation_id}:${action.action}`, action]));
+  const evidenceRows = database.prepare(`
+    SELECT e.operation_id, e.checkpoint_id, e.kind, e.path, e.created_at
+    FROM evidence e JOIN operations o ON o.id = e.operation_id
+    WHERE o.campaign_id = ? ORDER BY e.created_at
+  `).all(campaignId) as Array<{
+    operation_id: string;
+    checkpoint_id: string | null;
+    kind: "metadata" | "screenshot" | "page_source";
+    path: string;
+    created_at: number;
+  }>;
+  const evidenceByExecution = Map.groupBy(evidenceRows, (evidence) => evidence.operation_id);
+  const checkpointRows = database.prepare(`
+    SELECT c.operation_id, c.id, c.phase, c.sequence, c.created_at
+    FROM checkpoints c JOIN operations o ON o.id = c.operation_id
+    WHERE o.campaign_id = ? ORDER BY c.created_at, c.sequence
+  `).all(campaignId) as Array<{
+    operation_id: string;
+    id: string;
+    phase: string;
+    sequence: number;
+    created_at: number;
+  }>;
+  const checkpointsByExecution = Map.groupBy(checkpointRows, (checkpoint) => checkpoint.operation_id);
+  const mode = liveExecutions.length ? "live" : "post";
   return {
     id: campaign.id,
     platform: "tiktok" as const,
@@ -1252,73 +1457,91 @@ export function getTikTokCampaignSnapshot(database: Database.Database, campaignI
     cancellationReason: campaign.cancellation_reason,
     actions: { like: Boolean(campaign.like_enabled), comment: Boolean(campaign.comment_enabled) },
     controlledAccount: readTikTokConfig().controlledAccount || null,
-    deviceIds: [assignment.device_id],
+    deviceIds: [...new Set(assignments.map((assignment) => assignment.device_id))],
     createdAt: campaign.created_at,
     updatedAt: campaign.updated_at,
-    posts: [{
-      id: post.id,
-      position: post.position,
-      url: post.source_url,
-      normalizedUrl: post.normalized_url,
-      finalUrl: post.final_url,
-      status: post.status,
-      contextStatus: post.context_status,
-      context: post.context ?? "",
-      contextHash: post.context_hash,
-      contextVersion: post.context_version,
-      extractedContext: "",
-      contextSource: post.context_source,
-      extractorVersion: null,
-      extractedAt: null,
-      error: post.error,
-      comments: comment ? [{
-        id: comment.id,
-        assignmentId: assignment.id,
+    posts: posts.map((post) => {
+      const postAssignments = assignmentsByPost.get(post.id) ?? [];
+      const postComments = postAssignments
+        .map((assignment) => commentByAssignment.get(assignment.id))
+        .filter((comment): comment is NonNullable<typeof comment> => Boolean(comment));
+      return {
+        id: post.id,
+        position: post.position,
+        url: post.source_url,
+        normalizedUrl: post.normalized_url,
+        finalUrl: post.final_url,
+        status: post.status,
+        contextStatus: post.context_status,
+        context: post.context ?? "",
+        contextHash: post.context_hash,
+        contextVersion: post.context_version,
+        extractedContext: "",
+        contextSource: post.context_source,
+        extractorVersion: null,
+        extractedAt: null,
+        error: post.error,
+        comments: postComments.map((comment) => ({
+          id: comment.id,
+          assignmentId: comment.assignment_id,
+          deviceId: assignments.find((assignment) => assignment.id === comment.assignment_id)!.device_id,
+          version: comment.version,
+          intention: comment.intention,
+          tone: comment.tone,
+          text: comment.text,
+          status: comment.status,
+          stale: Boolean(comment.stale),
+          source: comment.source,
+          textHash: hashText(comment.text),
+          error: comment.error,
+        })),
+      };
+    }),
+    assignments: assignments.map((assignment) => {
+      const execution = latestExecution.get(assignment.id);
+      const executionPayload = execution ? JSON.parse(execution.request_json) as Partial<TikTokExecutionPayload> : null;
+      const action = (name: "like" | "comment") => {
+        const row = actionByExecution.get(`${execution!.id}:${name}`);
+        return row ? { status: row.status, result: row.result, error: row.error } : null;
+      };
+      const like = execution ? action("like") : null;
+      const commentAction = execution ? action("comment") : null;
+      const checkpoints = execution ? (checkpointsByExecution.get(execution.id) ?? []) : [];
+      const evidence = execution ? (evidenceByExecution.get(execution.id) ?? []) : [];
+      return {
+        id: assignment.id,
+        postId: assignment.post_id,
         deviceId: assignment.device_id,
-        version: comment.version,
-        intention: comment.intention,
-        tone: comment.tone,
-        text: comment.text,
-        status: comment.status,
-        stale: Boolean(comment.stale),
-        source: comment.source,
-        textHash: hashText(comment.text),
-        error: comment.error,
-      }] : [],
-    }],
-    assignments: [{
-      id: assignment.id,
-      postId: assignment.post_id,
-      deviceId: assignment.device_id,
-      status: assignment.status,
-      scheduledAt: assignment.scheduled_at,
-      actualAt: assignment.actual_at,
-      execution: execution ? {
-        operationId: execution.id,
-        mode,
-        status: execution.status,
-        effectPhase: execution.effect_phase,
-        sessionStatus: execution.session_status,
-        cleanupStatus: execution.cleanup_status,
-        attempts: execution.attempts ?? 0,
-        ...(mode === "live" ? {
-          confirmedRounds: checkpoints.filter((item) => item.phase === "tiktok_live_round_confirmed").length,
-          requestedRounds: executionPayload?.mode === "live" ? executionPayload.rounds : 0,
-        } : {}),
-        error: execution.error,
-        uncertainAction: like?.status === "outcome_unknown" || like?.status === "effect_possible"
-          ? "like"
-          : commentAction?.status === "outcome_unknown" || commentAction?.status === "effect_possible"
-            ? "comment"
-            : mode === "live" && execution.effect_phase === "effect_possible"
-              ? "live_round"
-              : null,
-        like,
-        comment: commentAction,
-        checkpoints: checkpoints.map((item) => ({ id: item.id, phase: item.phase, sequence: item.sequence, createdAt: item.created_at })),
-        evidence: evidence.map((item) => ({ checkpointId: item.checkpoint_id, kind: item.kind, path: item.path, createdAt: item.created_at })),
-      } : null,
-    }],
+        status: assignment.status,
+        scheduledAt: assignment.scheduled_at,
+        actualAt: assignment.actual_at,
+        execution: execution ? {
+          operationId: execution.id,
+          mode,
+          status: execution.status,
+          effectPhase: execution.effect_phase,
+          sessionStatus: execution.session_status,
+          cleanupStatus: execution.cleanup_status,
+          attempts: execution.attempts ?? 0,
+          ...(mode === "live" ? {
+            confirmedRounds: checkpoints.filter((item) => item.phase === "tiktok_live_round_confirmed").length,
+            requestedRounds: executionPayload?.mode === "live" ? executionPayload.rounds : 0,
+          } : {}),
+          error: execution.error,
+          uncertainAction: like?.status === "outcome_unknown" || like?.status === "effect_possible"
+            ? "like"
+            : commentAction?.status === "outcome_unknown" || commentAction?.status === "effect_possible"
+              ? "comment"
+              : mode === "live" && execution.effect_phase === "effect_possible"
+                ? "live_round"
+                : null,
+          like,
+          comment: commentAction,
+          checkpoints: checkpoints.map((item) => ({ id: item.id, phase: item.phase, sequence: item.sequence, createdAt: item.created_at })),
+          evidence: evidence.map((item) => ({ checkpointId: item.checkpoint_id, kind: item.kind, path: item.path, createdAt: item.created_at })),
+        } : null,
+      };
+    }),
   };
 }
 
