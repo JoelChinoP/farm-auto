@@ -480,6 +480,13 @@ Transiciones relevantes Facebook:
 6. Ejecutar; el backend valida, toma lock, registra operacion, crea sesion Appium y realiza el flujo.
 7. Consultar aviso y Actividad; si hay riesgo de efecto publico no confirmado, verificar manualmente antes de repetir.
 
+### Flujo TikTok Live Tap tap N×M
+
+1. Calibrar cada dispositivo: medir el punto de doble toque y guardarlo por equipo (`tiktok_live_calibrations`, o `TIKTOK_LIVE_CALIBRATED_*` como respaldo del primer equipo).
+2. Seleccionar de 1 a 10 Lives (`/@usuario/live`) y varios dispositivos elegibles y calibrados.
+3. Autorizar la matriz: un job `assignment.execute` por Live × dispositivo, con el punto calibrado de su equipo.
+4. Cada ronda emite exactamente un doble toque con checkpoint; una ronda incierta bloquea sin reintento automático.
+
 ### Flujo TikTok post N×M
 
 1. Elegir TK, registrar de 1 a 10 URLs destino y seleccionar varios dispositivos elegibles.

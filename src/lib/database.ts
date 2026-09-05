@@ -19,7 +19,7 @@ import {
   SESSION_STATUSES,
 } from "./domain.ts";
 
-export const DATABASE_VERSION = 13;
+export const DATABASE_VERSION = 14;
 
 function sqlValues(values: readonly string[]) {
   return values.map((value) => `'${value}'`).join(", ");
@@ -507,6 +507,18 @@ function migrateToVersion13(database: Database.Database) {
   `);
 }
 
+function migrateToVersion14(database: Database.Database) {
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS tiktok_live_calibrations (
+      device_id TEXT PRIMARY KEY REFERENCES device_profiles(device_id) ON DELETE RESTRICT,
+      x INTEGER NOT NULL CHECK (x BETWEEN 0 AND 5000),
+      y INTEGER NOT NULL CHECK (y BETWEEN 0 AND 5000),
+      calibrated_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+}
+
 function hasTable(database: Database.Database, name: string) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
@@ -742,6 +754,7 @@ export function openDatabase(filename: string) {
         if (currentVersion < 6) migrateToVersion6(database);
       }
       if (currentVersion < 13) migrateToVersion13(database);
+      if (currentVersion < 14) migrateToVersion14(database);
       if (currentVersion < DATABASE_VERSION) database.pragma(`user_version = ${DATABASE_VERSION}`);
     }).immediate();
 

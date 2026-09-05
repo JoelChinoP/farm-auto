@@ -158,6 +158,7 @@ test("creates the complete schema from an empty database and persists every phas
       "posts",
       "runtime_ownership",
       "schedules",
+      "tiktok_live_calibrations",
     ];
     const tables = database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
       .all().map((row) => (row as { name: string }).name);
@@ -195,6 +196,8 @@ test("creates the complete schema from an empty database and persists every phas
       .run("serial-1", "pending", now, null);
     database.prepare("INSERT INTO device_recovery_requests VALUES (?, ?, ?, ?, ?, ?)")
       .run(1, "completed", now, now, now, null);
+    database.prepare("INSERT INTO tiktok_live_calibrations VALUES (?, ?, ?, ?, ?)")
+      .run("serial-1", 540, 960, now, now);
     database.prepare(`
       INSERT INTO facebook_campaign_manifests (
         campaign_id, campaign_revision, scheduled_at, posts_json, devices_json,

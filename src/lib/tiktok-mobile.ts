@@ -11,6 +11,7 @@ import {
 } from "./device-runtime.ts";
 import { getOperation, stableJson } from "./operations.ts";
 import {
+  getTikTokLiveCalibration,
   readTikTokConfig,
   reduceTikTokCampaignExecution,
   normalizeTikTokUrl,
@@ -405,13 +406,17 @@ function assertExecutionContent(database: Database.Database, payload: TikTokExec
   } else if (!config.liveEffectsEnabled || payload.authorization.environmentGate !== "TIKTOK_LIVE_EFFECTS_ENABLED") {
     throw new TikTokError("TIKTOK_LIVE_EFFECTS_DISABLED", "TikTok Live fue deshabilitado antes de ejecutar.", 503);
   } else if (payload.expectedLiveContainerResourceId !== config.liveContainerResourceId
-    || payload.expectedLiveUrlResourceId !== config.liveUrlResourceId
-    || !config.liveCalibration
-    || stableJson(payload.authorization.calibration) !== stableJson(config.liveCalibration)
-    || payload.deviceId !== config.liveCalibration.deviceId
-    || payload.x !== config.liveCalibration.x
-    || payload.y !== config.liveCalibration.y) {
+    || payload.expectedLiveUrlResourceId !== config.liveUrlResourceId) {
     throw new TikTokError("TIKTOK_LIVE_STRUCTURE_CHANGED", "Los selectores TikTok Live cambiaron antes de ejecutar.", 409);
+  } else {
+    const calibration = getTikTokLiveCalibration(database, payload.deviceId, config);
+    if (!calibration
+      || stableJson(payload.authorization.calibration) !== stableJson(calibration)
+      || payload.deviceId !== calibration.deviceId
+      || payload.x !== calibration.x
+      || payload.y !== calibration.y) {
+      throw new TikTokError("TIKTOK_LIVE_CALIBRATION_CHANGED", "La calibracion Live del dispositivo cambio antes de ejecutar.", 409);
+    }
   }
   const row = database.prepare(`
     SELECT c.revision, c.like_enabled, c.comment_enabled, p.context_hash, p.source_url,

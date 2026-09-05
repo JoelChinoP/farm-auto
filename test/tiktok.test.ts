@@ -19,6 +19,7 @@ import {
   normalizeTikTokLiveUrl,
   normalizeTikTokUrl,
   readTikTokConfig,
+  recordTikTokLiveCalibration,
   requestTikTokCommentGeneration,
   requestTikTokLiveExecution,
   requestTikTokPostExecution,
@@ -237,18 +238,17 @@ test("persists an explicit post authorization with no automatic retry", () => {
   }
 });
 
-test("validates and persists Live separately behind its own gate", () => {
+test("validates and persists Live N×M separately behind its own gate", () => {
   const database = openDatabase(":memory:");
   try {
     addEligibleDevice(database);
+    addEligibleDevice(database, DEVICE_ID_2, 8201, 2, "b".repeat(64));
     const request = {
-      deviceId: DEVICE_ID,
-      url: "https://www.tiktok.com/@controlled/live",
+      deviceIds: [DEVICE_ID],
+      urls: ["https://www.tiktok.com/@controlled/live"],
       rounds: 3,
-      x: 540,
-      y: 960,
       expectedAccount: ACCOUNT,
-      expectedTargetText: "Live controlado exacto",
+      targetTexts: ["Live controlado exacto"],
       idempotencyKey: randomUUID(),
       confirmed: true,
       controlledAccount: true,
@@ -259,15 +259,21 @@ test("validates and persists Live separately behind its own gate", () => {
     for (const invalid of [
       { ...request, rounds: 0 },
       { ...request, rounds: 51 },
-      { ...request, x: -1 },
-      { ...request, y: 5001 },
-    ]) assert.throws(() => validateTikTokLiveRequest(invalid), /entero entre/);
+      { ...request, urls: [] },
+      { ...request, targetTexts: [] },
+    ]) assert.throws(() => validateTikTokLiveRequest(invalid), (error) => error instanceof TikTokError);
     assert.throws(() => requestTikTokLiveExecution(database, request, config({ liveEffectsEnabled: false })), (error) => (
       error instanceof TikTokError && error.code === "TIKTOK_LIVE_EFFECTS_DISABLED"
     ));
-    assert.throws(() => requestTikTokLiveExecution(database, request, config({
-      liveCalibration: { deviceId: DEVICE_ID, x: 541, y: 960 },
+    assert.throws(() => requestTikTokLiveExecution(database, { ...request, deviceIds: [DEVICE_ID_2] }, config({
+      liveCalibration: { deviceId: DEVICE_ID, x: 540, y: 960 },
     })), (error) => error instanceof TikTokError && error.code === "TIKTOK_LIVE_CALIBRATION_REQUIRED");
+    assert.deepEqual(recordTikTokLiveCalibration(database, DEVICE_ID_2, 500, 900, 123), {
+      deviceId: DEVICE_ID_2,
+      x: 500,
+      y: 900,
+      calibratedAt: 123,
+    });
 
     const created = requestTikTokLiveExecution(database, request, config());
     assert.equal(created.campaign?.mode, "live");
@@ -278,13 +284,41 @@ test("validates and persists Live separately behind its own gate", () => {
     assert.throws(() => requestTikTokLiveExecution(database, { ...request, idempotencyKey: randomUUID() }, config()), (error) => (
       error instanceof TikTokError && error.code === "TIKTOK_LIVE_IN_PROGRESS"
     ));
-    database.prepare("UPDATE jobs SET status = 'outcome_unknown', effect_phase = 'effect_possible' WHERE operation_id = ?").run(created.operation.id);
-    database.prepare("UPDATE operations SET status = 'outcome_unknown', effect_phase = 'effect_possible' WHERE id = ?").run(created.operation.id);
-    database.prepare("UPDATE assignments SET status = 'outcome_unknown' WHERE id = ?").run(created.campaign!.assignments[0].id);
+    database.prepare("UPDATE jobs SET status = 'succeeded', effect_phase = 'effect_confirmed' WHERE operation_id = ?").run(created.operation.id);
+    database.prepare("UPDATE operations SET status = 'succeeded' WHERE id = ?").run(created.operation.id);
+
+    const multi = requestTikTokLiveExecution(database, {
+      ...request,
+      idempotencyKey: randomUUID(),
+      deviceIds: [DEVICE_ID, DEVICE_ID_2],
+      urls: ["https://www.tiktok.com/@controlled/live", "https://www.tiktok.com/@controlled2/live"],
+      targetTexts: ["Live controlado exacto", "Segundo live controlado"],
+    }, config());
+    assert.equal(multi.campaign?.assignments.length, 4);
+    const snapshot = getTikTokCampaignSnapshot(database, multi.campaign!.id)!;
+    assert.equal(snapshot.mode, "live");
+    assert.equal(snapshot.assignments.filter((assignment) => assignment.deviceId === DEVICE_ID).length, 2);
+    assert.equal(snapshot.assignments.find((assignment) => assignment.deviceId === DEVICE_ID_2)?.execution?.requestedRounds, 3);
+
+    const multiJob = (database.prepare("SELECT id FROM jobs WHERE operation_id = ?").get(multi.operation.id) as { id: string }).id;
+    database.prepare("UPDATE jobs SET status = 'outcome_unknown', effect_phase = 'effect_possible' WHERE id = ?").run(multiJob);
+    database.prepare("UPDATE operations SET status = 'outcome_unknown', effect_phase = 'effect_possible' WHERE id = ?").run(multi.operation.id);
+    database.prepare("UPDATE assignments SET status = 'outcome_unknown' WHERE id = ?").run(multi.campaign!.assignments[0].id);
+    assert.throws(() => requestTikTokLiveExecution(database, { ...request, idempotencyKey: randomUUID() }, config()), (error) => (
+      error instanceof TikTokError && error.code === "TIKTOK_LIVE_IN_PROGRESS"
+    ));
+    const siblings = database.prepare(`
+      SELECT j.id AS job_id, o.id AS operation_id FROM jobs j
+      JOIN operations o ON o.id = j.operation_id
+      WHERE o.campaign_id = ? AND o.device_id = ? AND o.id != ?
+    `).all(multi.campaign!.id, DEVICE_ID, multi.operation.id) as Array<{ job_id: string; operation_id: string }>;
+    for (const sibling of siblings) {
+      database.prepare("UPDATE jobs SET status = 'succeeded' WHERE id = ?").run(sibling.job_id);
+      database.prepare("UPDATE operations SET status = 'succeeded' WHERE id = ?").run(sibling.operation_id);
+    }
     assert.throws(() => requestTikTokLiveExecution(database, { ...request, idempotencyKey: randomUUID() }, config()), (error) => (
       error instanceof TikTokError && error.code === "TIKTOK_LIVE_RECONCILIATION_REQUIRED"
     ));
-    assert.equal(getTikTokCampaignSnapshot(database, created.campaign!.id)?.assignments.length, 1);
   } finally {
     database.close();
   }

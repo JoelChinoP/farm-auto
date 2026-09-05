@@ -999,6 +999,7 @@ export function ControlPanel() {
     commentSelectorsConfigured: false,
     liveSelectorsConfigured: false,
     liveCalibration: null,
+    liveCalibrations: [],
   });
   const timers = useRef<number[]>([]);
   const dirtyFacebookFields = useRef(new Set<string>());
@@ -1667,6 +1668,22 @@ export function ControlPanel() {
     }
   };
 
+  const calibrateTikTokLive = async (deviceId: string, x: number, y: number) => {
+    const { calibration } = await apiRequest<{ calibration: { deviceId: string; x: number; y: number; calibratedAt: number } }>("/api/tiktok/live/calibration", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+      body: JSON.stringify({ deviceId, x, y, confirmed: true }),
+    });
+    setTikTokConfiguration((current) => ({
+      ...current,
+      liveCalibrations: [
+        ...current.liveCalibrations.filter((item) => item.deviceId !== calibration.deviceId),
+        { deviceId: calibration.deviceId, x: calibration.x, y: calibration.y, calibratedAt: calibration.calibratedAt },
+      ],
+    }));
+    rawDispatch({ type: "set-notice", notice: { kind: "status", title: "Calibración Live guardada", message: `Punto (${calibration.x}, ${calibration.y}) registrado para ${calibration.deviceId}.` } });
+  };
+
   const activeCampaigns = state.history.filter((item) => ["running", "cancellation_requested"].includes(item.status)).length;
   const busyDevices = state.devices.filter((item) => item.activity === "busy").length;
   const modal = state.activeModal;
@@ -1780,7 +1797,7 @@ export function ControlPanel() {
                 state={state}
                 dispatch={dispatch}
               />
-              <TikTokLivePanel devices={state.devices} configuration={tiktokConfiguration} onRun={runTikTokLive} />
+              <TikTokLivePanel devices={state.devices} configuration={tiktokConfiguration} onRun={runTikTokLive} onCalibrate={calibrateTikTokLive} />
             </>
           )}
           {state.activeView === "history" && <HistoryView state={state} dispatch={dispatch} />}

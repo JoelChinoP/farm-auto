@@ -132,13 +132,11 @@ export type TikTokPostExecutionPayload = {
 };
 
 export type TikTokLiveRequest = {
-  deviceId: string;
-  url: string;
+  deviceIds: string[];
+  urls: string[];
   rounds: number;
-  x: number;
-  y: number;
   expectedAccount: string;
-  expectedTargetText: string;
+  targetTexts: string[];
   idempotencyKey: string;
   confirmed: true;
   controlledAccount: true;
@@ -297,7 +295,7 @@ function commentProfiles(input: TikTokCampaignRequest) {
 
 export function validateTikTokLiveRequest(value: unknown): TikTokLiveRequest {
   const input = objectValue(value);
-  const integer = (name: "rounds" | "x" | "y", minimum: number, maximum: number) => {
+  const integer = (name: "rounds", minimum: number, maximum: number) => {
     if (!Number.isInteger(input[name]) || Number(input[name]) < minimum || Number(input[name]) > maximum) {
       throw new TikTokError("INVALID_TIKTOK_LIVE_RANGE", `${name} debe ser un entero entre ${minimum} y ${maximum}.`);
     }
@@ -306,22 +304,98 @@ export function validateTikTokLiveRequest(value: unknown): TikTokLiveRequest {
   if (input.confirmed !== true || input.controlledAccount !== true || input.controlledContent !== true || input.tapTapConfirmed !== true) {
     throw new TikTokError("EXPLICIT_CONFIRMATION_REQUIRED", "Confirma la cuenta, el Live, las coordenadas y los efectos publicos.", 409);
   }
-  const expectedTargetText = nonEmptyString(input.expectedTargetText, "expectedTargetText", 500);
-  if (expectedTargetText.length < 5) throw new TikTokError("TARGET_TEXT_INVALID", "La referencia visible debe tener al menos 5 caracteres.");
+  if (!Array.isArray(input.urls) || input.urls.length < 1 || input.urls.length > 10) {
+    throw new TikTokError("INVALID_TIKTOK_LIVE_URLS", "La campana Live requiere entre 1 y 10 URLs Live.");
+  }
+  const urls: string[] = [];
+  const seenUrls = new Set<string>();
+  for (const rawUrl of input.urls) {
+    if (typeof rawUrl !== "string") throw new TikTokError("INVALID_TIKTOK_LIVE_URL", "Cada URL debe ser texto.");
+    const normalized = normalizeTikTokLiveUrl(rawUrl);
+    if (seenUrls.has(normalized.normalizedUrl)) {
+      throw new TikTokError("DUPLICATE_TIKTOK_LIVE_URL", "La lista contiene Lives duplicados.");
+    }
+    seenUrls.add(normalized.normalizedUrl);
+    urls.push(normalized.sourceUrl);
+  }
+  if (!Array.isArray(input.deviceIds) || input.deviceIds.length < 1 || input.deviceIds.length > 100) {
+    throw new TikTokError("INVALID_DEVICE_SELECTION", "Selecciona al menos un dispositivo elegible.");
+  }
+  const deviceIds = input.deviceIds.map((deviceId, index) => nonEmptyString(deviceId, `deviceIds[${index}]`, 120));
+  if (new Set(deviceIds).size !== deviceIds.length) {
+    throw new TikTokError("DUPLICATE_DEVICE", "Cada dispositivo solo puede seleccionarse una vez.");
+  }
+  if (!Array.isArray(input.targetTexts) || input.targetTexts.length !== urls.length) {
+    throw new TikTokError("INVALID_TARGET_TEXTS", "Cada URL Live requiere su texto visible de referencia.");
+  }
+  const targetTexts = input.targetTexts.map((rawText, index) => {
+    const text = nonEmptyString(rawText, `targetTexts[${index}]`, 500);
+    if (text.length < 5) throw new TikTokError("TARGET_TEXT_INVALID", "Cada referencia visible debe tener al menos 5 caracteres.");
+    return text;
+  });
   return {
-    deviceId: nonEmptyString(input.deviceId, "deviceId", 120),
-    url: normalizeTikTokLiveUrl(nonEmptyString(input.url, "url", 2_048)).sourceUrl,
+    deviceIds,
+    urls,
     rounds: integer("rounds", 1, 50),
-    x: integer("x", 0, 5_000),
-    y: integer("y", 0, 5_000),
     expectedAccount: nonEmptyString(input.expectedAccount, "expectedAccount", 300),
-    expectedTargetText,
+    targetTexts,
     idempotencyKey: nonEmptyString(input.idempotencyKey, "idempotencyKey", 100),
     confirmed: true,
     controlledAccount: true,
     controlledContent: true,
     tapTapConfirmed: true,
   };
+}
+
+export function recordTikTokLiveCalibration(
+  database: Database.Database,
+  deviceId: string,
+  x: number,
+  y: number,
+  now = Date.now(),
+) {
+  const normalizedDeviceId = nonEmptyString(deviceId, "deviceId", 120);
+  if (!Number.isInteger(x) || x < 0 || x > 5_000 || !Number.isInteger(y) || y < 0 || y > 5_000) {
+    throw new TikTokError("INVALID_TIKTOK_LIVE_CALIBRATION", "La calibracion X/Y debe usar enteros entre 0 y 5000.");
+  }
+  if (!database.prepare("SELECT 1 FROM device_profiles WHERE device_id = ?").get(normalizedDeviceId)) {
+    throw new TikTokError("DEVICE_NOT_ALLOWLISTED", `El dispositivo ${normalizedDeviceId} no esta registrado.`, 409);
+  }
+  database.prepare(`
+    INSERT INTO tiktok_live_calibrations (device_id, x, y, calibrated_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(device_id) DO UPDATE SET
+      x = excluded.x, y = excluded.y, updated_at = excluded.updated_at
+  `).run(normalizedDeviceId, x, y, now, now);
+  return { deviceId: normalizedDeviceId, x, y, calibratedAt: now };
+}
+
+export function listTikTokLiveCalibrations(database: Database.Database) {
+  const rows = database.prepare("SELECT device_id, x, y, calibrated_at FROM tiktok_live_calibrations ORDER BY device_id")
+    .all() as Array<{ device_id: string; x: number; y: number; calibrated_at: number }>;
+  const calibrations: Array<{ deviceId: string; x: number; y: number; calibratedAt: number | null }> = rows.map((row) => ({
+    deviceId: row.device_id,
+    x: row.x,
+    y: row.y,
+    calibratedAt: row.calibrated_at,
+  }));
+  const config = readTikTokConfig();
+  if (config.liveCalibration && !rows.some((row) => row.device_id === config.liveCalibration!.deviceId)) {
+    calibrations.push({
+      deviceId: config.liveCalibration.deviceId,
+      x: config.liveCalibration.x,
+      y: config.liveCalibration.y,
+      calibratedAt: null,
+    });
+  }
+  return calibrations;
+}
+
+export function getTikTokLiveCalibration(database: Database.Database, deviceId: string, config = readTikTokConfig()) {
+  const row = database.prepare("SELECT device_id, x, y FROM tiktok_live_calibrations WHERE device_id = ?")
+    .get(deviceId) as { device_id: string; x: number; y: number } | undefined;
+  if (row) return { deviceId: row.device_id, x: row.x, y: row.y };
+  return config.liveCalibration?.deviceId === deviceId ? config.liveCalibration : null;
 }
 
 export function assertTikTokDeviceEligible(database: Database.Database, deviceId: string, options: { allowBusy?: boolean } = {}) {
@@ -1030,13 +1104,6 @@ export function requestTikTokLiveExecution(database: Database.Database, value: u
   if (!config.liveEffectsEnabled) {
     throw new TikTokError("TIKTOK_LIVE_EFFECTS_DISABLED", "TikTok Live esta deshabilitado; configura TIKTOK_LIVE_EFFECTS_ENABLED=true.", 503);
   }
-  const liveCalibration = config.liveCalibration;
-  if (!liveCalibration
-    || input.deviceId !== liveCalibration.deviceId
-    || input.x !== liveCalibration.x
-    || input.y !== liveCalibration.y) {
-    throw new TikTokError("TIKTOK_LIVE_CALIBRATION_REQUIRED", "El dispositivo y las coordenadas no coinciden con la calibracion Live validada.", 409);
-  }
   if (!config.controlledAccount || input.expectedAccount !== config.controlledAccount) {
     throw new TikTokError("CONTROLLED_ACCOUNT_CHANGED", "La cuenta TikTok controlada cambio o no esta configurada.", 409);
   }
@@ -1049,110 +1116,163 @@ export function requestTikTokLiveExecution(database: Database.Database, value: u
     if (priorRow) {
       const operation = getOperation(database, priorRow.id)!;
       const payload = operation.request as TikTokLiveExecutionPayload;
-      const comparable = payload.mode === "live" ? {
-        deviceId: payload.deviceId,
-        expectedAccount: payload.expectedAccount,
-        expectedTargetText: payload.expectedTargetText,
-        rounds: payload.rounds,
-        url: payload.liveUrl,
-        x: payload.x,
-        y: payload.y,
-      } : null;
-      const requested = {
-        deviceId: input.deviceId,
-        expectedAccount: input.expectedAccount,
-        expectedTargetText: input.expectedTargetText,
-        rounds: input.rounds,
-        url: input.url,
-        x: input.x,
-        y: input.y,
-      };
-      if (!comparable || stableJson(comparable) !== stableJson(requested)) throw new IdempotencyConflictError();
+      if (payload.mode !== "live") throw new IdempotencyConflictError();
+      const persisted = (database.prepare(`
+        SELECT request_json FROM operations WHERE campaign_id = ? AND kind = 'assignment.execute'
+        ORDER BY created_at, id
+      `).all(payload.campaignId) as Array<{ request_json: string }>).map((row) => {
+        const execution = JSON.parse(row.request_json) as TikTokLiveExecutionPayload;
+        return {
+          deviceId: execution.deviceId,
+          expectedAccount: execution.expectedAccount,
+          expectedTargetText: execution.expectedTargetText,
+          rounds: execution.rounds,
+          url: execution.liveUrl,
+          x: execution.x,
+          y: execution.y,
+        };
+      });
+      const requested = input.urls.flatMap((rawUrl, postIndex) => {
+        const normalized = normalizeTikTokLiveUrl(rawUrl);
+        return input.deviceIds.map((deviceId) => {
+          const calibration = getTikTokLiveCalibration(database, deviceId, config);
+          if (!calibration) return null;
+          return {
+            deviceId,
+            expectedAccount: input.expectedAccount,
+            expectedTargetText: input.targetTexts[postIndex],
+            rounds: input.rounds,
+            url: normalized.sourceUrl,
+            x: calibration.x,
+            y: calibration.y,
+          };
+        });
+      });
+      if (persisted.length !== requested.length || requested.some((item) => !item)
+        || stableJson(persisted) !== stableJson(requested)) {
+        throw new IdempotencyConflictError();
+      }
       const jobRow = database.prepare("SELECT id FROM jobs WHERE operation_id = ?").get(operation.id) as { id: string } | undefined;
       if (!jobRow) throw new Error("La autorizacion Live idempotente no conserva su job.");
       return { operation, job: getJob(database, jobRow.id)!, campaign: getTikTokCampaignSnapshot(database, payload.campaignId), replayed: true };
     }
-    const normalized = normalizeTikTokLiveUrl(input.url);
-    const blocked = database.prepare(`
-      SELECT
-        EXISTS(
-          SELECT 1 FROM operations o
-          WHERE o.device_id = ? AND o.kind = 'assignment.execute'
-            AND json_extract(o.request_json, '$.mode') = 'live'
-            AND o.status IN ('pending', 'running')
-        ) AS active,
-        EXISTS(
-          SELECT 1 FROM operations o
-          JOIN assignments a ON a.id = o.assignment_id
-          JOIN posts p ON p.id = o.post_id
-          WHERE o.device_id = ? AND o.kind = 'assignment.execute'
-            AND json_extract(o.request_json, '$.mode') = 'live'
-            AND a.status = 'outcome_unknown' AND p.normalized_url = ?
-        ) AS uncertain
-    `).get(input.deviceId, input.deviceId, normalized.normalizedUrl) as { active: 0 | 1; uncertain: 0 | 1 };
-    if (blocked.active) throw new TikTokError("TIKTOK_LIVE_IN_PROGRESS", "Ya existe una ejecucion Live activa para este dispositivo.", 409);
-    if (blocked.uncertain) throw new TikTokError("TIKTOK_LIVE_RECONCILIATION_REQUIRED", "Este Live conserva una ronda incierta y no puede repetirse.", 409);
-    assertTikTokDeviceEligible(database, input.deviceId);
+    const calibrations = new Map<string, { deviceId: string; x: number; y: number }>();
+    for (const deviceId of input.deviceIds) {
+      const calibration = getTikTokLiveCalibration(database, deviceId, config);
+      if (!calibration) {
+        throw new TikTokError("TIKTOK_LIVE_CALIBRATION_REQUIRED", `El dispositivo ${deviceId} no tiene calibracion Live validada.`, 409);
+      }
+      calibrations.set(deviceId, calibration);
+    }
+    for (const deviceId of input.deviceIds) {
+      const blocked = database.prepare(`
+        SELECT
+          EXISTS(
+            SELECT 1 FROM operations o
+            WHERE o.device_id = ? AND o.kind = 'assignment.execute'
+              AND json_extract(o.request_json, '$.mode') = 'live'
+              AND o.status IN ('pending', 'running')
+          ) AS active,
+          EXISTS(
+            SELECT 1 FROM operations o
+            JOIN assignments a ON a.id = o.assignment_id
+            WHERE o.device_id = ? AND o.kind = 'assignment.execute'
+              AND json_extract(o.request_json, '$.mode') = 'live'
+              AND a.status = 'outcome_unknown'
+          ) AS uncertain
+      `).get(deviceId, deviceId) as { active: 0 | 1; uncertain: 0 | 1 };
+      if (blocked.active) throw new TikTokError("TIKTOK_LIVE_IN_PROGRESS", "Ya existe una ejecucion Live activa para este dispositivo.", 409);
+      if (blocked.uncertain) throw new TikTokError("TIKTOK_LIVE_RECONCILIATION_REQUIRED", "Este dispositivo conserva una ronda incierta y no puede repetirse.", 409);
+      assertTikTokDeviceEligible(database, deviceId);
+    }
     const campaignId = randomUUID();
-    const postId = randomUUID();
-    const assignmentId = randomUUID();
     const now = Date.now();
     database.prepare(`
       INSERT INTO campaigns (id, platform, status, like_enabled, comment_enabled, created_at, updated_at)
       VALUES (?, 'tiktok', 'ready', 0, 0, ?, ?)
     `).run(campaignId, now, now);
-    database.prepare(`
-      INSERT INTO posts (
-        id, campaign_id, position, source_url, normalized_url, status, context_status, created_at, updated_at
-      ) VALUES (?, ?, 1, ?, ?, 'ready', 'ready', ?, ?)
-    `).run(postId, campaignId, normalized.sourceUrl, normalized.normalizedUrl, now, now);
-    database.prepare(`
-      INSERT INTO assignments (id, campaign_id, post_id, device_id, status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 'approved', ?, ?)
-    `).run(assignmentId, campaignId, postId, input.deviceId, now, now);
-    const payload: TikTokLiveExecutionPayload = {
-      mode: "live",
-      assignmentId,
-      campaignId,
-      postId,
-      deviceId: input.deviceId,
-      expectedRevision: 1,
-      expectedAccount: input.expectedAccount,
-      expectedAccountResourceId,
-      expectedLiveContainerResourceId,
-      expectedLiveUrlResourceId,
-      expectedTargetText: input.expectedTargetText,
-      liveUrl: normalized.sourceUrl,
-      rounds: input.rounds,
-      x: input.x,
-      y: input.y,
-      authorization: {
-        publicEffects: true,
-        controlledAccount: true,
-        controlledContent: true,
-        calibratedCoordinates: true,
-        calibration: liveCalibration,
-        environmentGate: "TIKTOK_LIVE_EFFECTS_ENABLED",
-      },
-    };
-    const created = createOperation(database, {
+    const rows = input.urls.flatMap((rawUrl, postIndex) => {
+      const normalized = normalizeTikTokLiveUrl(rawUrl);
+      const postId = randomUUID();
+      database.prepare(`
+        INSERT INTO posts (
+          id, campaign_id, position, source_url, normalized_url, status, context_status, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, 'ready', 'ready', ?, ?)
+      `).run(postId, campaignId, postIndex + 1, normalized.sourceUrl, normalized.normalizedUrl, now, now);
+      return input.deviceIds.map((deviceId) => {
+        const assignmentId = randomUUID();
+        database.prepare(`
+          INSERT INTO assignments (id, campaign_id, post_id, device_id, status, scheduled_at, created_at, updated_at)
+          VALUES (?, ?, ?, ?, 'approved', ?, ?, ?)
+        `).run(assignmentId, campaignId, postId, deviceId, now, now, now);
+        const calibration = calibrations.get(deviceId)!;
+        return {
+          row: { id: assignmentId, post_id: postId, device_id: deviceId, position: postIndex + 1 },
+          payload: {
+            mode: "live",
+            assignmentId,
+            campaignId,
+            postId,
+            deviceId,
+            expectedRevision: 1,
+            expectedAccount: input.expectedAccount,
+            expectedAccountResourceId,
+            expectedLiveContainerResourceId,
+            expectedLiveUrlResourceId,
+            expectedTargetText: input.targetTexts[postIndex],
+            liveUrl: normalized.sourceUrl,
+            rounds: input.rounds,
+            x: calibration.x,
+            y: calibration.y,
+            authorization: {
+              publicEffects: true,
+              controlledAccount: true,
+              controlledContent: true,
+              calibratedCoordinates: true,
+              calibration,
+              environmentGate: "TIKTOK_LIVE_EFFECTS_ENABLED",
+            },
+          } satisfies TikTokLiveExecutionPayload,
+        };
+      });
+    });
+    const first = createOperation(database, {
       kind: "assignment.execute",
       idempotencyKey: input.idempotencyKey,
-      request: payload,
+      request: rows[0].payload,
       campaignId,
-      postId,
-      assignmentId,
-      deviceId: input.deviceId,
+      postId: rows[0].row.post_id,
+      assignmentId: rows[0].row.id,
+      deviceId: rows[0].row.device_id,
     });
-    const job = enqueueJob(database, "assignment.execute", payload, {
-      campaignId,
-      postId,
-      assignmentId,
-      operationId: created.operation.id,
-      maxAttempts: 1,
-      effectPhase: "before_effect",
-    });
-    return { operation: created.operation, job, campaign: getTikTokCampaignSnapshot(database, campaignId), replayed: false };
+    if (first.replayed) {
+      const jobRow = database.prepare("SELECT id FROM jobs WHERE operation_id = ?").get(first.operation.id) as { id: string } | undefined;
+      if (!jobRow) throw new Error("La autorizacion Live idempotente no conserva su job.");
+      return { operation: first.operation, job: getJob(database, jobRow.id)!, campaign: getTikTokCampaignSnapshot(database, campaignId), replayed: true };
+    }
+    let firstJob = null as ReturnType<typeof getJob>;
+    for (const [index, item] of rows.entries()) {
+      const operation = index === 0 ? first.operation : createOperation(database, {
+        kind: "assignment.execute",
+        idempotencyKey: randomUUID(),
+        request: item.payload,
+        campaignId,
+        postId: item.row.post_id,
+        assignmentId: item.row.id,
+        deviceId: item.row.device_id,
+      }).operation;
+      const job = enqueueJob(database, "assignment.execute", item.payload, {
+        campaignId,
+        postId: item.row.post_id,
+        assignmentId: item.row.id,
+        operationId: operation.id,
+        priority: rows.length - item.row.position,
+        maxAttempts: 1,
+        effectPhase: "before_effect",
+      });
+      if (index === 0) firstJob = job;
+    }
+    return { operation: first.operation, job: firstJob!, campaign: getTikTokCampaignSnapshot(database, campaignId), replayed: false };
   }).immediate();
 }
 
@@ -1447,7 +1567,8 @@ export function getTikTokCampaignSnapshot(database: Database.Database, campaignI
     created_at: number;
   }>;
   const checkpointsByExecution = Map.groupBy(checkpointRows, (checkpoint) => checkpoint.operation_id);
-  const mode = liveExecutions.length ? "live" : "post";
+  const livePosts = posts.some((post) => /^\/@[^/]+\/live$/u.test(new URL(post.normalized_url).pathname));
+  const mode = liveExecutions.length || livePosts ? "live" : "post";
   return {
     id: campaign.id,
     platform: "tiktok" as const,

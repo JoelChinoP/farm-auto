@@ -6,6 +6,7 @@ import { validateMutationRequest } from "@/lib/request-security";
 import {
   assertTikTokDeviceEligible,
   listTikTokCampaignSnapshots,
+  listTikTokLiveCalibrations,
   readTikTokConfig,
   TikTokError,
   validateTikTokCampaignRequest,
@@ -16,7 +17,8 @@ export const runtime = "nodejs";
 
 export function GET() {
   const config = readTikTokConfig();
-  const history = listTikTokCampaignSnapshots(getDatabase());
+  const database = getDatabase();
+  const history = listTikTokCampaignSnapshots(database);
   return apiSuccess({
     campaign: history.find((campaign) => campaign.mode === "post") ?? null,
     history,
@@ -33,6 +35,7 @@ export function GET() {
       ),
       liveSelectorsConfigured: Boolean(config.accountResourceId && config.liveContainerResourceId && config.liveUrlResourceId),
       liveCalibration: config.liveCalibration,
+      liveCalibrations: listTikTokLiveCalibrations(database),
     },
   });
 }

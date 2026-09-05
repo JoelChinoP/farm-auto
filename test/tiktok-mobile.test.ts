@@ -307,13 +307,11 @@ test("Live checkpoints every round and an uncertain round is never retried", asy
   const current = await setup();
   try {
     const created = requestTikTokLiveExecution(current.database, {
-      deviceId: DEVICE_ID,
-      url: LIVE_URL,
+      deviceIds: [DEVICE_ID],
+      urls: [LIVE_URL],
       rounds: 3,
-      x: 540,
-      y: 960,
       expectedAccount: ACCOUNT,
-      expectedTargetText: "Live TikTok controlado",
+      targetTexts: ["Live TikTok controlado"],
       idempotencyKey: randomUUID(),
       confirmed: true,
       controlledAccount: true,
