@@ -60,26 +60,34 @@ export function buildFacebookPostContext(messages: string[], metadata = "", maxL
   return result;
 }
 
+function readMessages(scope: Locator) {
+  return scope.evaluate((node, selector) =>
+    [...node.querySelectorAll(selector)]
+      .map((element) => (element.textContent ?? "").trim())
+      .filter((value) => value.length > 0), MESSAGE_SELECTOR)
+    .catch(() => [] as string[]);
+}
+
 async function findPostScope(page: Page) {
   for (const selector of ['[role="dialog"]:visible:not([aria-label="Messenger"])', '[role="main"] [role="article"]:visible', '[role="article"]:visible']) {
     const scopes = page.locator(selector);
-    const matches: Array<{ scope: Locator; signature: string; textLength: number }> = [];
+    const matches: Array<{ scope: Locator; signature: string; nodeCount: number }> = [];
     const count = Math.min(await scopes.count(), 10);
     for (let index = 0; index < count; index++) {
       const scope = scopes.nth(index);
-      const messages = await scope.locator(MESSAGE_SELECTOR).allInnerTexts();
+      const messages = await readMessages(scope);
       if (!messages.length) continue;
       matches.push({
         scope,
         signature: [...new Set(messages.map(normalizeText))].sort().join("\n"),
-        textLength: (await scope.innerText().catch(() => "")).length,
+        nodeCount: await scope.evaluate((node) => node.querySelectorAll("*").length).catch(() => Number.POSITIVE_INFINITY),
       });
     }
     if (matches.length) {
       if (new Set(matches.map((match) => match.signature)).size !== 1) {
         throw new FacebookError("FACEBOOK_TARGET_AMBIGUOUS", "Facebook expuso varias publicaciones y no se pudo aislar el objetivo.", 422);
       }
-      return matches.sort((left, right) => left.textLength - right.textLength)[0].scope;
+      return matches.sort((left, right) => left.nodeCount - right.nodeCount)[0].scope;
     }
     if (selector.startsWith('[role="dialog"]') && count === 1) return scopes.first();
   }
@@ -89,31 +97,35 @@ async function findPostScope(page: Page) {
 
 async function expandPostText(page: Page, scope: Locator) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const button = scope.getByRole("button", { name: /^(Ver más|See more)$/i }).first();
-    if (await button.isVisible().catch(() => false)) {
-      await button.click({ timeout: 3_000, force: true });
-      await page.waitForTimeout(400);
-      continue;
-    }
-    const text = scope.getByText(/^(Ver más|See more)$/i, { exact: true }).first();
-    if (!await text.isVisible().catch(() => false)) return;
-    await text.click({ timeout: 3_000, force: true });
-    await page.waitForTimeout(400);
+    const clicked = await scope.evaluate((node) => {
+      const candidate = [...node.querySelectorAll("span, div")]
+        .filter((element) => /^(?:…|\.\.\.)?\s*(?:ver más|see more)$/iu
+          .test((element.textContent ?? "").replace(/[\s\uFEFF]+/gu, " ").trim()))
+        .sort((left, right) => left.querySelectorAll("*").length - right.querySelectorAll("*").length)[0];
+      if (!candidate || !(candidate instanceof HTMLElement)) return false;
+      candidate.click();
+      return true;
+    }).catch(() => false);
+    if (!clicked) return;
+    await page.waitForTimeout(300);
   }
 }
 
 async function readPostContext(page: Page) {
+  await page.waitForSelector(MESSAGE_SELECTOR, { state: "visible", timeout: 8_000 }).catch(() => undefined);
   const scope = await findPostScope(page);
   let previous = "";
   for (let attempt = 0; attempt < 5; attempt++) {
     await expandPostText(page, scope);
-    const messages = await scope.locator(MESSAGE_SELECTOR).allInnerTexts();
-    const metadata = await page.locator('meta[property="og:description"], meta[name="description"]')
-      .first().getAttribute("content").catch(() => "");
-    const context = buildFacebookPostContext(messages, metadata ?? "");
+    const messages = await readMessages(scope);
+    const metadata = await page.evaluate(() => {
+      const meta = document.querySelector('meta[property="og:description"], meta[name="description"]');
+      return meta?.getAttribute("content") ?? "";
+    }).catch(() => "");
+    const context = buildFacebookPostContext(messages, metadata);
     if (context.length >= 5 && !COLLAPSED_DESCRIPTION.test(context) && context === previous) return context;
     previous = context;
-    await page.waitForTimeout(250);
+    await page.waitForTimeout(400);
   }
   if (COLLAPSED_DESCRIPTION.test(previous)) {
     throw new FacebookError("FACEBOOK_CONTENT_TRUNCATED", "Facebook no expandio el contenido completo.", 422);
@@ -155,33 +167,34 @@ function reelPatterns() {
 
 async function readReelContext(page: Page) {
   let previous = "";
-  for (let attempt = 0; attempt < 5; attempt++) {
-    await page.evaluate((patterns) => {
-      const header = new RegExp(patterns.headerSource, patterns.headerFlags);
-      const toggle = new RegExp(patterns.toggleSource, patterns.toggleFlags);
-      const candidates = [...document.querySelectorAll("body div")].filter((node) => {
-        const text = node.textContent ?? "";
-        return header.test(text) && toggle.test(text);
-      });
-      const container = candidates
-        .sort((left, right) => left.querySelectorAll("*").length - right.querySelectorAll("*").length)[0] as HTMLElement | undefined;
-      if (!container) return;
-      const expand = [...container.querySelectorAll("*")].find((node) => node.children.length === 0
-        && /^(?:…|\.\.\.)?\s*(?:ver más|see more)$/iu.test((node.textContent ?? "").replace(/[\s\uFEFF]+/gu, " ").trim())) as HTMLElement | undefined;
-      if (expand) expand.click();
-    }, reelPatterns());
-    await page.waitForTimeout(400);
+  for (let attempt = 0; attempt < 3; attempt++) {
     const raw = await page.evaluate((patterns) => {
       const header = new RegExp(patterns.headerSource, patterns.headerFlags);
       const toggle = new RegExp(patterns.toggleSource, patterns.toggleFlags);
-      const candidates = [...document.querySelectorAll("body div")].filter((node) => {
-        const text = node.textContent ?? "";
-        return header.test(text) && toggle.test(text);
-      });
-      const container = candidates
-        .sort((left, right) => left.querySelectorAll("*").length - right.querySelectorAll("*").length)[0] as HTMLElement | undefined;
-      return container ? container.innerText : "";
+      const nodes = document.querySelectorAll("body div");
+      const pick = (maxLength: number) => {
+        let bestContainer: HTMLElement | null = null;
+        let bestCount = Infinity;
+        for (const node of nodes) {
+          const text = node.textContent ?? "";
+          if (text.length < 40 || text.length > maxLength) continue;
+          if (!header.test(text) || !toggle.test(text)) continue;
+          const count = node.querySelectorAll("*").length;
+          if (count < bestCount) {
+            bestCount = count;
+            bestContainer = node as HTMLElement;
+          }
+        }
+        return bestContainer;
+      };
+      const container = pick(8_000) ?? pick(Number.POSITIVE_INFINITY);
+      if (!container) return "";
+      const expand = [...container.querySelectorAll("*")].find((node) => node.children.length === 0
+        && /^(?:…|\.\.\.)?\s*(?:ver más|see more)$/iu.test((node.textContent ?? "").replace(/[\s\uFEFF]+/gu, " ").trim())) as HTMLElement | undefined;
+      if (expand) expand.click();
+      return container.innerText;
     }, reelPatterns());
+    await page.waitForTimeout(400);
     const context = reelCaptionFromLines(raw);
     if (context.length >= 5 && context === previous) return context;
     previous = context;
@@ -193,11 +206,21 @@ async function readReelContext(page: Page) {
   return previous;
 }
 
-async function readPostContextWithReelFallback(page: Page, reelFallback: boolean) {
+async function readPostContextWithReelFallback(page: Page, reelTarget: boolean) {
+  if (reelTarget) {
+    try {
+      return await readReelContext(page);
+    } catch (error) {
+      if (error instanceof FacebookError && error.code === "FACEBOOK_CONTENT_EMPTY") {
+        return await readPostContext(page);
+      }
+      throw error;
+    }
+  }
   try {
     return await readPostContext(page);
   } catch (error) {
-    if (reelFallback && error instanceof FacebookError && error.code === "FACEBOOK_CONTENT_EMPTY") {
+    if (error instanceof FacebookError && error.code === "FACEBOOK_CONTENT_EMPTY") {
       return await readReelContext(page);
     }
     throw error;
@@ -206,6 +229,7 @@ async function readPostContextWithReelFallback(page: Page, reelFallback: boolean
 
 export class FacebookBrowser {
   private context: BrowserContext | null = null;
+  private headless = true;
   private launchPromise: Promise<BrowserContext> | null = null;
   private lockHeartbeat: ReturnType<typeof setInterval> | null = null;
   private readonly database: Database.Database;
@@ -240,26 +264,32 @@ export class FacebookBrowser {
     }
   }
 
-  private async ensureContext() {
+  private async ensureContext(headless: boolean) {
     if (this.context) {
-      this.acquireLock();
-      return this.context;
+      if (this.headless === headless) {
+        this.acquireLock();
+        return this.context;
+      }
+      await this.closeContext();
     }
     if (this.launchPromise) return this.launchPromise;
     this.acquireLock();
+    // ponytail: concurrent extractions keep the in-flight launch mode; the worker processes jobs serially.
     this.launchPromise = (async () => {
       await mkdir(appConfig.facebookBrowserProfilePath, { recursive: true });
       try {
         const context = await chromium.launchPersistentContext(appConfig.facebookBrowserProfilePath, {
-          headless: false,
+          headless,
           locale: "es-PE",
-          viewport: null,
-          args: ["--start-maximized"],
+          ...(headless
+            ? { viewport: { width: 1280, height: 800 } }
+            : { viewport: null, args: ["--start-maximized"] }),
           ...(appConfig.facebookBrowserExecutablePath
             ? { executablePath: appConfig.facebookBrowserExecutablePath }
             : { channel: "msedge" }),
         });
         this.context = context;
+        this.headless = headless;
         this.lockHeartbeat = setInterval(() => {
           try {
             this.acquireLock();
@@ -292,19 +322,36 @@ export class FacebookBrowser {
     }
   }
 
+  private async isLoggedIn(context: BrowserContext) {
+    return (await context.cookies("https://www.facebook.com/"))
+      .some((cookie) => cookie.name === "c_user" && cookie.domain.endsWith("facebook.com"));
+  }
+
+  private async openLoginWindow() {
+    const context = await this.ensureContext(false);
+    const loginPage = context.pages()[0] ?? await context.newPage();
+    await loginPage.goto("https://www.facebook.com/", {
+      waitUntil: "domcontentloaded",
+      timeout: appConfig.facebookExtractionTimeoutMs,
+    }).catch(() => undefined);
+    await loginPage.bringToFront();
+  }
+
+  private async closeContext() {
+    const context = this.context;
+    this.context = null;
+    if (this.lockHeartbeat) clearInterval(this.lockHeartbeat);
+    this.lockHeartbeat = null;
+    if (context) await context.close().catch(() => undefined);
+    this.releaseLock();
+  }
+
   async extract(url: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const requestedUrl = normalizeFacebookUrl(url);
-    const context = await this.ensureContext();
-    const loggedIn = (await context.cookies("https://www.facebook.com/"))
-      .some((cookie) => cookie.name === "c_user" && cookie.domain.endsWith("facebook.com"));
-    if (!loggedIn) {
-      const loginPage = context.pages()[0] ?? await context.newPage();
-      await loginPage.goto("https://www.facebook.com/", {
-        waitUntil: "domcontentloaded",
-        timeout: appConfig.facebookExtractionTimeoutMs,
-      }).catch(() => undefined);
-      await loginPage.bringToFront();
+    const context = await this.ensureContext(true);
+    if (!await this.isLoggedIn(context)) {
+      await this.openLoginWindow();
       throw new FacebookError(
         "FACEBOOK_SESSION_REQUIRED",
         "Inicia sesion manualmente en la ventana Edge dedicada y reintenta la extraccion.",
@@ -347,6 +394,7 @@ export class FacebookBrowser {
       const finalUrl = normalizedFinalUrl.sourceUrl;
       const pathname = new URL(finalUrl).pathname.toLowerCase();
       if (pathname.startsWith("/login")) {
+        await this.openLoginWindow();
         throw new FacebookError("FACEBOOK_SESSION_REQUIRED", "La sesion web de Facebook expiro.", 409);
       }
       if (pathname.startsWith("/checkpoint")) {
@@ -360,16 +408,12 @@ export class FacebookBrowser {
       return { context: contextText, finalUrl, extractorVersion: EXTRACTOR_VERSION };
     } finally {
       signal?.removeEventListener("abort", abort);
+      await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => undefined);
       await page.close().catch(() => undefined);
     }
   }
 
   async close() {
-    const context = this.context;
-    this.context = null;
-    if (this.lockHeartbeat) clearInterval(this.lockHeartbeat);
-    this.lockHeartbeat = null;
-    if (context) await context.close().catch(() => undefined);
-    this.releaseLock();
+    await this.closeContext();
   }
 }
