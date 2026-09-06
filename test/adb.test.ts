@@ -241,6 +241,82 @@ test("opens only the fixed safe URL with ACTION_VIEW", async () => {
   }
 });
 
+test("launches the resolved package launcher without monkey or force-stop, then waits for foreground", async () => {
+  const database = createDatabase();
+  const packageName = "com.zhiliaoapp.musically";
+  const signal = new AbortController().signal;
+  let checks = 0;
+  const mock = recordingExecutor((args) => {
+    if (args.includes("resolve-activity")) return { stdout: `${packageName}/.Main$Entry\n` };
+    if (args.includes("start")) return { stdout: "Warning: Activity not started, intent delivered.\nStatus: ok\r\n" };
+    checks += 1;
+    return { stdout: `mCurrentFocus=Window{42 u0 ${checks === 1 ? "com.android.launcher3" : packageName}/.Main}\n` };
+  });
+  const client = new AdbClient({ database, executor: mock.executor, sleep: async () => {} });
+  try {
+    assert.equal((await client.launchApp("serial-1", packageName, { signal, timeoutMs: 123 })).packageName, packageName);
+    assert.deepEqual(mock.calls.map((call) => call.args), [
+      ["-s", "serial-1", "shell", "cmd", "package", "resolve-activity", "--brief",
+        "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", packageName],
+      ["-s", "serial-1", "shell", "am", "start", "-W", "-a", "android.intent.action.MAIN",
+        "-c", "android.intent.category.LAUNCHER", "-n", `'${packageName}/${packageName}.Main$Entry'`],
+      ["-s", "serial-1", "shell", "dumpsys", "window", "windows"],
+      ["-s", "serial-1", "shell", "dumpsys", "window", "windows"],
+    ]);
+    assert.ok(mock.calls.every((call) => call.options.signal === signal && call.options.timeout === 123));
+  } finally {
+    database.close();
+  }
+});
+
+test("launcher validation, resolution, status, timeout and cancellation fail closed", async () => {
+  const database = createDatabase();
+  const packageName = "com.zhiliaoapp.musically";
+  let resolved = "No activity found";
+  let status = "Error: Activity not started";
+  const controller = new AbortController();
+  const mock = recordingExecutor((args) => {
+    if (args.includes("resolve-activity")) return { stdout: resolved };
+    if (args.includes("start")) return { stdout: status };
+    return {};
+  });
+  const client = new AdbClient({ database, executor: mock.executor, homeTimeoutMs: 0 });
+  try {
+    for (const value of ["", "com.app;input", "com.app'", "com.app\n", "$(command)"]) {
+      await assert.rejects(client.launchApp("serial-1", value), /paquete Android/);
+    }
+    await assert.rejects(client.launchApp("", packageName), /serial ADB/);
+    await assert.rejects(client.launchApp("missing", packageName), /no esta permitido/);
+    controller.abort(new Error("cancelled launch"));
+    await assert.rejects(client.launchApp("serial-1", packageName, { signal: controller.signal }), /cancelled launch/);
+    assert.equal(mock.calls.length, 0);
+
+    await assert.rejects(client.launchApp("serial-1", packageName), /resolver el launcher/);
+    resolved = "com.android.chrome/.Main";
+    await assert.rejects(client.launchApp("serial-1", packageName), /resolver el launcher/);
+    assert.ok(mock.calls.every((call) => call.args.includes("resolve-activity")));
+    resolved = `${packageName}/.Main`;
+    await assert.rejects(client.launchApp("serial-1", packageName), /Activity not started/);
+    assert.equal(mock.calls.some((call) => call.args.includes("dumpsys")), false);
+    status = "Status: timeout";
+    await assert.rejects(client.launchApp("serial-1", packageName), /Status: timeout/);
+    status = "Status: ok";
+    await assert.rejects(client.launchApp("serial-1", packageName), /foreground/);
+    assert.equal(mock.calls.filter((call) => call.args.includes("dumpsys")).length, 1);
+
+    const duringResolve = new AbortController();
+    const cancelled = recordingExecutor(() => {
+      duringResolve.abort(new Error("cancelled before start"));
+      return { stdout: resolved };
+    });
+    await assert.rejects(new AdbClient({ database, executor: cancelled.executor })
+      .launchApp("serial-1", packageName, { signal: duringResolve.signal }), /cancelled before start/);
+    assert.equal(cancelled.calls.length, 1);
+  } finally {
+    database.close();
+  }
+});
+
 test("passes timeout, maxBuffer and AbortSignal to the injected executor without real processes", async () => {
   const database = createDatabase();
   const mock = recordingExecutor(() => ({

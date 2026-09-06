@@ -122,7 +122,7 @@ export function parseCampaignUrls(input: string, platform: Platform) {
     }
 
     if (!message && seen.has(normalized)) message = "URL duplicada";
-    if (!message && urls.length >= (platform === "tiktok" ? 1 : 10)) message = platform === "tiktok" ? "TikTok post admite una sola publicación" : "Máximo 10 publicaciones";
+    if (!message && urls.length >= 10) message = "Máximo 10 publicaciones";
     seen.add(normalized);
     if (message) errors.push({ line: index + 1, value, message });
     else urls.push(normalized);

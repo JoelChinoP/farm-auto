@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { AdbClient, AdbDeviceInspection } from "./adb.ts";
-import type { AppiumClient, AppiumElement } from "./appium-client.ts";
+import { AppiumClientError, type AppiumClient, type AppiumElement } from "./appium-client.ts";
 import {
   assertRuntimeOwnership,
   CleanupUnknownError,
@@ -120,8 +120,26 @@ export class AppiumTikTokMobileDriver implements TikTokPostMobileDriver, TikTokL
   }
 
   async #open(sessionId: string, deviceId: string, url: string, signal?: AbortSignal) {
-    await this.#appium.activateApp(sessionId, TIKTOK_APP_PACKAGE, { signal });
-    await this.#appium.executeScript(sessionId, "mobile: deepLink", [{ url, package: TIKTOK_APP_PACKAGE }], { signal });
+    signal?.throwIfAborted();
+    url = normalizeTikTokUrl(url).sourceUrl;
+    await this.#adb.launchApp(deviceId, TIKTOK_APP_PACKAGE, { signal });
+    signal?.throwIfAborted();
+    try {
+      await this.#appium.executeScript(sessionId, "mobile: deepLink", [{ url, package: TIKTOK_APP_PACKAGE }], { signal });
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof Error && error.name === "AbortError"
+        || error instanceof AppiumClientError && ["APPIUM_REQUEST_ABORTED", "APPIUM_SESSION_NOT_OWNED"].includes(error.code)) throw error;
+      // Only navigation is retried. Validated URLs still need quoting for the device shell.
+      const result = await this.#adb.execute(deviceId, [
+        "shell", "am", "start", "-W", "-a", "android.intent.action.VIEW",
+        "-d", `'${url}'`, "-p", TIKTOK_APP_PACKAGE,
+      ], { signal });
+      signal?.throwIfAborted();
+      if (!/^Status:\s*ok\s*$/mu.test(result.stdout)) {
+        throw new TikTokError("TIKTOK_OPEN_FAILED", `ADB no pudo abrir el enlace TikTok: ${result.stdout} ${result.stderr}`, 422);
+      }
+    }
     await this.#waitFor(async () => {
       const foreground = await this.#adb.getForeground(deviceId, { signal });
       return foreground?.packageName === TIKTOK_APP_PACKAGE ? true : null;

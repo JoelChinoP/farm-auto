@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { AdbClient, AdbDeviceInspection } from "../src/lib/adb.ts";
-import { AppiumClient } from "../src/lib/appium-client.ts";
+import { AppiumClient, AppiumClientError } from "../src/lib/appium-client.ts";
 import { openDatabase } from "../src/lib/database.ts";
 import { claimRuntimeOwnership, CURRENT_SETUP_REVISION } from "../src/lib/device-runtime.ts";
 import { recoverFacebookExecutions } from "../src/lib/facebook-mobile.ts";
@@ -396,4 +396,145 @@ test("the Appium Live adapter issues exactly one calibrated doubleClickGesture c
   );
   await driver.doubleTapRound("session", 540, 960);
   assert.deepEqual(scripts, [{ script: "mobile: doubleClickGesture", args: [{ x: 540, y: 960 }] }]);
+});
+
+test("Post and Live visibly launch via ADB before deepLink, with at most one quoted navigation fallback", async () => {
+  for (const mode of ["post", "live"] as const) {
+    for (const fallback of [false, true]) {
+      const calls: string[] = [];
+      const signal = new AbortController().signal;
+      const url = `${mode === "post" ? POST_URL : LIVE_URL}?a=1&b=$(echo%20no);x=\`id\``;
+      const adb = {
+        launchApp: async (serial: string, packageName: string, options: { signal: AbortSignal }) => {
+          assert.equal(serial, DEVICE_ID);
+          assert.equal(packageName, TIKTOK_APP_PACKAGE);
+          assert.equal(options.signal, signal);
+          calls.push("launch");
+        },
+        execute: async (serial: string, args: string[], options: { signal: AbortSignal }) => {
+          assert.equal(serial, DEVICE_ID);
+          assert.equal(options.signal, signal);
+          assert.deepEqual(args, ["shell", "am", "start", "-W", "-a", "android.intent.action.VIEW",
+            "-d", `'${url}'`, "-p", TIKTOK_APP_PACKAGE]);
+          calls.push("fallback");
+          return { stdout: "Status: ok\n", stderr: "" };
+        },
+        getForeground: async (serial: string) => {
+          assert.equal(serial, DEVICE_ID);
+          calls.push("foreground");
+          return { packageName: TIKTOK_APP_PACKAGE };
+        },
+      } as unknown as AdbClient;
+      const appium = {
+        executeScript: async (sessionId: string, script: string, args: unknown[], options: { signal: AbortSignal }) => {
+          assert.equal(sessionId, "session");
+          assert.equal(options.signal, signal);
+          assert.equal(script, "mobile: deepLink");
+          assert.deepEqual(args, [{ url, package: TIKTOK_APP_PACKAGE }]);
+          calls.push("deepLink");
+          if (fallback) throw new Error("deepLink failed");
+        },
+      } as unknown as AppiumClient;
+      const driver = new AppiumTikTokMobileDriver(adb, appium, config());
+      await driver[mode === "post" ? "openPost" : "openLive"]("session", DEVICE_ID, `${url}#discarded`, signal);
+      assert.deepEqual(calls, ["launch", "deepLink", ...(fallback ? ["fallback"] : []), "foreground"]);
+      await assert.rejects(mode === "post" ? driver.readLikeState("session") : driver.doubleTapRound("session", 540, 960), /objetivo TikTok no fue verificado/);
+    }
+  }
+});
+
+test("opening validates URLs before launch and never falls back after cancellation or launch failure", async () => {
+  const calls: string[] = [];
+  const controller = new AbortController();
+  let failure: "launch" | "deepLink" | "aborted" | "during-deepLink" = "launch";
+  const adb = {
+    launchApp: async () => {
+      calls.push("launch");
+      if (failure === "launch") throw new Error("launch failed");
+    },
+    execute: async () => { calls.push("fallback"); throw new Error("unexpected fallback"); },
+    getForeground: async () => { calls.push("foreground"); return { packageName: TIKTOK_APP_PACKAGE }; },
+  } as unknown as AdbClient;
+  const appium = {
+    executeScript: async () => {
+      calls.push("deepLink");
+      if (failure === "during-deepLink") controller.abort(new Error("cancelled during deepLink"));
+      if (failure === "aborted") throw new AppiumClientError("APPIUM_REQUEST_ABORTED", "request cancelled");
+      throw new DOMException("deepLink cancelled", "AbortError");
+    },
+  } as unknown as AppiumClient;
+  const driver = new AppiumTikTokMobileDriver(adb, appium, config());
+  for (const url of ["not a URL", "http://www.tiktok.com/", "https://example.com/", "https://tiktok.com.evil.test/",
+    "https://user:pass@tiktok.com/", "https://tiktok.com:444/", `${POST_URL}'`, `${LIVE_URL}\n`, `${POST_URL}?x=${"a".repeat(2048)}`]) {
+    await assert.rejects(driver.openPost("session", DEVICE_ID, url));
+  }
+  assert.equal(calls.length, 0);
+  await assert.rejects(driver.openPost("session", DEVICE_ID, POST_URL), /launch failed/);
+  assert.deepEqual(calls.splice(0), ["launch"]);
+  for (failure of ["deepLink", "aborted", "during-deepLink"] as const) {
+    await assert.rejects(driver.openLive("session", DEVICE_ID, LIVE_URL, controller.signal), /cancelled/);
+    assert.deepEqual(calls.splice(0), ["launch", "deepLink"]);
+  }
+  await assert.rejects(driver.openPost("session", DEVICE_ID, POST_URL, controller.signal), /cancelled/);
+  assert.equal(calls.length, 0);
+  const duringLaunch = new AbortController();
+  adb.launchApp = async () => {
+    calls.push("launch");
+    duringLaunch.abort(new Error("cancelled during launch"));
+    return { packageName: TIKTOK_APP_PACKAGE, activityName: "Main", component: `${TIKTOK_APP_PACKAGE}/Main` };
+  };
+  await assert.rejects(driver.openLive("session", DEVICE_ID, LIVE_URL, duringLaunch.signal), /cancelled during launch/);
+  assert.deepEqual(calls, ["launch"]);
+});
+
+test("fallback transport failure, cancellation and wrong foreground stop without another navigation attempt", async () => {
+  for (const failure of ["transport", "cancelled", "foreground"] as const) {
+    const calls: string[] = [];
+    const controller = new AbortController();
+    const adb = {
+      launchApp: async () => { calls.push("launch"); },
+      execute: async () => {
+        calls.push("fallback");
+        if (failure === "transport") throw new Error("ADB timed out");
+        if (failure === "cancelled") controller.abort(new Error("cancelled during fallback"));
+        return { stdout: "Status: ok", stderr: "" };
+      },
+      getForeground: async () => { calls.push("foreground"); return { packageName: "com.android.chrome" }; },
+    } as unknown as AdbClient;
+    const appium = {
+      executeScript: async () => { calls.push("deepLink"); throw new Error("deepLink failed"); },
+    } as unknown as AppiumClient;
+    const driver = new AppiumTikTokMobileDriver(adb, appium, config({ uiTimeoutMs: 1 }));
+    await assert.rejects(driver.openLive("session", DEVICE_ID, LIVE_URL, controller.signal),
+      failure === "transport" ? /ADB timed out/ : failure === "cancelled" ? /cancelled during fallback/ : /primer plano/);
+    assert.deepEqual(calls.filter((call) => call !== "foreground"), ["launch", "deepLink", "fallback"]);
+    assert.equal(calls.includes("foreground"), failure === "foreground");
+  }
+});
+
+test("failed deep-link fallback stops before selectors or gestures and owned runtime saves evidence and returns Home", async () => {
+  const current = await setup();
+  const calls: string[] = [];
+  try {
+    createPostExecution(current);
+    claimRuntimeOwnership(current.database, OWNER, 1, Date.now(), 60_000);
+    current.adb.launchApp = async () => { calls.push("launch"); return (await current.adb.getForeground(DEVICE_ID))!; };
+    current.adb.execute = async () => { calls.push("fallback"); return { stdout: "Error: unable to resolve Intent", stderr: "" }; };
+    current.adb.goHome = async () => { calls.push("home"); return { packageName: "launcher", activityName: "Launcher", component: "launcher/Launcher" }; };
+    current.appium.executeScript = async () => { calls.push("deepLink"); throw new Error("deepLink failed"); };
+    current.appium.findElements = async () => { calls.push("selectors"); return []; };
+    current.appium.clickElement = async () => { calls.push("click"); };
+    const result = await runClaimed(current, {});
+    assert.match(String(result.error), /unable to resolve Intent/);
+    assert.equal(result.job.status, "failed");
+    assert.equal(result.job.effectPhase, "before_effect");
+    assert.deepEqual(calls, ["launch", "deepLink", "fallback", "home"]);
+    assert.equal((current.database.prepare("SELECT COUNT(*) AS total FROM checkpoints").get() as { total: number }).total, 0);
+    assert.deepEqual(new Set((current.database.prepare("SELECT kind FROM evidence").all() as Array<{ kind: string }>).map((row) => row.kind)),
+      new Set(["metadata", "screenshot", "page_source"]));
+    assert.equal((current.database.prepare("SELECT cleanup_status FROM appium_sessions").get() as { cleanup_status: string }).cleanup_status, "home_confirmed");
+    assert.equal(claimNextJob(current.database, OWNER), null);
+  } finally {
+    await current.close();
+  }
 });

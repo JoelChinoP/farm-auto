@@ -372,6 +372,27 @@ export class AdbClient {
     return this.waitForForeground(serial, launcher.packageName, options);
   }
 
+  async launchApp(serial: string, packageName: string, options: AdbCommandOptions = {}) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/u.test(packageName)) {
+      throw new Error("El paquete Android no es valido.");
+    }
+    const resolved = await this.execute(serial, [
+      "shell", "cmd", "package", "resolve-activity", "--brief",
+      "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", packageName,
+    ], options);
+    const activity = parseResolvedActivity(resolved.stdout);
+    if (activity?.packageName !== packageName) throw new Error(`No se pudo resolver el launcher de ${packageName}.`);
+    const result = await this.execute(serial, [
+      "shell", "am", "start", "-W", "-a", "android.intent.action.MAIN",
+      "-c", "android.intent.category.LAUNCHER", "-n", `'${activity.component}'`,
+    ], options);
+    options.signal?.throwIfAborted();
+    if (!/^Status:\s*ok\s*$/mu.test(result.stdout)) {
+      throw new Error(`ADB no pudo abrir ${packageName}: ${result.stdout} ${result.stderr}`);
+    }
+    return this.waitForForeground(serial, packageName, options);
+  }
+
   async openSafeUrl(serial: string, url: string, options: AdbCommandOptions = {}) {
     if (url !== SAFE_ADB_URL) throw new Error(`ADB solo puede abrir ${SAFE_ADB_URL}.`);
     return this.execute(serial, [

@@ -23,6 +23,7 @@ import {
   requestTikTokCommentGeneration,
   requestTikTokLiveExecution,
   requestTikTokPostExecution,
+  resolveTikTokPostUrl,
   TIKTOK_APP_PACKAGE,
   TikTokError,
   type TikTokConfig,
@@ -93,7 +94,7 @@ function campaignRequest(options: { comment?: boolean; deviceIds?: string[]; url
   };
 }
 
-function createCampaign(database: Database.Database, options: { comment?: boolean; deviceIds?: string[]; urls?: string[] } = {}) {
+function createCampaign(database: Database.Database, options: { comment?: boolean; deviceIds?: string[]; urls?: string[]; resolvedUrls?: string[] } = {}) {
   const request = campaignRequest(options);
   const operation = createOperation(database, {
     kind: "campaign.create",
@@ -101,7 +102,7 @@ function createCampaign(database: Database.Database, options: { comment?: boolea
     request,
   }).operation;
   enqueueJob(database, "campaign.create", request, { operationId: operation.id, maxAttempts: 2 });
-  return createTikTokCampaign(database, operation.id, request)!;
+  return createTikTokCampaign(database, operation.id, request, options.resolvedUrls)!;
 }
 
 test("accepts only safe TikTok domains and strict Live URLs", () => {
@@ -122,6 +123,133 @@ test("accepts only safe TikTok domains and strict Live URLs", () => {
   ]) assert.throws(() => normalizeTikTokUrl(invalid), TikTokError);
   assert.throws(() => normalizeTikTokLiveUrl("https://www.tiktok.com/@qa/video/1"), /Live/);
   assert.throws(() => validateTikTokCampaignRequest({ ...campaignRequest(), urls: ["https://www.tiktok.com/@qa/live"] }), /no admite una URL Live/);
+});
+
+test("resolves vm and vt through relative redirects without rewriting tokens or mutating normalization", async () => {
+  const canonical = "https://www.tiktok.com/@qa/video/7410000000000000000";
+  for (const host of ["vm.tiktok.com", "vt.tiktok.com"]) {
+    const source = `https://${host}/opaque-token/?_t=original`;
+    const requests: string[] = [];
+    const signals = new Set<AbortSignal>();
+    const finalUrl = await resolveTikTokPostUrl(source, async (input, init) => {
+      const url = String(input);
+      requests.push(url);
+      assert.equal(init?.redirect, "manual");
+      assert.ok(init.signal);
+      signals.add(init.signal);
+      if (requests.length === 1) return new Response(null, { status: 301, headers: { location: "../next" } });
+      if (requests.length === 2) return new Response(null, { status: 307, headers: { location: canonical + "?_t=shared&share_item_id=7410000000000000000#comments" } });
+      return new Response(null, { status: 200 });
+    });
+    assert.equal(finalUrl, canonical);
+    assert.deepEqual(requests, [source, `https://${host}/next`, canonical + "?_t=shared&share_item_id=7410000000000000000"]);
+    assert.equal(signals.size, 1);
+    assert.equal(normalizeTikTokUrl(source).sourceUrl, source);
+    assert.equal(normalizeTikTokUrl(source).normalizedUrl, `https://${host}/opaque-token`);
+  }
+  assert.equal(await resolveTikTokPostUrl(canonical + "?utm_source=test", async () => {
+    assert.fail("A canonical URL must not require a network request");
+  }), canonical);
+});
+
+test("rejects unsafe redirect destinations before fetching them", async () => {
+  for (const location of [
+    "https://example.com/post",
+    "//127.0.0.1/private",
+    "http://www.tiktok.com/@qa/video/1",
+    "https://user:password@www.tiktok.com/@qa/video/1",
+    "https://www.tiktok.com:444/@qa/video/1",
+    "https://untrusted.tiktok.com/@qa/video/1",
+    "https://www.tiktok.com.example.com/@qa/video/1",
+    "https://www.tiktok.com./@qa/video/1",
+  ]) {
+    let calls = 0;
+    await assert.rejects(resolveTikTokPostUrl("https://vm.tiktok.com/token/", async () => {
+      calls += 1;
+      return new Response(null, { status: 302, headers: { location } });
+    }), (error) => error instanceof TikTokError && error.code === "INVALID_TIKTOK_URL");
+    assert.equal(calls, 1, location);
+  }
+});
+
+test("rejects redirect loops, missing locations, and chains longer than five redirects", async () => {
+  let calls = 0;
+  await assert.rejects(resolveTikTokPostUrl("https://vt.tiktok.com/token/", async () => {
+    calls += 1;
+    return new Response(null, { status: 302, headers: { location: "/token/" } });
+  }), (error) => error instanceof TikTokError && error.code === "TIKTOK_REDIRECT_LOOP");
+  assert.equal(calls, 1);
+  await assert.rejects(resolveTikTokPostUrl("https://vm.tiktok.com/token/", async () => new Response(null, { status: 302 })),
+    (error) => error instanceof TikTokError && error.code === "TIKTOK_REDIRECT_INVALID");
+  calls = 0;
+  await assert.rejects(resolveTikTokPostUrl("https://vm.tiktok.com/token/", async () => {
+    calls += 1;
+    return new Response(null, { status: 303, headers: { location: `/hop-${calls}` } });
+  }), (error) => error instanceof TikTokError && error.code === "TIKTOK_REDIRECT_LIMIT");
+  assert.equal(calls, 6);
+});
+
+test("bounds resolution time, preserves cancellation, and fails closed on network or HTTP errors", async () => {
+  const source = "https://vm.tiktok.com/token/";
+  const waitingFetch: typeof fetch = async (_input, init) => new Promise<Response>((resolve, reject) => {
+    const timer = setTimeout(() => resolve(new Response(null)), 1_000);
+    init!.signal!.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(init!.signal!.reason);
+    }, { once: true });
+  });
+  await assert.rejects(resolveTikTokPostUrl(source, waitingFetch, undefined, 10),
+    (error) => error instanceof TikTokError && error.code === "TIKTOK_URL_RESOLUTION_TIMEOUT" && error.status === 504);
+  const controller = new AbortController();
+  const cancelled = resolveTikTokPostUrl(source, waitingFetch, controller.signal);
+  const reason = new Error("cancelled by operator");
+  controller.abort(reason);
+  await assert.rejects(cancelled, (error) => error === reason);
+  await assert.rejects(resolveTikTokPostUrl(source, async () => { throw new TypeError("fetch failed"); }),
+    (error) => error instanceof TikTokError && error.code === "TIKTOK_URL_RESOLUTION_FAILED");
+  for (const status of [403, 404, 429, 500]) {
+    let calls = 0;
+    await assert.rejects(resolveTikTokPostUrl(source, async () => {
+      calls += 1;
+      return new Response(null, { status });
+    }), (error) => error instanceof TikTokError && error.code === "TIKTOK_URL_RESOLUTION_FAILED");
+    assert.equal(calls, 1);
+  }
+});
+
+test("rejects a short link ending at a Live, profile, or unresolved short page", async () => {
+  for (const destination of ["https://www.tiktok.com/@qa/live", "https://www.tiktok.com/@qa", "https://vt.tiktok.com/unresolved/"]) {
+    let calls = 0;
+    await assert.rejects(resolveTikTokPostUrl("https://vm.tiktok.com/token/", async () => {
+      calls += 1;
+      return calls === 1 ? Response.redirect(destination) : new Response(null);
+    }), (error) => error instanceof TikTokError && error.code === "INVALID_TIKTOK_POST_URL");
+  }
+});
+
+test("rejects duplicate canonical identities and unresolved short links before persisting a campaign", async () => {
+  const database = openDatabase(":memory:");
+  try {
+    addEligibleDevice(database);
+    const urls = ["https://vm.tiktok.com/first/", "https://vt.tiktok.com/second/"];
+    const resolvedUrls = await Promise.all(urls.map((url, index) => resolveTikTokPostUrl(url, async (input) => {
+      if (String(input) === url) return Response.redirect(`https://${index ? "m" : "www"}.tiktok.com/@alias${index}/video/7410000000000000000?share=${index}`);
+      return new Response(null);
+    })));
+    assert.throws(() => createCampaign(database, { urls, resolvedUrls }),
+      (error) => error instanceof TikTokError && error.code === "DUPLICATE_TIKTOK_URL");
+    assert.throws(() => createCampaign(database, { urls: [urls[0], resolvedUrls[1]], resolvedUrls }),
+      (error) => error instanceof TikTokError && error.code === "DUPLICATE_TIKTOK_URL");
+    assert.throws(() => createCampaign(database, { urls: resolvedUrls }),
+      (error) => error instanceof TikTokError && error.code === "DUPLICATE_TIKTOK_URL");
+    assert.throws(() => createCampaign(database, { urls: [urls[0]] }),
+      (error) => error instanceof TikTokError && error.code === "INVALID_TIKTOK_POST_URL");
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM campaigns").get() as { total: number }).total, 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM posts").get() as { total: number }).total, 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM assignments").get() as { total: number }).total, 0);
+  } finally {
+    database.close();
+  }
 });
 
 test("enforces multi-device campaigns with exact comment distribution", () => {
@@ -201,8 +329,14 @@ test("persists an explicit post authorization with no automatic retry", () => {
   const database = openDatabase(":memory:");
   try {
     addEligibleDevice(database);
-    const campaign = createCampaign(database, { comment: false });
+    const campaign = createCampaign(database, {
+      comment: false,
+      urls: ["https://vm.tiktok.com/original-token/?_t=original"],
+      resolvedUrls: ["https://www.tiktok.com/@controlled/video/7410000000000000000?_t=shared"],
+    });
     const post = campaign.posts[0];
+    assert.equal(post.url, "https://vm.tiktok.com/original-token/?_t=original");
+    assert.equal(post.finalUrl, "https://www.tiktok.com/@controlled/video/7410000000000000000");
     const assignment = campaign.assignments[0];
     const request = {
       idempotencyKey: randomUUID(),
@@ -213,7 +347,7 @@ test("persists an explicit post authorization with no automatic retry", () => {
         postId: post.id,
         deviceId: assignment.deviceId,
         expectedAccount: ACCOUNT,
-        expectedPostUrl: post.url,
+        expectedPostUrl: post.finalUrl!,
         expectedComment: null,
         expectedTargetText: "Post controlado exacto",
       }],
@@ -225,7 +359,12 @@ test("persists an explicit post authorization with no automatic retry", () => {
       () => requestTikTokPostExecution(database, campaign.id, request, config({ publicEffectsEnabled: false })),
       (error) => error instanceof TikTokError && error.code === "TIKTOK_EFFECTS_DISABLED",
     );
+    database.prepare("UPDATE posts SET final_url = NULL WHERE id = ?").run(post.id);
+    assert.throws(() => requestTikTokPostExecution(database, campaign.id, request, config()),
+      (error) => error instanceof TikTokError && error.code === "INVALID_TIKTOK_POST_URL");
+    database.prepare("UPDATE posts SET final_url = ? WHERE id = ?").run(post.finalUrl, post.id);
     const authorized = requestTikTokPostExecution(database, campaign.id, request, config());
+    assert.equal((authorized.operation.request as { postUrl: string }).postUrl, post.finalUrl);
     assert.equal(authorized.replayed, false);
     assert.equal(authorized.job.maxAttempts, 1);
     assert.equal(authorized.job.effectPhase, "before_effect");
@@ -328,7 +467,9 @@ test("the worker dispatches TikTok campaign jobs by their persisted platform", a
   const database = openDatabase(":memory:");
   try {
     addEligibleDevice(database);
-    const request = campaignRequest({ comment: false });
+    const request = campaignRequest({ comment: false, urls: ["https://vt.tiktok.com/worker-token/"] });
+    const canonical = "https://www.tiktok.com/@controlled/video/7410000000000000000";
+    const requests: string[] = [];
     const operation = createOperation(database, {
       kind: "campaign.create",
       idempotencyKey: randomUUID(),
@@ -341,12 +482,23 @@ test("the worker dispatches TikTok campaign jobs by their persisted platform", a
       appium: {} as AppiumClient,
       owner: "tiktok-dispatch-worker",
       once: true,
+      tiktokUrlFetch: async (input) => {
+        assert.equal(database.inTransaction, false);
+        requests.push(String(input));
+        return requests.length === 1 ? Response.redirect(canonical) : new Response(null);
+      },
       facebookBrowser: {
         extract: async () => { throw new Error("Facebook no debe ejecutarse"); },
         close: async () => undefined,
       },
     });
-    assert.equal(getTikTokCampaignSnapshot(database, (database.prepare("SELECT id FROM campaigns").get() as { id: string }).id)?.platform, "tiktok");
+    const campaign = getTikTokCampaignSnapshot(database, (database.prepare("SELECT id FROM campaigns").get() as { id: string }).id)!;
+    assert.equal(campaign.platform, "tiktok");
+    assert.equal(campaign.posts[0].url, request.urls[0]);
+    assert.equal(campaign.posts[0].finalUrl, canonical);
+    assert.deepEqual(requests, [request.urls[0], canonical]);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'assignment.execute'").get() as { total: number }).total, 0);
+    assert.equal(createTikTokCampaign(database, operation.id, request)?.posts[0].finalUrl, canonical);
   } finally {
     database.close();
   }

@@ -1877,7 +1877,10 @@ export function ControlPanel() {
                 {confirmationPosts.map((assignment, index) => (
                   <Stack key={assignment.postId} gap="xs">
                     <Text size="sm" fw={700}>Publicación {index + 1}: {assignment.postUrl}</Text>
-                    <Textarea label="Texto visible que identifica esta publicación" description="Debe aparecer una sola vez en la pantalla móvil; si no coincide, el flujo se detendrá antes del efecto." minRows={2} maxLength={500} value={expectedTargetTexts[assignment.postId] ?? ""} onChange={(event) => setExpectedTargetTexts((current) => ({ ...current, [assignment.postId]: event.currentTarget.value }))} />
+                    <Textarea label="Texto visible que identifica esta publicación" description="Debe aparecer una sola vez en la pantalla móvil; si no coincide, el flujo se detendrá antes del efecto." minRows={2} maxLength={500} value={expectedTargetTexts[assignment.postId] ?? ""} onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setExpectedTargetTexts((current) => ({ ...current, [assignment.postId]: value }));
+                    }} />
                     {facebookExecutionConfirmation?.assignments.filter((item) => item.postId === assignment.postId && item.comment).map((item) => <Alert key={item.assignmentId} color="blue" title={item.deviceLabel}>{item.comment!.text}</Alert>)}
                   </Stack>
                 ))}
@@ -1899,7 +1902,10 @@ export function ControlPanel() {
                       <div><dt>Publicación</dt><dd>{assignment.postUrl}</dd></div>
                       <div><dt>Acciones</dt><dd>{[tiktokExecutionConfirmation.actions.like && "Like", tiktokExecutionConfirmation.actions.comment && "Comentario"].filter(Boolean).join(" + ")}</dd></div>
                     </dl>
-                    <Textarea label="Texto visible que identifica esta publicación" description="Debe aparecer una sola vez dentro del post móvil verificado." minRows={2} maxLength={500} value={expectedTargetTexts[assignment.postId] ?? ""} onChange={(event) => setExpectedTargetTexts({ [assignment.postId]: event.currentTarget.value })} />
+                    <Textarea label="Texto visible que identifica esta publicación" description="Debe aparecer una sola vez dentro del post móvil verificado." minRows={2} maxLength={500} value={expectedTargetTexts[assignment.postId] ?? ""} onChange={(event) => {
+                      const value = event.currentTarget.value;
+                      setExpectedTargetTexts((current) => ({ ...current, [assignment.postId]: value }));
+                    }} />
                     {assignment.comment && <Alert color="cyan" title="Comentario exacto">{assignment.comment.text}</Alert>}
                   </Stack>
                 ))}

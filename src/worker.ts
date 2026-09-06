@@ -35,7 +35,8 @@ import type { TikTokLiveMobileDriver, TikTokPostMobileDriver } from "./lib/tikto
 import {
   createTikTokCampaign,
   generateTikTokComment,
-  type TikTokCampaignRequest,
+  resolveTikTokPostUrl,
+  validateTikTokCampaignRequest,
 } from "./lib/tiktok.ts";
 
 type WorkerDependencies = {
@@ -53,6 +54,7 @@ type WorkerDependencies = {
   facebookMobile?: FacebookMobileDriver;
   tiktokPostMobile?: TikTokPostMobileDriver;
   tiktokLiveMobile?: TikTokLiveMobileDriver;
+  tiktokUrlFetch?: typeof fetch;
 };
 
 function campaignPlatform(database: Database.Database, campaignId: string | null) {
@@ -142,9 +144,16 @@ export async function runWorker(options: WorkerDependencies = {}) {
             leaseSignal: leaseController.signal,
           });
         } else if (job.kind === "campaign.create") {
-          result = (job.payload as { platform?: unknown }).platform === "tiktok"
-            ? createTikTokCampaign(database, job.operationId, job.payload as TikTokCampaignRequest)
-            : createFacebookCampaign(database, job.operationId, job.payload as FacebookCampaignRequest);
+          if ((job.payload as { platform?: unknown }).platform === "tiktok") {
+            const request = validateTikTokCampaignRequest(job.payload);
+            const finalUrls = job.campaignId ? undefined : await Promise.all(
+              request.urls.map((url) => resolveTikTokPostUrl(url, options.tiktokUrlFetch, jobSignal)),
+            );
+            jobSignal.throwIfAborted();
+            result = createTikTokCampaign(database, job.operationId, request, finalUrls);
+          } else {
+            result = createFacebookCampaign(database, job.operationId, job.payload as FacebookCampaignRequest);
+          }
         } else if (job.kind === "post.extract") {
           result = await extractFacebookPost(database, job.operationId, facebookBrowser, jobSignal);
         } else if (job.kind === "comments.generate") {

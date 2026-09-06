@@ -72,7 +72,7 @@ export function TikTokLivePanel({
   const savedCalibration = (deviceId: string) => configuration.liveCalibrations.find((item) => item.deviceId === deviceId);
   const calibrationSaved = (deviceId: string) => {
     const saved = savedCalibration(deviceId);
-    const point = points[deviceId];
+    const point = points[deviceId] ?? saved;
     return Boolean(saved && point && saved.x === point.x && saved.y === point.y);
   };
   const enabled = configuration.liveEffectsEnabled
@@ -90,7 +90,7 @@ export function TikTokLivePanel({
   const setPoint = (deviceId: string, field: "x" | "y", value: number) => {
     setPoints((current) => ({
       ...current,
-      [deviceId]: { ...(current[deviceId] ?? { x: 540, y: 960 }), [field]: value },
+      [deviceId]: { ...(current[deviceId] ?? savedCalibration(deviceId) ?? { x: 540, y: 960 }), [field]: value },
     }));
     invalidateConfirmation();
   };
@@ -114,7 +114,8 @@ export function TikTokLivePanel({
                   <Checkbox
                     checked={checked}
                     onChange={(event) => {
-                      setSelectedDeviceIds((current) => event.currentTarget.checked
+                      const selected = event.currentTarget.checked;
+                      setSelectedDeviceIds((current) => selected
                         ? [...current, device.id]
                         : current.filter((id) => id !== device.id));
                       invalidateConfirmation();
@@ -139,7 +140,11 @@ export function TikTokLivePanel({
             error={invalidUrls.length ? `${invalidUrls.length} línea(s) no son un Live válido de tiktok.com.` : undefined}
           />
           {urls.map((url, index) => (
-            <TextInput key={url} label={`Texto visible del Live ${index + 1}`} maxLength={500} value={targetTexts[url] ?? ""} onChange={(event) => { setTargetTexts((current) => ({ ...current, [url]: event.currentTarget.value })); invalidateConfirmation(); }} />
+            <TextInput key={url} label={`Texto visible del Live ${index + 1}`} maxLength={500} value={targetTexts[url] ?? ""} onChange={(event) => {
+              const value = event.currentTarget.value;
+              setTargetTexts((current) => ({ ...current, [url]: value }));
+              invalidateConfirmation();
+            }} />
           ))}
         </Stack>
         <Stack gap="sm">

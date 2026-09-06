@@ -8,6 +8,8 @@ import { enqueueJob, getJob, requestJobCancellation } from "./queue.ts";
 
 export const TIKTOK_APP_PACKAGE = "com.zhiliaoapp.musically";
 export const TIKTOK_TONES = ["Cercano", "Entusiasta", "Informativo", "Breve"] as const;
+const TIKTOK_POST_HOSTS = new Set(["tiktok.com", "www.tiktok.com", "m.tiktok.com"]);
+const TIKTOK_SHORT_HOSTS = new Set(["vm.tiktok.com", "vt.tiktok.com"]);
 
 export class TikTokError extends Error {
   readonly code: string;
@@ -226,6 +228,64 @@ export function normalizeTikTokLiveUrl(value: string) {
     throw new TikTokError("INVALID_TIKTOK_LIVE_URL", "El enlace debe identificar un Live de TikTok con /@usuario/live.");
   }
   return normalized;
+}
+
+function canonicalTikTokPostUrl(value: string) {
+  const url = new URL(normalizeTikTokUrl(value).normalizedUrl);
+  const post = /^\/@[^/]+\/(?:video|photo)\/([1-9]\d*)$/u.exec(url.pathname);
+  if (!TIKTOK_POST_HOSTS.has(url.hostname) || !post) {
+    throw new TikTokError("INVALID_TIKTOK_POST_URL", "El destino debe ser una publicacion canonica TikTok, no un Live, perfil o enlace corto.");
+  }
+  // The numeric post ID identifies the content; share parameters do not.
+  url.search = "";
+  return { finalUrl: url.toString(), identity: post[1] };
+}
+
+export async function resolveTikTokPostUrl(
+  value: string,
+  fetcher: typeof fetch = fetch,
+  signal?: AbortSignal,
+  timeoutMs = 10_000,
+) {
+  signal?.throwIfAborted();
+  let current = normalizeTikTokUrl(value).sourceUrl;
+  if (!TIKTOK_SHORT_HOSTS.has(new URL(current).hostname)) return canonicalTikTokPostUrl(current).finalUrl;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 10_000) throw new RangeError("timeoutMs debe estar entre 1 y 10000.");
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const resolutionSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  const seen = new Set<string>();
+  try {
+    for (let redirects = 0; ; redirects += 1) {
+      resolutionSignal.throwIfAborted();
+      const normalized = normalizeTikTokUrl(current);
+      const url = new URL(normalized.sourceUrl);
+      if (!TIKTOK_POST_HOSTS.has(url.hostname) && !TIKTOK_SHORT_HOSTS.has(url.hostname)) {
+        throw new TikTokError("INVALID_TIKTOK_URL", "El host de redireccion TikTok no esta permitido.");
+      }
+      if (seen.has(normalized.sourceUrl)) throw new TikTokError("TIKTOK_REDIRECT_LOOP", "El enlace TikTok contiene un bucle de redireccion.", 422);
+      seen.add(normalized.sourceUrl);
+      const response = await fetcher(url.toString(), { redirect: "manual", signal: resolutionSignal });
+      // Only headers are needed; do not download a post or wait on body cleanup.
+      void response.body?.cancel().catch(() => undefined);
+      resolutionSignal.throwIfAborted();
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        if (redirects >= 5) throw new TikTokError("TIKTOK_REDIRECT_LIMIT", "El enlace TikTok supera 5 redirecciones.", 422);
+        const location = response.headers.get("location");
+        if (!location || /["'\u0000-\u001f\u007f]/u.test(location)) {
+          throw new TikTokError("TIKTOK_REDIRECT_INVALID", "TikTok devolvio una redireccion sin destino valido.", 502);
+        }
+        current = new URL(location, url).toString();
+        continue;
+      }
+      if (!response.ok) throw new TikTokError("TIKTOK_URL_RESOLUTION_FAILED", `TikTok respondio HTTP ${response.status} al resolver el enlace.`, 502);
+      return canonicalTikTokPostUrl(url.toString()).finalUrl;
+    }
+  } catch (error) {
+    signal?.throwIfAborted();
+    if (timeout.aborted) throw new TikTokError("TIKTOK_URL_RESOLUTION_TIMEOUT", "Se agoto el tiempo para resolver el enlace TikTok.", 504);
+    if (error instanceof TikTokError) throw error;
+    throw new TikTokError("TIKTOK_URL_RESOLUTION_FAILED", "No se pudo resolver el enlace TikTok.", 502);
+  }
 }
 
 export function validateTikTokCampaignRequest(value: unknown): TikTokCampaignRequest {
@@ -472,13 +532,23 @@ function currentComment(database: Database.Database, assignmentId: string) {
   } | undefined;
 }
 
-export function createTikTokCampaign(database: Database.Database, operationId: string, request: TikTokCampaignRequest) {
+export function createTikTokCampaign(
+  database: Database.Database,
+  operationId: string,
+  request: TikTokCampaignRequest,
+  resolvedUrls?: string[],
+) {
   const input = validateTikTokCampaignRequest(request);
   assertOperationNotCancelled(database, operationId);
   return database.transaction(() => {
     const operation = getOperation(database, operationId);
     if (!operation || operation.kind !== "campaign.create") throw new Error("La operacion de campana TikTok no existe.");
     if (operation.campaignId) return getTikTokCampaignSnapshot(database, operation.campaignId);
+    if (resolvedUrls && resolvedUrls.length !== input.urls.length) throw new TikTokError("INVALID_TIKTOK_URLS", "Falta resolver una publicacion TikTok.");
+    const targets = input.urls.map((url, index) => canonicalTikTokPostUrl(resolvedUrls?.[index] ?? url));
+    if (new Set(targets.map((target) => target.identity)).size !== targets.length) {
+      throw new TikTokError("DUPLICATE_TIKTOK_URL", "Varios enlaces identifican la misma publicacion TikTok.");
+    }
     for (const deviceId of input.deviceIds) assertTikTokDeviceEligible(database, deviceId);
     const campaignId = randomUUID();
     const now = Date.now();
@@ -492,15 +562,16 @@ export function createTikTokCampaign(database: Database.Database, operationId: s
       const postId = randomUUID();
       database.prepare(`
         INSERT INTO posts (
-          id, campaign_id, position, source_url, normalized_url, status,
+          id, campaign_id, position, source_url, normalized_url, final_url, status,
           context_status, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         postId,
         campaignId,
         postIndex + 1,
         sourceUrl,
         normalizedUrl,
+        targets[postIndex].finalUrl,
         input.actions.comment ? "queued" : "ready",
         input.actions.comment ? "queued" : "ready",
         now,
@@ -965,6 +1036,7 @@ export function requestTikTokPostExecution(
     }
     const confirmationByAssignment = new Map(confirmations.map((confirmation) => [confirmation.assignmentId, confirmation]));
     const payloads = rows.map((row) => {
+      canonicalTikTokPostUrl(row.final_url ?? row.source_url);
       const confirmation = confirmationByAssignment.get(row.id);
       const comment = campaign.comment_enabled ? currentComment(database, row.id) : undefined;
       if (!confirmation || confirmation.postId !== row.post_id || confirmation.deviceId !== row.device_id
