@@ -67,10 +67,6 @@ export function DevicesView({ state, dispatch }: DevicesViewProps) {
         <div><span>Ocupados</span><strong>{busy}</strong></div>
       </section>
 
-      <Alert className="external-contract" color="gray" title="Límite de responsabilidad">
-        GenFarmer es externo. Farm Appium no inicia, detiene ni administra su proceso.
-      </Alert>
-
       <Accordion className="industrial-accordion" defaultValue="add-device" variant="contained">
         <Accordion.Item value="add-device">
           <Accordion.Control>

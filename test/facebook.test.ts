@@ -119,6 +119,18 @@ test("allows official Facebook share links to resolve to identifiable canonical 
     "https://www.facebook.com/example/posts/one",
     "https://www.facebook.com/example/posts/two",
   ), false);
+  assert.equal(isAllowedFacebookTargetRedirect(
+    "https://www.facebook.com/permalink.php?story_fbid=pfbidX&id=123",
+    "https://www.facebook.com/share/p/canonical-id/",
+  ), true);
+  assert.equal(isAllowedFacebookTargetRedirect(
+    "https://www.facebook.com/story.php?story_fbid=pfbidX&id=123",
+    "https://www.facebook.com/example/posts/canonical-id",
+  ), true);
+  assert.equal(isAllowedFacebookTargetRedirect(
+    "https://www.facebook.com/permalink.php?story_fbid=pfbidX&id=123",
+    "https://www.facebook.com/",
+  ), false);
 });
 
 test("extracts the caption from a reel player container", () => {

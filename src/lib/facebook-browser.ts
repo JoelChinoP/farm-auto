@@ -37,7 +37,8 @@ export function isAllowedFacebookTargetRedirect(requestedValue: string, finalVal
   if (requested.normalizedUrl === final.normalizedUrl) return true;
   const requestedUrl = new URL(requested.sourceUrl);
   const resolvesTarget = requestedUrl.hostname.toLowerCase() === "fb.watch"
-    || /^\/share\/[pvr]\/[^/]+\/?$/iu.test(requestedUrl.pathname);
+    || /^\/share\/[pvr]\/[^/]+\/?$/iu.test(requestedUrl.pathname)
+    || (["/permalink.php", "/story.php"].includes(requestedUrl.pathname) && requestedUrl.searchParams.has("story_fbid"));
   return resolvesTarget && isFacebookPostTarget(final.sourceUrl);
 }
 

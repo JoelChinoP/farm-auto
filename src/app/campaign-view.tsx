@@ -31,12 +31,6 @@ export function CampaignView({ platform, label, accent, allowedHosts, requiredCa
         </div>
         <div className="campaign-state"><span>ESTADO DE CAMPAÑA</span><Badge size="lg" variant="light">{statusLabels[draft.status]}</Badge><small>{requiredCapability}</small></div>
       </header>
-
-      <Alert className="prototype-ribbon" color={platform === "facebook" ? "blue" : "cyan"}>
-        {platform === "facebook"
-          ? "FASE 5 · plan N×M persistente, secuencia por dispositivo y confirmación pública explícita."
-          : "FASE 6 · contexto manual persistente, adaptador TikTok propio y confirmación pública explícita."}
-      </Alert>
       <CampaignSetup platform={platform} label={label} allowedHosts={allowedHosts} experimentalActions={experimentalActions} draft={draft} state={state} dispatch={dispatch} />
       {draft.posts.length > 0 && <><CampaignPipeline platform={platform} draft={draft} state={state} dispatch={dispatch} /><CampaignPlanningReview platform={platform} label={label} draft={draft} state={state} dispatch={dispatch} /></>}
     </div>
