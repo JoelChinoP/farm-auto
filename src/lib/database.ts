@@ -19,7 +19,7 @@ import {
   SESSION_STATUSES,
 } from "./domain.ts";
 
-export const DATABASE_VERSION = 14;
+export const DATABASE_VERSION = 16;
 
 function sqlValues(values: readonly string[]) {
   return values.map((value) => `'${value}'`).join(", ");
@@ -519,6 +519,68 @@ function migrateToVersion14(database: Database.Database) {
   `);
 }
 
+function migrateToVersion15(database: Database.Database) {
+  database.exec(`
+    ALTER TABLE campaigns
+      ADD COLUMN share_enabled INTEGER NOT NULL DEFAULT 0 CHECK (share_enabled IN (0, 1));
+
+    DROP INDEX assignment_action_results_assignment_idx;
+    DROP INDEX assignment_action_results_status_idx;
+    ALTER TABLE assignment_action_results RENAME TO assignment_action_results_v14;
+
+    CREATE TABLE assignment_action_results (
+      id TEXT PRIMARY KEY,
+      assignment_id TEXT NOT NULL REFERENCES assignments(id) ON DELETE RESTRICT,
+      operation_id TEXT NOT NULL REFERENCES operations(id) ON DELETE RESTRICT,
+      checkpoint_id TEXT,
+      action TEXT NOT NULL CHECK (action IN ('like', 'comment', 'share')),
+      status TEXT NOT NULL CHECK (status IN (
+        'pending', 'effect_possible', 'confirmed', 'failed',
+        'outcome_unknown', 'cancelled', 'reconciled_not_sent'
+      )),
+      result TEXT CHECK (result IS NULL OR result IN (
+        'already_active', 'activated', 'sent', 'preserved', 'not_sent'
+      )),
+      comment_id TEXT REFERENCES comments(id) ON DELETE RESTRICT,
+      comment_version INTEGER CHECK (comment_version IS NULL OR comment_version >= 1),
+      text_hash TEXT CHECK (text_hash IS NULL OR length(text_hash) = 64),
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      FOREIGN KEY (operation_id, assignment_id)
+        REFERENCES operations(id, assignment_id) ON DELETE RESTRICT,
+      FOREIGN KEY (checkpoint_id, operation_id)
+        REFERENCES checkpoints(id, operation_id) ON DELETE RESTRICT,
+      UNIQUE (operation_id, action)
+    );
+
+    INSERT INTO assignment_action_results
+    SELECT * FROM assignment_action_results_v14;
+    DROP TABLE assignment_action_results_v14;
+
+    CREATE INDEX assignment_action_results_assignment_idx
+      ON assignment_action_results (assignment_id, action, created_at DESC);
+    CREATE INDEX assignment_action_results_status_idx
+      ON assignment_action_results (status, updated_at);
+  `);
+}
+
+function migrateToVersion16(database: Database.Database) {
+  const columns = database.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "content_kind")) {
+    database.exec("ALTER TABLE posts ADD COLUMN content_kind TEXT CHECK (content_kind IS NULL OR content_kind IN ('post', 'reel'))");
+  }
+  database.exec(`
+    UPDATE posts
+    SET content_kind = CASE
+      WHEN final_url LIKE '%/reel/%' OR final_url LIKE '%/reels/%' THEN 'reel'
+      ELSE 'post'
+    END
+    WHERE final_url IS NOT NULL AND content_kind IS NULL;
+  `);
+}
+
 function hasTable(database: Database.Database, name: string) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
@@ -755,6 +817,8 @@ export function openDatabase(filename: string) {
       }
       if (currentVersion < 13) migrateToVersion13(database);
       if (currentVersion < 14) migrateToVersion14(database);
+      if (currentVersion < 15) migrateToVersion15(database);
+      if (currentVersion < 16) migrateToVersion16(database);
       if (currentVersion < DATABASE_VERSION) database.pragma(`user_version = ${DATABASE_VERSION}`);
     }).immediate();
 
@@ -770,6 +834,9 @@ const globalDatabase = globalThis as typeof globalThis & {
 };
 
 export function getDatabase() {
-  globalDatabase.farmAppiumDatabase ??= openDatabase(appConfig.databasePath);
+  if (globalDatabase.farmAppiumDatabase?.pragma("user_version", { simple: true }) !== DATABASE_VERSION) {
+    globalDatabase.farmAppiumDatabase?.close();
+    globalDatabase.farmAppiumDatabase = openDatabase(appConfig.databasePath);
+  }
   return globalDatabase.farmAppiumDatabase;
 }

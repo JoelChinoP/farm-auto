@@ -275,6 +275,7 @@ function mapCampaignHistory(snapshots: FacebookSnapshot[], devices: Device[]) {
         context: post.context || "No requerido",
         likeResult: actionResult(snapshot.actions.like, execution?.like ?? null),
         commentResult: actionResult(snapshot.actions.comment, execution?.comment ?? null),
+        shareResult: actionResult(snapshot.actions.share === true, execution?.share ?? null),
         ...(execution?.error ? { error: execution.error } : {}),
         attempts: execution?.attempts ?? 0,
         confirmedRounds: execution?.confirmedRounds,
@@ -771,7 +772,7 @@ function controlReducer(state: ControlState, action: ControlAction): ControlStat
               ...campaign,
               completedAssignments: limit,
               assignments: campaign.assignments.map((item, index) => index < limit
-                ? { ...item, status: "sent", actualAt: state.demoOperations.now, likeResult: campaign.actions.like ? "ok" : "not_requested", commentResult: campaign.actions.comment ? "ok" : "not_requested", attempts: 1, cleanup: "home_confirmed" }
+                ? { ...item, status: "sent", actualAt: state.demoOperations.now, likeResult: campaign.actions.like ? "ok" : "not_requested", commentResult: campaign.actions.comment ? "ok" : "not_requested", shareResult: campaign.actions.share ? "ok" : "not_requested", attempts: 1, cleanup: "home_confirmed" }
                 : { ...item, status: "running", actualAt: state.demoOperations.now, attempts: 1 })
             }
           : campaign),
@@ -1006,7 +1007,7 @@ export function ControlPanel() {
     });
   };
 
-  const pollOperation = (id: string, platform: Platform = "facebook") => {
+  const pollOperation = (id: string, platform: Platform = "facebook", pendingCampaignPolls = 0) => {
     void apiRequest<{
       operation: {
         id: string;
@@ -1015,9 +1016,21 @@ export function ControlPanel() {
         campaignId: string | null;
         error: string | null;
       };
-    }>(`/api/operations/${id}`).then(({ operation }) => {
-      if (["pending", "running"].includes(operation.status)) {
-        later(() => pollOperation(id, platform), 1_000);
+      }>(`/api/operations/${id}`).then(({ operation }) => {
+        if (["pending", "running"].includes(operation.status)) {
+        if (operation.kind === "campaign.create" && operation.status === "pending" && pendingCampaignPolls >= 14) {
+          rawDispatch({ type: "campaign-request-failed", platform });
+          rawDispatch({
+            type: "set-notice",
+            notice: { kind: "error", title: "El worker no inició la campaña", message: "La campaña sigue en cola. Inicia npm run worker antes de volver a prepararla." },
+          });
+          return;
+        }
+        later(() => pollOperation(
+          id,
+          platform,
+          operation.kind === "campaign.create" && operation.status === "pending" ? pendingCampaignPolls + 1 : 0,
+        ), 1_000);
         return;
       }
       if (operation.campaignId) {
@@ -1052,7 +1065,7 @@ export function ControlPanel() {
             : "El worker detuvo la operación."),
         },
       });
-    }).catch(() => later(() => pollOperation(id, platform), 1_000));
+    }).catch(() => later(() => pollOperation(id, platform, pendingCampaignPolls), 1_000));
   };
 
   const dispatch: ControlDispatch = (action) => {
@@ -1171,6 +1184,7 @@ export function ControlPanel() {
       const validConfirmations = confirmations as Array<NonNullable<(typeof confirmations)[number]>>;
       const sharedAccounts = new Set(validConfirmations.map((confirmation) => confirmation.expectedAccount.normalize("NFKC").replace(/\s+/gu, " ").toLocaleLowerCase("es")))
         .size < new Set(validConfirmations.map((confirmation) => confirmation.deviceId)).size;
+      rawDispatch({ type: "campaign-requested", platform: "facebook" });
       void apiRequest<{ operation: { id: string } }>(`/api/facebook/campaigns/${draft.id}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },

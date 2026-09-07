@@ -148,7 +148,7 @@ export function campaignCanPrepare(state: ControlState, platform: Platform) {
   return selectedAreEligible
     && draft.urls.length >= 1 && draft.urls.length <= 10
     && draft.urlErrors.length === 0
-    && (draft.actions.like || draft.actions.comment)
+    && (draft.actions.like || draft.actions.comment || draft.actions.share)
     && (!draft.actions.comment || (distributionTotal === draft.selectedDeviceIds.length && draft.distribution.every((row) => row.intention.trim() && row.count > 0)));
 }
 
@@ -192,7 +192,7 @@ export function buildAssignments(draft: CampaignDraft) {
       url,
       status: draft.actions.comment ? (postIndex === 0 ? "extracting" : "queued") : "ready",
       contextStatus: draft.actions.comment ? (postIndex === 0 ? "extracting" : "queued") : "ready",
-      context: draft.actions.comment ? "" : "No requerido: comentarios desactivados.",
+      context: "",
       extractedContext: "",
       contextSource: null,
       extractedAt: null,
@@ -281,7 +281,7 @@ function emptyDraft(platform: Platform): CampaignDraft {
     urlInput: "",
     urls: [],
     urlErrors: [],
-    actions: { like: true, comment: true },
+    actions: { like: true, comment: true, share: false },
     controlledAccount: null,
     distribution: [{ id: `${platform}-intent-1`, intention: "Reacción natural", tone: "Cercano", count: 0 }],
     posts: [],
@@ -312,6 +312,7 @@ function historyAssignment(
     context: "Contexto extraído y conservado para auditoría.",
     likeResult: "ok",
     commentResult: "ok",
+    shareResult: "not_requested",
     attempts: 1,
     cleanup: "home_confirmed",
     ...overrides,
@@ -332,7 +333,7 @@ function campaign(
     startedAt,
     deviceIds: [...new Set(assignments.map((item) => item.deviceId))],
     postUrls: [...new Set(assignments.map((item) => item.postUrl))],
-    actions: { like: true, comment: true },
+    actions: { like: true, comment: true, share: false },
     status,
     completedAssignments: assignments.filter((item) => ["sent", "failed", "outcome_unknown", "cancelled"].includes(item.status)).length,
     totalAssignments: assignments.length,
@@ -348,7 +349,7 @@ export const demoHistory: HistoryCampaign[] = [
   campaign("CMP-260903-A1F4", "facebook", "running", [
     historyAssignment("A1F4", "device-01", demoPost, "sent"),
     historyAssignment("A1F4", "device-02", demoPost, "running", { actualAt: "2026-09-03T15:32:00.000Z" }),
-    historyAssignment("A1F4", "device-01", "https://fb.watch/demo-activo", "pending", { actualAt: null, likeResult: "not_requested", commentResult: "not_requested" }),
+    historyAssignment("A1F4", "device-01", "https://fb.watch/demo-activo", "pending", { actualAt: null, likeResult: "not_requested", commentResult: "not_requested", shareResult: "not_requested" }),
   ], "2026-09-03T15:30:00.000Z"),
   campaign("CMP-260903-7C21", "facebook", "completed", [
     historyAssignment("7C21", "device-01", demoPost, "sent"),
@@ -367,12 +368,13 @@ export const demoHistory: HistoryCampaign[] = [
     }),
   ], "2026-09-02T16:20:00.000Z"),
   campaign("CMP-260901-80DD", "tiktok", "cancelled", [
-    historyAssignment("80DD", "device-03", demoTikTok, "cancelled", { likeResult: "not_requested", commentResult: "not_requested" }),
+    historyAssignment("80DD", "device-03", demoTikTok, "cancelled", { likeResult: "not_requested", commentResult: "not_requested", shareResult: "not_requested" }),
   ], "2026-09-01T10:05:00.000Z", "Cancelación solicitada por el operador."),
   campaign("CMP-260831-5AF0", "facebook", "cancelled_with_cleanup_errors", [
     historyAssignment("5AF0", "device-07", demoPost, "cancelled", {
       likeResult: "not_requested",
       commentResult: "not_requested",
+      shareResult: "not_requested",
       cleanup: "unknown",
       error: "No se pudo confirmar Home; requiere recuperación manual.",
     }),

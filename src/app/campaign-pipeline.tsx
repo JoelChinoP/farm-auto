@@ -14,13 +14,14 @@ interface CampaignPipelineProps {
 export function CampaignPipeline({ platform, draft, state, dispatch }: CampaignPipelineProps) {
   const selectedPost = draft.posts.find((post) => post.id === draft.selectedPostId) ?? draft.posts[0];
   const failedPosts = draft.posts.filter((post) => ["failed", "session_required", "intervention_required"].includes(post.contextStatus)).length;
+  const needsCommentContext = draft.actions.comment;
 
   return (
     <section className="pipeline-section" aria-labelledby={`${platform}-pipeline-title`}>
       <div className="section-toolbar compact">
         <div>
           <span className="section-code">PIPELINE / PASO 02</span>
-          <Title order={2} id={`${platform}-pipeline-title`}>Contexto y comentarios</Title>
+          <Title order={2} id={`${platform}-pipeline-title`}>{needsCommentContext ? "Contexto y comentarios" : "Referencia visible"}</Title>
         </div>
         <Group gap="xs">
           <Badge color="gray">{draft.posts.filter((post) => post.status === "queued").length} en cola</Badge>
@@ -54,13 +55,13 @@ export function CampaignPipeline({ platform, draft, state, dispatch }: CampaignP
 
             <Accordion className="detail-accordion" multiple defaultValue={["context", "comments"]}>
               <Accordion.Item value="context">
-                <Accordion.Control>Contexto de publicación</Accordion.Control>
+                <Accordion.Control>{needsCommentContext ? "Contexto de publicación" : "Referencia exacta del post o reel"}</Accordion.Control>
                 <Accordion.Panel>
                   <div className="context-meta"><Badge color={selectedPost.contextStatus === "failed" ? "red" : "gray"}>{statusLabels[selectedPost.contextStatus]}</Badge><span>Fuente: {selectedPost.contextSource ? { extracted: "Extraído", cache: "Caché", manual: "Edición manual" }[selectedPost.contextSource] : "Pendiente"}</span>{platform === "facebook" && <span>Extracción: {formatDate(selectedPost.extractedAt)}</span>}</div>
                   {selectedPost.error && <Alert color="red" title="Extracción aislada">{selectedPost.error}</Alert>}
-                  <Textarea label={platform === "tiktok" ? "Contexto manual" : "Contexto editable"} description="Editar después de generar marca los comentarios como desactualizados." minRows={4} maxRows={8} maxLength={1200} autosize value={selectedPost.context} placeholder={selectedPost.contextStatus === "extracting" ? "Extrayendo contexto…" : "Escribe contexto manual para continuar"} onChange={(event) => dispatch({ type: "edit-context", platform, postId: selectedPost.id, value: event.currentTarget.value })} />
+                  <Textarea label={needsCommentContext ? platform === "tiktok" ? "Contexto manual" : "Contexto editable" : "Texto visible para verificar"} description={needsCommentContext ? "Editar después de generar marca los comentarios como desactualizados." : "Escribe una frase exacta de al menos 5 caracteres visible en el post o reel. No se usará para generar comentarios."} minRows={4} maxRows={8} maxLength={1200} autosize value={selectedPost.context} placeholder={selectedPost.contextStatus === "extracting" ? "Extrayendo contexto…" : needsCommentContext ? "Escribe contexto manual para continuar" : "Ej.: Frase visible en la publicación"} onChange={(event) => dispatch({ type: "edit-context", platform, postId: selectedPost.id, value: event.currentTarget.value })} />
                   <Group mt="sm">
-                    <Button size="compact-sm" disabled={selectedPost.context.trim().length < (platform === "tiktok" ? 5 : 2)} onClick={() => dispatch({ type: "save-context", platform, postId: selectedPost.id })}>Guardar edición</Button>
+                    <Button size="compact-sm" disabled={selectedPost.context.trim().length < 5} onClick={() => dispatch({ type: "save-context", platform, postId: selectedPost.id })}>{needsCommentContext ? "Guardar edición" : "Guardar referencia"}</Button>
                     {platform === "facebook" && <Button size="compact-sm" variant="default" disabled={!selectedPost.extractedContext} onClick={() => dispatch({ type: "restore-context", platform, postId: selectedPost.id })}>Restaurar extraído</Button>}
                     {platform === "facebook" && <Button size="compact-sm" variant="light" onClick={() => dispatch({ type: "retry-context", platform, postId: selectedPost.id })}>Reintentar extracción</Button>}
                   </Group>

@@ -24,7 +24,7 @@ export function CampaignPlanningReview({ platform, draft, state, dispatch, confi
   const executionBlocked = draft.assignments.some((assignment) => ["running", "cancellation_requested", "sent", "outcome_unknown"].includes(assignment.status));
   const scheduledDevices = selectedDevices.filter((device) =>
     draft.assignments.some((assignment) => assignment.deviceId === device.id && assignment.scheduledAt));
-  const actionsLabel = [draft.actions.like && "Like", draft.actions.comment && "Comentario"].filter(Boolean).join(" + ") || "Ninguna";
+  const actionsLabel = [draft.actions.like && "Like", draft.actions.comment && "Comentario", draft.actions.share && "Compartir"].filter(Boolean).join(" + ") || "Ninguna";
 
   if (platform === "facebook") {
     const missingAccounts = selectedDevices.filter((device) => !device.facebookAccount).length;
@@ -67,6 +67,7 @@ export function CampaignPlanningReview({ platform, draft, state, dispatch, confi
             <Alert color="blue" title="¿Cómo funciona?">
               Si dejas la hora vacía o ya pasó, los {draft.assignments.length} jobs se publican de inmediato. Cada equipo publica sus publicaciones en orden, en paralelo con los demás.
             </Alert>
+            {draft.actions.share && <Alert color="red" title="Compartir es una acción pública">El worker abre el menú del post o reel, confirma “Compartir ahora” y exige una confirmación visible de Facebook. Si no puede confirmarla, la asignación quedará bloqueada para reconciliación manual.</Alert>}
             <Button size="lg" color="red" fullWidth disabled={!canPublish} onClick={() => dispatch({ type: "request-start-campaign", platform })}>
               Publicar {draft.assignments.length} ejecuciones
             </Button>

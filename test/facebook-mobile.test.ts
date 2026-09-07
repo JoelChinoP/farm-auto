@@ -53,8 +53,9 @@ const TARGET_TEXT = "Publicación controlada exacta";
 const COMMENT = "Este comentario pertenece al contenido controlado";
 
 type Setup = Awaited<ReturnType<typeof setupExecution>>;
+type FacebookActions = { like: boolean; comment: boolean; share?: boolean };
 
-async function setupExecution(actions = { like: true, comment: true }) {
+async function setupExecution(actions: FacebookActions = { like: true, comment: true }) {
   const directory = await mkdtemp(join(tmpdir(), "farm-facebook-mobile-"));
   const database = openDatabase(":memory:");
   const hardwareId = "a".repeat(64);
@@ -98,7 +99,8 @@ async function setupExecution(actions = { like: true, comment: true }) {
   const context = `${TARGET_TEXT} con contexto adicional suficiente.`;
   database.prepare(`
     UPDATE posts SET status = 'ready', context_status = 'ready', context = ?,
-      context_hash = ?, context_source = 'manual', context_version = 1, updated_at = 2
+       context_hash = ?, context_source = 'manual', context_version = 1,
+       final_url = source_url, content_kind = 'post', updated_at = 2
     WHERE id = ?
   `).run(context, createHash("sha256").update(context).digest("hex"), post.id);
   if (actions.comment) {
@@ -172,6 +174,11 @@ function mobileDriver(overrides: Partial<FacebookMobileDriver> = {}) {
     readLikeState: async () => { calls.push("read-like"); return liked; },
     prepareLike: async () => { calls.push("prepare-like"); return "like-element"; },
     tapLike: async () => { calls.push("tap-like"); liked = true; },
+    prepareShare: async () => { calls.push("prepare-share"); return "share-element"; },
+    openShareMenu: async () => { calls.push("open-share-menu"); },
+    prepareShareNow: async () => { calls.push("prepare-share-now"); return "share-now-element"; },
+    submitShare: async () => { calls.push("submit-share"); },
+    confirmShare: async () => { calls.push("confirm-share"); },
     assertCommentAbsent: async () => { calls.push("comment-absent"); },
     openCommentComposer: async () => { calls.push("open-comment"); },
     enterComment: async (_sessionId, text) => { calls.push("enter-comment"); draft = text; },
@@ -266,6 +273,32 @@ test("executes one controlled assignment with independent checkpoints and cleanu
       [{ action: "comment", status: "confirmed" }, { action: "like", status: "confirmed" }],
     );
     assert.equal((setup.database.prepare("SELECT cleanup_status FROM appium_sessions").get() as { cleanup_status: string }).cleanup_status, "home_confirmed");
+  } finally {
+    await setup.close();
+  }
+});
+
+test("shares a controlled post only after resolving Compartir ahora", async () => {
+  const setup = await setupExecution({ like: false, comment: false, share: true });
+  try {
+    requestExecution(setup);
+    assert.equal(claimRuntimeOwnership(setup.database, OWNER, 1, Date.now(), 60_000), true);
+    const mobile = mobileDriver();
+    const result = await runClaimed(setup, mobile.driver);
+
+    assert.equal(result.error, null);
+    assert.deepEqual(mobile.calls.filter((call) => call.includes("share")), [
+      "prepare-share",
+      "open-share-menu",
+      "prepare-share-now",
+      "submit-share",
+      "confirm-share",
+    ]);
+    assert.deepEqual(
+      setup.database.prepare("SELECT action, status, result FROM assignment_action_results").all(),
+      [{ action: "share", status: "confirmed", result: "sent" }],
+    );
+    assert.equal((setup.database.prepare("SELECT COUNT(*) AS total FROM checkpoints WHERE phase = 'before_share'").get() as { total: number }).total, 1);
   } finally {
     await setup.close();
   }
@@ -711,6 +744,8 @@ test("the Appium driver scopes target controls to the verified post container", 
   let composerVisible = false;
   let commentSurfaceVisible = false;
   let commentSent = false;
+  let shareMenuOpen = false;
+  let shareConfirmed = false;
   let targetUrl = "https://www.facebook.com/control/posts/1";
   const appium = {
     findElements: async (_sessionId: string, using: string, value: string) => {
@@ -718,6 +753,8 @@ test("the Appium driver scopes target controls to the verified post container", 
       if (using === "id" && value === POST_CONTAINER_RESOURCE_ID) return [{ elementId: "other-post" }, { elementId: "target-post" }];
       if (using === "id" && value === COMMENT_COMPOSER_RESOURCE_ID) return composerVisible ? [{ elementId: "composer" }] : [];
       if (using === "id" && value === COMMENT_RESULT_CONTAINER_RESOURCE_ID) return commentSurfaceVisible ? [{ elementId: "comment-results" }] : [];
+      if (using === "accessibility id" && value === "Compartir ahora" && shareMenuOpen) return [{ elementId: "share-now" }];
+      if (using === "accessibility id" && value === "Publicación compartida" && shareConfirmed) return [{ elementId: "share-confirmation" }];
       return [];
     },
     findElementsFromElement: async (_sessionId: string, parent: string, using: string, value: string) => {
@@ -726,6 +763,7 @@ test("the Appium driver scopes target controls to the verified post container", 
       if (using === "id" && value === POST_URL_RESOURCE_ID && parent === "target-post") return [{ elementId: "target-url" }];
       if (using === "accessibility id" && ["Me gusta", "Like"].includes(value) && parent === "target-post") return [{ elementId: "target-like" }];
       if (using === "accessibility id" && ["Comentar", "Comment"].includes(value) && parent === "target-post") return [{ elementId: "comment-trigger" }];
+      if (using === "accessibility id" && ["Compartir", "Share"].includes(value) && parent === "target-post") return [{ elementId: "share-trigger" }];
       if (using === "id" && value === COMMENT_EDITOR_RESOURCE_ID && parent === "composer") return [{ elementId: "editor" }];
       if (using === "id" && value === COMMENT_SUBMIT_RESOURCE_ID && parent === "composer") return [{ elementId: "submit" }];
       if (using === "xpath" && value.includes(COMMENT) && parent === "comment-results" && commentSent) return [{ elementId: "sent-comment" }];
@@ -747,6 +785,8 @@ test("the Appium driver scopes target controls to the verified post container", 
         commentSurfaceVisible = false;
         commentSent = true;
       }
+      if (elementId === "share-trigger") shareMenuOpen = true;
+      if (elementId === "share-now") shareConfirmed = true;
     },
     clearElement: async () => undefined,
     setElementValue: async () => undefined,
@@ -776,7 +816,12 @@ test("the Appium driver scopes target controls to the verified post container", 
   assert.equal(submit, "submit");
   await mobile.submitComment("session", submit);
   await mobile.confirmCommentVisible("session", COMMENT);
+  const share = await mobile.prepareShare("session");
+  await mobile.openShareMenu("session", share);
+  await mobile.submitShare("session", await mobile.prepareShareNow("session"));
+  await mobile.confirmShare("session");
   assert.ok(childCalls.some((call) => call.parent === "target-post" && call.using === "accessibility id"));
+  assert.ok(childCalls.some((call) => call.parent === "target-post" && call.value === "Compartir"));
   assert.ok(childCalls.some((call) => call.parent === "composer" && call.value === COMMENT_EDITOR_RESOURCE_ID));
   assert.ok(childCalls.some((call) => call.parent === "composer" && call.value === COMMENT_SUBMIT_RESOURCE_ID));
   assert.equal(childCalls.some((call) => call.parent === "other-post" && call.using === "accessibility id"), false);
@@ -835,6 +880,55 @@ test("the structural Facebook fallback verifies the active profile and scrolls t
   );
   assert.equal(await mobile.readLikeState("session"), true);
   assert.equal(postControlsVisible, true);
+});
+
+test("the structural Facebook fallback accepts a dynamic Reel Compartir label only inside the verified Reel", async () => {
+  let screen: "feed" | "profile" | "target" = "target";
+  const adb = {
+    execute: async () => { screen = "feed"; },
+    getForeground: async () => ({ packageName: "com.facebook.katana", activityName: ".Main" }),
+    waitForForeground: async () => ({ packageName: "com.facebook.katana", activityName: ".Main" }),
+  } as unknown as AdbClient;
+  const appium = {
+    activateApp: async () => undefined,
+    executeScript: async () => { screen = "target"; },
+    findElements: async (_sessionId: string, using: string, value: string) => {
+      if (using === "accessibility id" && value === "Ir al perfil" && screen === "feed") return [{ elementId: "profile-link" }];
+      if (using === "xpath" && value.includes(ACCOUNT) && screen === "profile") return [{ elementId: "account" }];
+      if (using === "xpath" && value.includes(TARGET_TEXT) && screen === "target") return [{ elementId: "target-reel" }];
+      return [];
+    },
+    findElementsFromElement: async (_sessionId: string, parent: string, using: string, value: string) => (
+      parent === "target-reel" && using === "xpath" && value === ".//android.widget.Button"
+        ? [{ elementId: "reel-share" }]
+        : []
+    ),
+    getElementText: async () => "",
+    getElementAttribute: async (_sessionId: string, elementId: string) => (
+      elementId === "reel-share" ? "Compartir, 79 veces compartido" : null
+    ),
+    clickElement: async (_sessionId: string, elementId: string) => { if (elementId === "profile-link") screen = "profile"; },
+  } as unknown as AppiumClient;
+  const mobile = new AppiumFacebookMobileDriver(adb, appium, {
+    composer: "@accessibility",
+    editor: "@accessibility",
+    submit: "@accessibility",
+    result: "@accessibility",
+  });
+
+  await mobile.openPost("session", "device-1", "https://www.facebook.com/reel/canonical-id");
+  await mobile.verifyAccountAndPost(
+    "session",
+    ACCOUNT,
+    "@accessibility",
+    "@accessibility",
+    "@accessibility",
+    "https://www.facebook.com/reel/canonical-id",
+    TARGET_TEXT,
+    undefined,
+    "reel",
+  );
+  assert.equal(await mobile.prepareShare("session"), "reel-share");
 });
 
 test("a Home failure cannot make confirmed effects retryable", async () => {

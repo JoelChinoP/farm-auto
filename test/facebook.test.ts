@@ -17,6 +17,7 @@ import {
   editFacebookComment,
   editFacebookPostContext,
   extractFacebookPost,
+  facebookContentKind,
   FacebookError,
   freezeFacebookCampaignManifest,
   generateFacebookComments,
@@ -119,6 +120,8 @@ test("allows official Facebook share links to resolve to identifiable canonical 
     "https://www.facebook.com/example/posts/one",
     "https://www.facebook.com/example/posts/two",
   ), false);
+  assert.equal(facebookContentKind("https://www.facebook.com/reel/canonical-id"), "reel");
+  assert.equal(facebookContentKind("https://www.facebook.com/example/posts/canonical-id"), "post");
   assert.equal(isAllowedFacebookTargetRedirect(
     "https://www.facebook.com/permalink.php?story_fbid=pfbidX&id=123",
     "https://www.facebook.com/share/p/canonical-id/",
@@ -475,6 +478,51 @@ test("does not create context, comments, or extraction work when comments are di
     assert.equal(snapshot?.posts[0].context, "");
     assert.equal(snapshot?.posts.flatMap((post) => post.comments).length, 0);
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'post.extract'").get() as { total: number }).total, 0);
+  } finally {
+    database.close();
+  }
+});
+
+test("prepares a share-only campaign with resolved targets and no comments", async () => {
+  const database = openDatabase(":memory:");
+  try {
+    const request = {
+      ...campaignRequest([addEligibleDevice(database, 1)], false),
+      actions: { like: false, comment: false, share: true },
+    };
+    const { snapshot } = createCampaign(database, request);
+    assert.deepEqual(snapshot?.actions, { like: false, comment: false, share: true });
+    assert.equal(snapshot?.status, "preparing");
+    assert.equal(snapshot?.posts[0].context, "");
+    assert.equal(snapshot?.posts.flatMap((post) => post.comments).length, 0);
+    assert.equal((database.prepare("SELECT share_enabled FROM campaigns").get() as { share_enabled: number }).share_enabled, 1);
+    const extractions = database.prepare(`
+      SELECT o.id, o.post_id
+      FROM operations o JOIN posts p ON p.id = o.post_id
+      WHERE o.kind = 'post.extract'
+      ORDER BY p.position
+    `)
+      .all() as Array<{ id: string; post_id: string }>;
+    assert.equal(extractions.length, 2);
+    for (const [index, extraction] of extractions.entries()) {
+      await extractFacebookPost(database, extraction.id, {
+        extract: async () => ({
+          context: `Contenido verificado ${index + 1} para compartir de forma controlada.`,
+          finalUrl: index === 0
+            ? "https://www.facebook.com/reel/canonical-id"
+            : "https://www.facebook.com/example/posts/canonical-id",
+          contentKind: index === 0 ? "reel" : "post",
+          extractorVersion: "test-v1",
+        }),
+      });
+    }
+    const prepared = getFacebookCampaignSnapshot(database, snapshot!.id)!;
+    assert.equal(prepared.status, "ready");
+    assert.deepEqual(prepared.posts.map((post) => post.contentKind), ["reel", "post"]);
+    assert.ok(prepared.posts.every((post) => post.finalUrl && post.context.length >= 5));
+    assert.ok(prepared.assignments.every((assignment) => assignment.status === "draft"));
+    assert.equal(prepared.posts.flatMap((post) => post.comments).length, 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'comments.generate'").get() as { total: number }).total, 0);
   } finally {
     database.close();
   }

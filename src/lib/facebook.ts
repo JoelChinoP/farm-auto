@@ -31,12 +31,14 @@ export class FacebookError extends Error {
 export type FacebookCampaignRequest = {
   urls: string[];
   deviceIds: string[];
-  actions: { like: boolean; comment: boolean };
+  actions: { like: boolean; comment: boolean; share?: boolean };
   distribution: Array<{ intention: string; tone: string; count: number }>;
 };
 
+export type FacebookContentKind = "post" | "reel";
+
 type NormalizedFacebookUrl = { sourceUrl: string; normalizedUrl: string };
-type FacebookExtraction = { context: string; finalUrl: string; extractorVersion: string };
+type FacebookExtraction = { context: string; finalUrl: string; extractorVersion: string; contentKind?: FacebookContentKind };
 export type FacebookExtractor = {
   extract(url: string, signal?: AbortSignal): Promise<FacebookExtraction>;
 };
@@ -91,6 +93,10 @@ export function normalizeFacebookUrl(value: string): NormalizedFacebookUrl {
   return { sourceUrl, normalizedUrl: normalized.toString() };
 }
 
+export function facebookContentKind(value: string): FacebookContentKind {
+  return /^\/(?:reels?|share\/r)\//iu.test(new URL(value).pathname) ? "reel" : "post";
+}
+
 export function validateFacebookCampaignRequest(value: unknown): FacebookCampaignRequest {
   const input = objectValue(value);
   if (!Array.isArray(input.urls) || input.urls.length < 1 || input.urls.length > 10) {
@@ -117,11 +123,12 @@ export function validateFacebookCampaignRequest(value: unknown): FacebookCampaig
   }
 
   const rawActions = objectValue(input.actions, "actions es obligatorio.");
-  if (typeof rawActions.like !== "boolean" || typeof rawActions.comment !== "boolean") {
-    throw new FacebookError("INVALID_ACTIONS", "Like y Comentario deben ser valores booleanos.");
+  if (typeof rawActions.like !== "boolean" || typeof rawActions.comment !== "boolean"
+    || rawActions.share !== undefined && typeof rawActions.share !== "boolean") {
+    throw new FacebookError("INVALID_ACTIONS", "Like, Comentario y Compartir deben ser valores booleanos.");
   }
-  const actions = { like: rawActions.like, comment: rawActions.comment };
-  if (!actions.like && !actions.comment) throw new FacebookError("INVALID_ACTIONS", "Selecciona al menos una accion.");
+  const actions = { like: rawActions.like, comment: rawActions.comment, share: rawActions.share === true };
+  if (!actions.like && !actions.comment && !actions.share) throw new FacebookError("INVALID_ACTIONS", "Selecciona al menos una accion.");
 
   if (!actions.comment) return { urls, deviceIds, actions, distribution: [] };
   if (!Array.isArray(input.distribution) || input.distribution.length < 1 || input.distribution.length > 20) {
@@ -494,7 +501,7 @@ function enqueuePostOperation(
   input: { postId: string; kind: "post.extract" | "comments.generate"; idempotencyKey: string; overwriteManual?: boolean },
 ) {
   const post = database.prepare(`
-    SELECT p.id, p.campaign_id, p.context, p.context_status, c.comment_enabled
+    SELECT p.id, p.campaign_id, p.context, p.context_status, c.comment_enabled, c.share_enabled
     FROM posts p JOIN campaigns c ON c.id = p.campaign_id
     WHERE p.id = ? AND c.platform = 'facebook'
   `).get(input.postId) as {
@@ -503,9 +510,15 @@ function enqueuePostOperation(
     context: string | null;
     context_status: string;
     comment_enabled: 0 | 1;
+    share_enabled: 0 | 1;
   } | undefined;
   if (!post) throw new FacebookError("POST_NOT_FOUND", "La publicacion no existe.", 404);
-  if (!post.comment_enabled) throw new FacebookError("COMMENTS_DISABLED", "La campana no requiere contexto ni comentarios.", 409);
+  if (input.kind === "comments.generate" && !post.comment_enabled) {
+    throw new FacebookError("COMMENTS_DISABLED", "La campana no requiere comentarios.", 409);
+  }
+  if (input.kind === "post.extract" && !post.comment_enabled && !post.share_enabled) {
+    throw new FacebookError("VERIFICATION_NOT_REQUIRED", "La campana no requiere verificar contenido.", 409);
+  }
   if (input.kind === "comments.generate" && (!post.context?.trim() || !["ready", "cached", "edited"].includes(post.context_status))) {
     throw new FacebookError("CONTEXT_INVALID", "La generacion requiere un contexto valido.", 409);
   }
@@ -570,9 +583,13 @@ export type FacebookExecutionPayload = {
   expectedCommentResultContainerResourceId: string | null;
   expectedTargetText: string;
   postUrl: string;
+  contentKind: FacebookContentKind | null;
   contextHash: string | null;
-  actions: { like: boolean; comment: boolean };
+  actions: { like: boolean; comment: boolean; share: boolean };
   comment: null | { id: string; version: number; text: string; textHash: string };
+  expectedShareLabels: string[] | null;
+  expectedShareNowLabels: string[] | null;
+  expectedShareConfirmationLabels: string[] | null;
   confirmation: { publicEffects: true; controlledAccount: true; controlledContent: true };
 };
 
@@ -634,10 +651,11 @@ export function requestFacebookCampaignExecution(
     throw new FacebookError("CONTROLLED_ACCOUNT_CHANGED", "La cuenta controlada cambio; revisa y confirma de nuevo.", 409);
   }
   const expectedActionsInput = objectValue(input.expectedActions, "expectedActions es obligatorio.");
-  if (typeof expectedActionsInput.like !== "boolean" || typeof expectedActionsInput.comment !== "boolean") {
+  if (typeof expectedActionsInput.like !== "boolean" || typeof expectedActionsInput.comment !== "boolean"
+    || expectedActionsInput.share !== undefined && typeof expectedActionsInput.share !== "boolean") {
     throw new FacebookError("INVALID_CONFIRMATION", "Las acciones confirmadas no son validas.");
   }
-  const expectedActions = { like: expectedActionsInput.like, comment: expectedActionsInput.comment };
+  const expectedActions = { like: expectedActionsInput.like, comment: expectedActionsInput.comment, share: expectedActionsInput.share === true };
   const expectedCommentComposerResourceId = expectedActions.comment
     ? nonEmptyString(commentComposerResourceId, "FACEBOOK_COMMENT_COMPOSER_RESOURCE_ID", 300)
     : null;
@@ -665,7 +683,7 @@ export function requestFacebookCampaignExecution(
 
   return database.transaction(() => {
     const campaign = database.prepare(`
-      SELECT id, status, revision, like_enabled, comment_enabled
+      SELECT id, status, revision, like_enabled, comment_enabled, share_enabled
       FROM campaigns WHERE id = ? AND platform = 'facebook'
     `).get(campaignId) as {
       id: string;
@@ -673,10 +691,11 @@ export function requestFacebookCampaignExecution(
       revision: number;
       like_enabled: 0 | 1;
       comment_enabled: 0 | 1;
+      share_enabled: 0 | 1;
     } | undefined;
     if (!campaign) throw new FacebookError("CAMPAIGN_NOT_FOUND", "La campana no existe.", 404);
     const posts = database.prepare(`
-      SELECT id, position, status, source_url, final_url, context_hash
+      SELECT id, position, status, source_url, final_url, context_hash, content_kind
       FROM posts WHERE campaign_id = ? ORDER BY position
     `).all(campaignId) as Array<{
       id: string;
@@ -685,6 +704,7 @@ export function requestFacebookCampaignExecution(
       source_url: string;
       final_url: string | null;
       context_hash: string | null;
+      content_kind: FacebookContentKind | null;
     }>;
     const assignments = database.prepare(`
       SELECT id, post_id, device_id, status FROM assignments WHERE campaign_id = ?
@@ -711,11 +731,15 @@ export function requestFacebookCampaignExecution(
       expectedCommentResultContainerResourceId,
       expectedTargetText,
       postUrl: expectedPostUrl,
+      contentKind: post.content_kind,
       contextHash: post.context_hash,
       actions: expectedActions,
       comment: expectedComment && comment
         ? { ...expectedComment, text: comment.text }
         : null,
+      expectedShareLabels: expectedActions.share ? appConfig.facebookShareLabels : null,
+      expectedShareNowLabels: expectedActions.share ? appConfig.facebookShareNowLabels : null,
+      expectedShareConfirmationLabels: expectedActions.share ? appConfig.facebookShareConfirmationLabels : null,
       confirmation: { publicEffects: true, controlledAccount: true, controlledContent: true },
     };
     const created = createOperation(database, {
@@ -742,7 +766,11 @@ export function requestFacebookCampaignExecution(
     if ((post.final_url ?? post.source_url) !== expectedPostUrl) {
       throw new FacebookError("CONFIRMED_TARGET_CHANGED", "La URL efectiva cambio; revisa y confirma de nuevo.", 409);
     }
-    if (Boolean(campaign.like_enabled) !== expectedActions.like || Boolean(campaign.comment_enabled) !== expectedActions.comment) {
+    if (expectedActions.share && (!post.content_kind || post.content_kind !== facebookContentKind(expectedPostUrl))) {
+      throw new FacebookError("SHARE_CONTENT_NOT_VERIFIED", "La publicacion debe resolverse y verificarse antes de compartir.", 409);
+    }
+    if (Boolean(campaign.like_enabled) !== expectedActions.like || Boolean(campaign.comment_enabled) !== expectedActions.comment
+      || Boolean(campaign.share_enabled) !== expectedActions.share) {
       throw new FacebookError("CONFIRMED_ACTIONS_CHANGED", "Las acciones seleccionadas cambiaron; revisa y confirma de nuevo.", 409);
     }
     if (campaign.comment_enabled && (!comment || !expectedComment
@@ -801,6 +829,12 @@ export function requestFacebookCampaignExecution(
         null, null, null, now, now, priorLike ? now : null,
       );
     }
+    if (campaign.share_enabled) {
+      insertAction.run(
+        randomUUID(), assignment.id, created.operation.id, "share", "pending", null,
+        null, null, null, now, now, null,
+      );
+    }
     if (campaign.comment_enabled) {
       insertAction.run(
         randomUUID(), assignment.id, created.operation.id, "comment", "pending", null,
@@ -850,10 +884,11 @@ export function requestFacebookCampaignSchedule(
     throw new FacebookError("SHARED_ACCOUNT_CONFIRMATION_REQUIRED", "Confirma explicitamente el uso de una cuenta compartida.", 409);
   }
   const expectedActionsInput = objectValue(input.expectedActions, "expectedActions es obligatorio.");
-  if (typeof expectedActionsInput.like !== "boolean" || typeof expectedActionsInput.comment !== "boolean") {
-    throw new FacebookError("INVALID_CONFIRMATION", "Las acciones confirmadas no son validas.");
-  }
-  const expectedActions = { like: expectedActionsInput.like, comment: expectedActionsInput.comment };
+    if (typeof expectedActionsInput.like !== "boolean" || typeof expectedActionsInput.comment !== "boolean"
+      || expectedActionsInput.share !== undefined && typeof expectedActionsInput.share !== "boolean") {
+      throw new FacebookError("INVALID_CONFIRMATION", "Las acciones confirmadas no son validas.");
+    }
+    const expectedActions = { like: expectedActionsInput.like, comment: expectedActionsInput.comment, share: expectedActionsInput.share === true };
   const expectedAccountResourceId = nonEmptyString(accountResourceId, "FACEBOOK_ACCOUNT_RESOURCE_ID", 300);
   const expectedPostContainerResourceId = nonEmptyString(postContainerResourceId, "FACEBOOK_POST_CONTAINER_RESOURCE_ID", 300);
   const expectedPostUrlResourceId = nonEmptyString(postUrlResourceId, "FACEBOOK_POST_URL_RESOURCE_ID", 300);
@@ -918,21 +953,23 @@ export function requestFacebookCampaignSchedule(
 
   return database.transaction(() => {
     const campaign = database.prepare(`
-      SELECT status, revision, like_enabled, comment_enabled
+      SELECT status, revision, like_enabled, comment_enabled, share_enabled
       FROM campaigns WHERE id = ? AND platform = 'facebook'
     `).get(campaignId) as {
       status: string;
       revision: number;
       like_enabled: 0 | 1;
       comment_enabled: 0 | 1;
+      share_enabled: 0 | 1;
     } | undefined;
     if (!campaign) throw new FacebookError("CAMPAIGN_NOT_FOUND", "La campana no existe.", 404);
-    if (Boolean(campaign.like_enabled) !== expectedActions.like || Boolean(campaign.comment_enabled) !== expectedActions.comment) {
+    if (Boolean(campaign.like_enabled) !== expectedActions.like || Boolean(campaign.comment_enabled) !== expectedActions.comment
+      || Boolean(campaign.share_enabled) !== expectedActions.share) {
       throw new FacebookError("CONFIRMED_ACTIONS_CHANGED", "Las acciones seleccionadas cambiaron; revisa y confirma de nuevo.", 409);
     }
     const rows = database.prepare(`
       SELECT a.id, a.post_id, a.device_id, a.status, p.position, p.status AS post_status,
-        p.source_url, p.final_url, p.context_hash
+        p.source_url, p.final_url, p.context_hash, p.content_kind
       FROM assignments a JOIN posts p ON p.id = a.post_id
       JOIN device_profiles d ON d.device_id = a.device_id
       WHERE a.campaign_id = ? ORDER BY p.position, d.physical_order, a.id
@@ -946,6 +983,7 @@ export function requestFacebookCampaignSchedule(
       source_url: string;
       final_url: string | null;
       context_hash: string | null;
+      content_kind: FacebookContentKind | null;
     }>;
     if (rows.length !== confirmations.length) {
       throw new FacebookError("CONFIRMED_TARGET_CHANGED", "La matriz confirmada no coincide con la campana.", 409);
@@ -957,6 +995,9 @@ export function requestFacebookCampaignSchedule(
       if (!confirmation || confirmation.postId !== row.post_id || confirmation.deviceId !== row.device_id
         || confirmation.expectedPostUrl !== (row.final_url ?? row.source_url)) {
         throw new FacebookError("CONFIRMED_TARGET_CHANGED", "Una asignacion, dispositivo o URL efectiva cambio.", 409);
+      }
+      if (campaign.share_enabled && (!row.content_kind || row.content_kind !== facebookContentKind(confirmation.expectedPostUrl))) {
+        throw new FacebookError("SHARE_CONTENT_NOT_VERIFIED", "La publicacion debe resolverse y verificarse antes de compartir.", 409);
       }
       if (campaign.comment_enabled && (!comment || !confirmation.expectedComment
         || comment.id !== confirmation.expectedComment.id
@@ -988,11 +1029,15 @@ export function requestFacebookCampaignSchedule(
           expectedCommentResultContainerResourceId,
           expectedTargetText: confirmation.expectedTargetText,
           postUrl: confirmation.expectedPostUrl,
+          contentKind: row.content_kind,
           contextHash: row.context_hash,
           actions: expectedActions,
           comment: confirmation.expectedComment && comment
             ? { ...confirmation.expectedComment, text: comment.text }
             : null,
+          expectedShareLabels: expectedActions.share ? appConfig.facebookShareLabels : null,
+          expectedShareNowLabels: expectedActions.share ? appConfig.facebookShareNowLabels : null,
+          expectedShareConfirmationLabels: expectedActions.share ? appConfig.facebookShareConfirmationLabels : null,
           confirmation: { publicEffects: true as const, controlledAccount: true as const, controlledContent: true as const },
         } satisfies FacebookExecutionPayload,
       };
@@ -1064,6 +1109,7 @@ export function requestFacebookCampaignSchedule(
         deviceId: item.row.device_id,
       }).operation;
       if (campaign.like_enabled) insertAction.run(randomUUID(), item.row.id, operation.id, "like", null, null, null, now, now);
+      if (campaign.share_enabled) insertAction.run(randomUUID(), item.row.id, operation.id, "share", null, null, null, now, now);
       if (campaign.comment_enabled) {
         insertAction.run(
           randomUUID(),
@@ -1096,7 +1142,7 @@ export function requestFacebookCampaignSchedule(
 export function reconcileFacebookAssignment(database: Database.Database, assignmentId: string, value: unknown) {
   const input = objectValue(value);
   const idempotencyKey = typeof input.idempotencyKey === "string" ? input.idempotencyKey : "";
-  if (input.action !== "like" && input.action !== "comment") {
+  if (input.action !== "like" && input.action !== "comment" && input.action !== "share") {
     throw new FacebookError("RECONCILIATION_INVALID", "La accion a reconciliar no es valida.");
   }
   if (input.resolution !== "sent" && input.resolution !== "not_sent") {
@@ -1106,7 +1152,7 @@ export function reconcileFacebookAssignment(database: Database.Database, assignm
   return database.transaction(() => {
     const assignment = database.prepare(`
       SELECT a.id, a.campaign_id, a.post_id, a.device_id, a.status,
-        c.like_enabled, c.comment_enabled
+        c.like_enabled, c.comment_enabled, c.share_enabled
       FROM assignments a JOIN campaigns c ON c.id = a.campaign_id
       WHERE a.id = ? AND c.platform = 'facebook'
     `).get(assignmentId) as {
@@ -1117,6 +1163,7 @@ export function reconcileFacebookAssignment(database: Database.Database, assignm
       status: string;
       like_enabled: 0 | 1;
       comment_enabled: 0 | 1;
+      share_enabled: 0 | 1;
     } | undefined;
     if (!assignment) throw new FacebookError("ASSIGNMENT_NOT_FOUND", "La asignacion no existe.", 404);
     const activeExecution = database.prepare(`
@@ -1174,9 +1221,12 @@ export function reconcileFacebookAssignment(database: Database.Database, assignm
     const confirmed = database.prepare(`
       SELECT
         EXISTS(SELECT 1 FROM assignment_action_results WHERE assignment_id = ? AND action = 'like' AND status = 'confirmed') AS liked,
-        EXISTS(SELECT 1 FROM assignment_action_results WHERE assignment_id = ? AND action = 'comment' AND status = 'confirmed') AS commented
-    `).get(assignmentId, assignmentId) as { liked: 0 | 1; commented: 0 | 1 };
-    const complete = (!assignment.like_enabled || confirmed.liked) && (!assignment.comment_enabled || confirmed.commented);
+        EXISTS(SELECT 1 FROM assignment_action_results WHERE assignment_id = ? AND action = 'comment' AND status = 'confirmed') AS commented,
+        EXISTS(SELECT 1 FROM assignment_action_results WHERE assignment_id = ? AND action = 'share' AND status = 'confirmed') AS shared
+    `).get(assignmentId, assignmentId, assignmentId) as { liked: 0 | 1; commented: 0 | 1; shared: 0 | 1 };
+    const complete = (!assignment.like_enabled || confirmed.liked)
+      && (!assignment.comment_enabled || confirmed.commented)
+      && (!assignment.share_enabled || confirmed.shared);
     database.prepare(`
       UPDATE assignments SET status = ?, updated_at = ?, completed_at = ? WHERE id = ?
     `).run(complete ? "sent" : "approved", now, complete ? now : null, assignmentId);
@@ -1208,9 +1258,9 @@ export function createFacebookCampaign(
     const now = Date.now();
     database.prepare(`
       INSERT INTO campaigns (
-        id, platform, status, like_enabled, comment_enabled, created_at, updated_at
-      ) VALUES (?, 'facebook', ?, ?, ?, ?, ?)
-    `).run(campaignId, input.actions.comment ? "preparing" : "ready", Number(input.actions.like), Number(input.actions.comment), now, now);
+        id, platform, status, like_enabled, comment_enabled, share_enabled, created_at, updated_at
+      ) VALUES (?, 'facebook', ?, ?, ?, ?, ?, ?)
+    `).run(campaignId, input.actions.comment || input.actions.share ? "preparing" : "ready", Number(input.actions.like), Number(input.actions.comment), Number(input.actions.share === true), now, now);
     const profiles = commentProfiles(input);
     for (const [postIndex, value] of input.urls.entries()) {
       const { sourceUrl, normalizedUrl } = normalizeFacebookUrl(value);
@@ -1226,8 +1276,8 @@ export function createFacebookCampaign(
         postIndex + 1,
         sourceUrl,
         normalizedUrl,
-        input.actions.comment ? "queued" : "ready",
-        input.actions.comment ? "queued" : "ready",
+        input.actions.comment || input.actions.share ? "queued" : "ready",
+        input.actions.comment || input.actions.share ? "queued" : "ready",
         now,
         now,
       );
@@ -1236,7 +1286,7 @@ export function createFacebookCampaign(
         database.prepare(`
           INSERT INTO assignments (id, campaign_id, post_id, device_id, status, created_at, updated_at)
           VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(assignmentId, campaignId, postId, deviceId, input.actions.comment ? "pending" : "approved", now, now);
+      `).run(assignmentId, campaignId, postId, deviceId, input.actions.comment || input.actions.share ? "pending" : "approved", now, now);
         if (input.actions.comment) {
           const profile = profiles[deviceIndex];
           database.prepare(`
@@ -1246,7 +1296,7 @@ export function createFacebookCampaign(
           `).run(randomUUID(), assignmentId, profile.intention, profile.tone, now, now);
         }
       }
-      if (input.actions.comment) {
+      if (input.actions.comment || input.actions.share) {
         enqueuePostOperation(database, {
           postId,
           kind: "post.extract",
@@ -1265,13 +1315,14 @@ export function createFacebookCampaign(
 
 export function getFacebookCampaignSnapshot(database: Database.Database, campaignId: string) {
   const campaign = database.prepare(`
-    SELECT id, status, like_enabled, comment_enabled, revision, cancellation_reason, created_at, updated_at
+    SELECT id, status, like_enabled, comment_enabled, share_enabled, revision, cancellation_reason, created_at, updated_at
     FROM campaigns WHERE id = ? AND platform = 'facebook'
   `).get(campaignId) as {
     id: string;
     status: string;
     like_enabled: 0 | 1;
     comment_enabled: 0 | 1;
+    share_enabled: 0 | 1;
     revision: number;
     cancellation_reason: string | null;
     created_at: number;
@@ -1358,7 +1409,7 @@ export function getFacebookCampaignSnapshot(database: Database.Database, campaig
     WHERE a.campaign_id = ?
   `).all(campaignId) as Array<{
     operation_id: string;
-    action: "like" | "comment";
+    action: "like" | "comment" | "share";
     status: string;
     result: string | null;
     error: string | null;
@@ -1408,6 +1459,7 @@ export function getFacebookCampaignSnapshot(database: Database.Database, campaig
     context_version: number;
     extracted_context: string | null;
     extractor_version: string | null;
+    content_kind: FacebookContentKind | null;
     extracted_at: number | null;
     error: string | null;
   }>;
@@ -1420,7 +1472,7 @@ export function getFacebookCampaignSnapshot(database: Database.Database, campaig
     status: campaign.status,
     revision: campaign.revision,
     cancellationReason: campaign.cancellation_reason,
-    actions: { like: Boolean(campaign.like_enabled), comment: Boolean(campaign.comment_enabled) },
+    actions: { like: Boolean(campaign.like_enabled), comment: Boolean(campaign.comment_enabled), share: Boolean(campaign.share_enabled) },
     controlledAccount: appConfig.facebookControlledAccount
       && appConfig.facebookAccountResourceId
       && appConfig.facebookPostContainerResourceId
@@ -1459,6 +1511,7 @@ export function getFacebookCampaignSnapshot(database: Database.Database, campaig
       extractedContext: post.extracted_context ?? "",
       contextSource: post.context_source,
       extractorVersion: post.extractor_version,
+      contentKind: post.content_kind,
       extractedAt: post.extracted_at,
       error: post.error,
       comments: (assignmentsByPost.get(post.id) ?? []).flatMap((assignment) => {
@@ -1483,6 +1536,7 @@ export function getFacebookCampaignSnapshot(database: Database.Database, campaig
       const execution = latestExecution.get(assignment.id);
       const like = execution ? actionByExecution.get(`${execution.id}:like`) : undefined;
       const comment = execution ? actionByExecution.get(`${execution.id}:comment`) : undefined;
+      const share = execution ? actionByExecution.get(`${execution.id}:share`) : undefined;
       return {
         id: assignment.id,
         postId: assignment.post_id,
@@ -1502,9 +1556,12 @@ export function getFacebookCampaignSnapshot(database: Database.Database, campaig
             ? "like"
             : comment?.status === "outcome_unknown" || comment?.status === "effect_possible"
               ? "comment"
-              : null,
+              : share?.status === "outcome_unknown" || share?.status === "effect_possible"
+                ? "share"
+                : null,
           like: like ? { status: like.status, result: like.result, error: like.error } : null,
           comment: comment ? { status: comment.status, result: comment.result, error: comment.error } : null,
+          share: share ? { status: share.status, result: share.result, error: share.error } : null,
           checkpoints: (checkpointsByExecution.get(execution.id) ?? []).map((checkpoint) => ({
             id: checkpoint.id,
             phase: checkpoint.phase,
@@ -1604,9 +1661,14 @@ export function editFacebookPostContext(database: Database.Database, campaignId:
   return database.transaction(() => {
     assertFacebookPostEditable(database, postId);
     const post = database.prepare(`
-      SELECT p.context, p.context_hash FROM posts p JOIN campaigns c ON c.id = p.campaign_id
+      SELECT p.context, p.context_hash, c.comment_enabled, c.share_enabled FROM posts p JOIN campaigns c ON c.id = p.campaign_id
       WHERE p.id = ? AND p.campaign_id = ? AND c.platform = 'facebook'
-    `).get(postId, campaignId) as { context: string | null; context_hash: string | null } | undefined;
+    `).get(postId, campaignId) as {
+      context: string | null;
+      context_hash: string | null;
+      comment_enabled: 0 | 1;
+      share_enabled: 0 | 1;
+    } | undefined;
     if (!post) throw new FacebookError("POST_NOT_FOUND", "La publicacion no existe.", 404);
     const contextHash = hashContext(context);
     if (post.context === context && post.context_hash === contextHash) return getFacebookCampaignSnapshot(database, campaignId)!;
@@ -1624,9 +1686,9 @@ export function editFacebookPostContext(database: Database.Database, campaignId:
     `).run(randomUUID(), postId, version, context, contextHash, now);
     database.prepare(`
       UPDATE posts SET context = ?, context_hash = ?, context_source = 'manual',
-        context_status = 'edited', context_version = ?, status = 'context_ready',
+        context_status = 'edited', context_version = ?, status = ?,
         error = NULL, updated_at = ? WHERE id = ?
-    `).run(context, contextHash, version, now, postId);
+    `).run(context, contextHash, version, post.comment_enabled || post.share_enabled ? "context_ready" : "ready", now, postId);
     database.prepare(`
       UPDATE comments SET stale = 1,
         status = CASE WHEN status IN ('generating', 'regenerating') THEN 'failed' ELSE status END,
@@ -1638,7 +1700,8 @@ export function editFacebookPostContext(database: Database.Database, campaignId:
       UPDATE assignments SET status = CASE WHEN status = 'generating' THEN 'pending' ELSE status END,
         updated_at = ? WHERE post_id = ?
     `).run(now, postId);
-    database.prepare("UPDATE campaigns SET status = 'preparing' WHERE id = ?").run(campaignId);
+    database.prepare("UPDATE campaigns SET status = ? WHERE id = ?")
+      .run(post.comment_enabled ? "preparing" : "ready", campaignId);
     touchCampaign(database, campaignId, now);
     return getFacebookCampaignSnapshot(database, campaignId)!;
   }).immediate();
@@ -1788,6 +1851,7 @@ function persistExtraction(
   const context = nonEmptyString(extraction.context, "context", 5_000);
   if (context.length < 5) throw new FacebookError("FACEBOOK_CONTENT_EMPTY", "Facebook no expuso contexto suficiente.", 422);
   const finalUrl = normalizeFacebookUrl(extraction.finalUrl).sourceUrl;
+  const contentKind = extraction.contentKind ?? facebookContentKind(finalUrl);
   const contextHash = hashContext(context);
   const now = Date.now();
   const current = database.prepare("SELECT context_version, context_source, context_hash FROM posts WHERE id = ?")
@@ -1800,7 +1864,7 @@ function persistExtraction(
   `).run(randomUUID(), operation.postId, version, context, contextHash, finalUrl, extraction.extractorVersion, now);
   const preserveManual = current.context_source === "manual";
   database.prepare(`
-    UPDATE posts SET final_url = ?, extractor_version = ?, extracted_at = ?, error = NULL,
+    UPDATE posts SET final_url = ?, content_kind = ?, extractor_version = ?, extracted_at = ?, error = NULL,
       context = CASE WHEN ? THEN context ELSE ? END,
       context_hash = CASE WHEN ? THEN context_hash ELSE ? END,
       context_source = CASE WHEN ? THEN context_source ELSE 'extracted' END,
@@ -1809,6 +1873,7 @@ function persistExtraction(
       status = 'context_ready', updated_at = ? WHERE id = ?
   `).run(
     finalUrl,
+    contentKind,
     extraction.extractorVersion,
     now,
     Number(preserveManual),
@@ -1828,6 +1893,23 @@ function persistExtraction(
       UPDATE comments SET stale = 1, updated_at = ?
       WHERE assignment_id IN (SELECT id FROM assignments WHERE post_id = ?)
     `).run(now, operation.postId);
+  }
+  const campaign = database.prepare("SELECT comment_enabled FROM campaigns WHERE id = ?")
+    .get(operation.campaignId) as { comment_enabled: 0 | 1 };
+  if (!campaign.comment_enabled) {
+    const incomplete = database.prepare(`
+      SELECT 1 FROM posts
+      WHERE campaign_id = ? AND (final_url IS NULL OR content_kind IS NULL OR context_hash IS NULL)
+      LIMIT 1
+    `).get(operation.campaignId);
+    if (!incomplete) {
+      database.prepare("UPDATE assignments SET status = 'draft', updated_at = ? WHERE campaign_id = ? AND status = 'pending'")
+        .run(now, operation.campaignId);
+      database.prepare("UPDATE posts SET status = 'ready', updated_at = ? WHERE campaign_id = ? AND status = 'context_ready'")
+        .run(now, operation.campaignId);
+      database.prepare("UPDATE campaigns SET status = 'ready', updated_at = ? WHERE id = ?")
+        .run(now, operation.campaignId);
+    }
   }
   database.prepare("UPDATE operations SET result_json = ?, updated_at = ? WHERE id = ?")
     .run(stableJson({ domainCommitted: true }), now, operationId);
@@ -1896,6 +1978,10 @@ function hasCurrentComments(database: Database.Database, postId: string) {
 }
 
 function queueAutomaticGeneration(database: Database.Database, postId: string) {
+  const campaign = database.prepare(`
+    SELECT c.comment_enabled FROM campaigns c JOIN posts p ON p.campaign_id = c.id WHERE p.id = ?
+  `).get(postId) as { comment_enabled: 0 | 1 } | undefined;
+  if (!campaign?.comment_enabled) return;
   const manual = database.prepare(`
     SELECT 1 FROM comments c JOIN assignments a ON a.id = c.assignment_id
     WHERE a.post_id = ? AND c.version = (

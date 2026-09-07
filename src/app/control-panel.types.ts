@@ -105,9 +105,10 @@ export interface CampaignExecution {
   confirmedRounds?: number;
   requestedRounds?: number;
   error: string | null;
-  uncertainAction: "like" | "comment" | "live_round" | null;
+  uncertainAction: "like" | "comment" | "share" | "live_round" | null;
   like: CampaignActionResult | null;
   comment: CampaignActionResult | null;
+  share?: CampaignActionResult | null;
   checkpoints: Array<{ id: string; phase: string; sequence: number; createdAt: number }>;
   evidence: Array<{ checkpointId: string | null; kind: "metadata" | "screenshot" | "page_source"; path: string; createdAt: number }>;
 }
@@ -148,7 +149,7 @@ export interface CampaignDraft {
   urlInput: string;
   urls: string[];
   urlErrors: UrlLineError[];
-  actions: { like: boolean; comment: boolean };
+  actions: { like: boolean; comment: boolean; share?: boolean };
   controlledAccount?: string | null;
   distribution: IntentDistribution[];
   posts: CampaignPost[];
@@ -171,12 +172,13 @@ export interface HistoryAssignment {
   context: string;
   likeResult: "ok" | "failed" | "not_requested" | "outcome_unknown";
   commentResult: "ok" | "failed" | "not_requested" | "outcome_unknown";
+  shareResult: "ok" | "failed" | "not_requested" | "outcome_unknown";
   error?: string;
   attempts: number;
   confirmedRounds?: number;
   requestedRounds?: number;
   cleanup: "home_confirmed" | "session_closed" | "unknown" | "failed";
-  uncertainAction?: "like" | "comment" | "live_round" | null;
+  uncertainAction?: "like" | "comment" | "share" | "live_round" | null;
   checkpoints?: CampaignExecution["checkpoints"];
   evidence?: CampaignExecution["evidence"];
 }
@@ -188,7 +190,7 @@ export interface HistoryCampaign {
   startedAt: string;
   deviceIds: string[];
   postUrls: string[];
-  actions: { like: boolean; comment: boolean };
+  actions: { like: boolean; comment: boolean; share?: boolean };
   status: CampaignStatus;
   completedAssignments: number;
   totalAssignments: number;
@@ -286,7 +288,7 @@ export type ControlAction =
   | { type: "set-campaign-urls"; platform: Platform; value: string }
   | { type: "remove-campaign-url"; platform: Platform; index: number }
   | { type: "move-campaign-url"; platform: Platform; index: number; direction: -1 | 1 }
-  | { type: "toggle-campaign-action"; platform: Platform; action: "like" | "comment" }
+  | { type: "toggle-campaign-action"; platform: Platform; action: "like" | "comment" | "share" }
   | { type: "add-distribution"; platform: Platform }
   | { type: "remove-distribution"; platform: Platform; id: string }
   | { type: "update-distribution"; platform: Platform; id: string; field: "intention" | "tone" | "count"; value: string | number }
@@ -309,7 +311,7 @@ export type ControlAction =
   | { type: "set-schedule-deadline"; platform: Platform; value: string }
   | { type: "request-start-campaign"; platform: Platform }
   | { type: "cancel-assignment"; operationId: string }
-  | { type: "reconcile-assignment"; platform: Platform; assignmentId: string; operationId: string; action: "like" | "comment"; resolution: "sent" | "not_sent" }
+  | { type: "reconcile-assignment"; platform: Platform; assignmentId: string; operationId: string; action: "like" | "comment" | "share"; resolution: "sent" | "not_sent" }
   | { type: "advance-running-campaign"; platform: Platform }
   | { type: "clear-campaign"; platform: Platform }
   | { type: "set-history-filter"; field: keyof HistoryFilters; value: string }

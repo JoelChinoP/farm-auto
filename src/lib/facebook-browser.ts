@@ -5,7 +5,7 @@ import { chromium } from "playwright-core";
 import type { BrowserContext, Locator, Page } from "playwright-core";
 
 import { appConfig } from "./config.ts";
-import { FacebookError, normalizeFacebookUrl } from "./facebook.ts";
+import { facebookContentKind, FacebookError, type FacebookContentKind, normalizeFacebookUrl } from "./facebook.ts";
 
 const EXTRACTOR_VERSION = "facebook-edge-v2";
 const MESSAGE_SELECTOR = '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-testid="post_message"]';
@@ -132,10 +132,6 @@ async function readPostContext(page: Page) {
   }
   if (previous.length < 5) throw new FacebookError("FACEBOOK_CONTENT_EMPTY", "Facebook no expuso contexto visible.", 422);
   return previous;
-}
-
-function isReelTarget(value: string) {
-  return /^\/reels?\//iu.test(new URL(value).pathname);
 }
 
 export function reelCaptionFromLines(raw: string) {
@@ -403,9 +399,13 @@ export class FacebookBrowser {
       if (!isAllowedFacebookTargetRedirect(requestedUrl.sourceUrl, finalUrl)) {
         throw new FacebookError("FACEBOOK_TARGET_REDIRECTED", "El enlace no resolvio a la publicacion esperada.", 422);
       }
-      const contextText = await readPostContextWithReelFallback(page, isReelTarget(finalUrl));
+      const visiblePageText = await page.locator("body").innerText().catch(() => "");
+      const contentKind: FacebookContentKind = facebookContentKind(finalUrl) === "reel" || reelCaptionFromLines(visiblePageText).length >= 5
+        ? "reel"
+        : "post";
+      const contextText = await readPostContextWithReelFallback(page, contentKind === "reel");
       signal?.throwIfAborted();
-      return { context: contextText, finalUrl, extractorVersion: EXTRACTOR_VERSION };
+      return { context: contextText, finalUrl, contentKind, extractorVersion: EXTRACTOR_VERSION };
     } finally {
       signal?.removeEventListener("abort", abort);
       await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => undefined);

@@ -1052,6 +1052,14 @@ code,
   color: var(--ink);
 }
 
+.impact-bar .prepare-campaign-button {
+  min-width: 230px;
+  justify-content: center;
+  text-align: center;
+  font-size: 0.95rem;
+  font-weight: 800;
+}
+
 .pipeline-section,
 .review-section {
   background: rgba(216, 211, 199, 0.5);

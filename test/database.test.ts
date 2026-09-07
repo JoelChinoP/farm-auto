@@ -167,8 +167,12 @@ test("creates the complete schema from an empty database and persists every phas
     const now = 1;
     database.prepare("INSERT INTO device_profiles VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run("hardware-1", "serial-1", "Equipo 1", 1, 8200, now, now);
-    database.prepare("INSERT INTO campaigns VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run("campaign-1", "facebook", "draft", 1, 1, null, now, now, null, 1);
+    database.prepare(`
+      INSERT INTO campaigns (
+        id, platform, status, like_enabled, comment_enabled, cancellation_reason,
+        created_at, updated_at, completed_at, revision, share_enabled
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run("campaign-1", "facebook", "draft", 1, 1, null, now, now, null, 1, 0);
     database.prepare(`
       INSERT INTO posts (
         id, campaign_id, position, source_url, normalized_url, status,
@@ -328,9 +332,10 @@ test("backs up and migrates an existing version 2 database", async () => {
       DROP TABLE browser_profile_locks;
       ALTER TABLE comments DROP COLUMN error;
       ALTER TABLE posts DROP COLUMN context_version;
-      ALTER TABLE posts DROP COLUMN error;
-      ALTER TABLE posts DROP COLUMN final_url;
-      ALTER TABLE campaigns DROP COLUMN revision;
+       ALTER TABLE posts DROP COLUMN error;
+       ALTER TABLE posts DROP COLUMN final_url;
+       ALTER TABLE campaigns DROP COLUMN revision;
+       ALTER TABLE campaigns DROP COLUMN share_enabled;
       DROP TABLE appium_sessions;
       DROP TABLE device_observations;
       DROP TABLE runtime_ownership;
@@ -346,6 +351,9 @@ test("backs up and migrates an existing version 2 database", async () => {
     assert.ok((database.prepare("PRAGMA table_info(device_preparations)").all() as Array<{ name: string }>)
       .some((column) => column.name === "setup_revision"));
     assert.equal((database.prepare("SELECT status FROM device_preparations").get() as { status: string }).status, "not_ready");
+    assert.equal((database.prepare("SELECT share_enabled FROM campaigns WHERE id = 'legacy-campaign'").get() as { share_enabled: number }).share_enabled, 0);
+    assert.ok((database.prepare("PRAGMA table_info(posts)").all() as Array<{ name: string }>)
+      .some((column) => column.name === "content_kind"));
     const migratedContext = database.prepare(`
       SELECT p.context_version, v.context, v.source
       FROM posts p JOIN post_context_versions v ON v.post_id = p.id

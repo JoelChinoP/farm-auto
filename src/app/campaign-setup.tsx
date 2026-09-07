@@ -122,11 +122,13 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
             <span><strong>Comentar</strong><small>Contexto y generación por publicación</small></span>
             <Badge color="lime">Disponible</Badge>
           </label>
-          <label className="action-choice disabled">
-            <Checkbox disabled />
-            <span><strong>Compartir</strong><small>Contrato pendiente</small></span>
-            <Badge color="gray">En definición</Badge>
-          </label>
+          {platform === "facebook" && (
+            <label className="action-choice">
+              <Checkbox checked={draft.actions.share === true} onChange={() => dispatch({ type: "toggle-campaign-action", platform, action: "share" })} />
+              <span><strong>Compartir</strong><small>Confirma “Compartir ahora” dentro del post o reel verificado</small></span>
+              <Badge color="lime">Disponible</Badge>
+            </label>
+          )}
           {experimentalActions.includes("tap_tap") && (
             <label className="action-choice disabled">
               <Checkbox disabled />
@@ -134,7 +136,7 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
               <Badge color="pink">En revisión</Badge>
             </label>
           )}
-          {!draft.actions.like && !draft.actions.comment && <Text className="inline-error" role="alert">Selecciona al menos una acción disponible.</Text>}
+          {!draft.actions.like && !draft.actions.comment && !draft.actions.share && <Text className="inline-error" role="alert">Selecciona al menos una acción disponible.</Text>}
         </article>
 
         <article className="config-card distribution-card" data-hidden={!draft.actions.comment}>
@@ -165,8 +167,16 @@ export function CampaignSetup({ platform, label, allowedHosts, experimentalActio
       <div className="impact-bar">
         <div><span>IMPACTO</span><strong>{draft.selectedDeviceIds.length} dispositivos × {draft.urls.length} publicaciones = {assignmentCount} ejecuciones</strong></div>
         <div><span>COMENTARIOS PREVISTOS</span><strong>{draft.actions.comment ? assignmentCount : 0}</strong></div>
-        <div><span>ACCIONES POR EJECUCIÓN</span><strong>{[draft.actions.like && "Like", draft.actions.comment && "Comentario"].filter(Boolean).join(" + ") || "Ninguna"}</strong></div>
-        <Button size="lg" disabled={!campaignCanPrepare(state, platform) || draft.status !== "draft"} onClick={() => dispatch({ type: "prepare-campaign", platform })}>Preparar campaña</Button>
+        <div><span>ACCIONES POR EJECUCIÓN</span><strong>{[draft.actions.like && "Like", draft.actions.comment && "Comentario", draft.actions.share && "Compartir"].filter(Boolean).join(" + ") || "Ninguna"}</strong></div>
+        <Button
+          className="prepare-campaign-button"
+          size="xl"
+          loading={draft.status === "preparing"}
+          disabled={!campaignCanPrepare(state, platform) || draft.status !== "draft"}
+          onClick={() => dispatch({ type: "prepare-campaign", platform })}
+        >
+          {draft.status === "preparing" ? "Preparando campaña..." : "Preparar campaña"}
+        </Button>
       </div>
     </section>
   );

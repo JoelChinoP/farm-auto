@@ -12,14 +12,16 @@ import {
 } from "./device-runtime.ts";
 import {
   FACEBOOK_APP_PACKAGE,
+  facebookContentKind,
   FacebookError,
+  type FacebookContentKind,
   type FacebookExecutionPayload,
   normalizeFacebookUrl,
   reduceFacebookCampaignExecution,
 } from "./facebook.ts";
 import { getOperation, stableJson } from "./operations.ts";
 
-type FacebookAction = "like" | "comment";
+type FacebookAction = "like" | "comment" | "share";
 const STRUCTURAL_SELECTOR = "@accessibility";
 
 export type FacebookMobileDriver = {
@@ -33,10 +35,16 @@ export type FacebookMobileDriver = {
     postUrl: string,
     targetText: string,
     signal?: AbortSignal,
+    contentKind?: FacebookContentKind,
   ): Promise<void>;
   readLikeState(sessionId: string, signal?: AbortSignal): Promise<boolean>;
   prepareLike(sessionId: string, signal?: AbortSignal): Promise<string>;
   tapLike(sessionId: string, elementId: string, signal?: AbortSignal): Promise<void>;
+  prepareShare(sessionId: string, signal?: AbortSignal): Promise<string>;
+  openShareMenu(sessionId: string, elementId: string, signal?: AbortSignal): Promise<void>;
+  prepareShareNow(sessionId: string, signal?: AbortSignal): Promise<string>;
+  submitShare(sessionId: string, elementId: string, signal?: AbortSignal): Promise<void>;
+  confirmShare(sessionId: string, signal?: AbortSignal): Promise<void>;
   assertCommentAbsent(sessionId: string, text: string, signal?: AbortSignal): Promise<void>;
   openCommentComposer(sessionId: string, signal?: AbortSignal): Promise<void>;
   enterComment(sessionId: string, text: string, signal?: AbortSignal): Promise<void>;
@@ -73,7 +81,13 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   readonly #adb: AdbClient;
   readonly #appium: AppiumClient;
   readonly #commentResourceIds: { composer: string; editor: string; submit: string; result: string };
-  readonly #targets = new Map<string, { text: string; containerResourceId: string; urlResourceId: string; url: string }>();
+  readonly #targets = new Map<string, {
+    text: string;
+    containerResourceId: string;
+    urlResourceId: string;
+    url: string;
+    contentKind: FacebookContentKind;
+  }>();
   readonly #postContainers = new Map<string, AppiumElement>();
   readonly #devices = new Map<string, string>();
   readonly #commentSurfaces = new Map<string, string>();
@@ -107,10 +121,25 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
   async #elementsForLabels(sessionId: string, labels: string[], signal?: AbortSignal, parentElementId?: string) {
     const elements = new Map<string, AppiumElement>();
     for (const label of labels) {
-      const found = parentElementId
+      const foundByAccessibility = parentElementId
         ? await this.#appium.findElementsFromElement(sessionId, parentElementId, "accessibility id", label, { signal })
         : await this.#appium.findElements(sessionId, "accessibility id", label, { signal });
-      for (const element of found) {
+      const literal = xpathLiteral(visibleText(label));
+      const foundByText = parentElementId
+        ? await this.#appium.findElementsFromElement(
+          sessionId,
+          parentElementId,
+          "xpath",
+          `.//*[normalize-space(@text) = ${literal} or normalize-space(@content-desc) = ${literal}]`,
+          { signal },
+        )
+        : await this.#appium.findElements(
+          sessionId,
+          "xpath",
+          `//*[normalize-space(@text) = ${literal} or normalize-space(@content-desc) = ${literal}]`,
+          { signal },
+        );
+      for (const element of [...foundByAccessibility, ...foundByText]) {
         elements.set(element.elementId, element);
       }
     }
@@ -187,8 +216,8 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
       if (cached) return cached;
       // ponytail: la app movil trunca el caption con "Ver mas"; un prefijo corto aun identifica la publicacion exacta.
       const prefixLocator = `.//*[contains(normalize-space(@text), ${xpathLiteral(targetText.slice(0, 60))}) or contains(normalize-space(@content-desc), ${xpathLiteral(targetText.slice(0, 60))})]`;
-      const structuralLocator = /\/(?:reel|share\/r)\//iu.test(new URL(target.url).pathname)
-        ? `//androidx.recyclerview.widget.RecyclerView[${locator}]`
+      const structuralLocator = target.contentKind === "reel"
+        ? `//androidx.recyclerview.widget.RecyclerView[${prefixLocator}]`
         : `${prefixLocator}/ancestor::android.view.ViewGroup[parent::androidx.recyclerview.widget.RecyclerView][1]`;
       const container = await this.#waitFor(async () => {
         const found = await this.#appium.findElements(sessionId, "xpath", structuralLocator, { signal });
@@ -279,6 +308,7 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
     postUrl: string,
     targetText: string,
     signal?: AbortSignal,
+    contentKind?: FacebookContentKind,
   ) {
     if (accountResourceId === STRUCTURAL_SELECTOR
       && postContainerResourceId === STRUCTURAL_SELECTOR
@@ -332,6 +362,7 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
       containerResourceId: postContainerResourceId,
       urlResourceId: postUrlResourceId,
       url: postUrl,
+      contentKind: contentKind ?? facebookContentKind(postUrl),
     });
     await this.#postContainer(sessionId, signal);
   }
@@ -414,6 +445,39 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
 
   async tapLike(sessionId: string, elementId: string, signal?: AbortSignal) {
     await this.#appium.clickElement(sessionId, elementId, { signal });
+  }
+
+  async prepareShare(sessionId: string, signal?: AbortSignal) {
+    const container = await this.#postContainer(sessionId, signal);
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const target = this.#target(sessionId);
+      const shares = target.containerResourceId === STRUCTURAL_SELECTOR
+        ? (await this.#structuralButtons(sessionId, container.elementId, signal))
+          .filter(({ label }) => appConfig.facebookShareLabels.some((shareLabel) => normalized(label) === normalized(shareLabel))
+            || target.contentKind === "reel" && /^(?:compartir|share),/u.test(normalized(label)))
+          .map(({ element }) => element)
+        : await this.#elementsForLabels(sessionId, appConfig.facebookShareLabels, signal, container.elementId);
+      if (shares.length === 1) return shares[0].elementId;
+      if (shares.length > 1) throw new FacebookError("FACEBOOK_UI_AMBIGUOUS", "No existe un unico control Compartir en la publicacion objetivo.", 422);
+      if (attempt < 3) await this.#scrollTargetPostControls(sessionId, signal);
+    }
+    throw new FacebookError("FACEBOOK_UI_NOT_VERIFIED", "No se pudo verificar Compartir dentro de la publicacion objetivo.", 422);
+  }
+
+  async openShareMenu(sessionId: string, elementId: string, signal?: AbortSignal) {
+    await this.#appium.clickElement(sessionId, elementId, { signal });
+  }
+
+  async prepareShareNow(sessionId: string, signal?: AbortSignal) {
+    return (await this.#uniqueLabelElement(sessionId, appConfig.facebookShareNowLabels, "la confirmacion Compartir ahora", signal)).elementId;
+  }
+
+  async submitShare(sessionId: string, elementId: string, signal?: AbortSignal) {
+    await this.#appium.clickElement(sessionId, elementId, { signal });
+  }
+
+  async confirmShare(sessionId: string, signal?: AbortSignal) {
+    await this.#uniqueLabelElement(sessionId, appConfig.facebookShareConfirmationLabels, "la confirmacion visible de que Facebook compartio", signal);
   }
 
   async assertCommentAbsent(sessionId: string, text: string, signal?: AbortSignal) {
@@ -557,7 +621,17 @@ function executionPayload(database: Database.Database, operationId: string) {
     || operation.kind !== "assignment.execute" || operation.status !== "running") {
     throw new Error("La operacion de ejecucion Facebook no es valida.");
   }
-  return { operation, payload: operation.request as FacebookExecutionPayload };
+  const request = operation.request as FacebookExecutionPayload;
+  return {
+    operation,
+    payload: {
+      ...request,
+      actions: { ...request.actions, share: request.actions.share === true },
+      expectedShareLabels: request.expectedShareLabels ?? null,
+      expectedShareNowLabels: request.expectedShareNowLabels ?? null,
+      expectedShareConfirmationLabels: request.expectedShareConfirmationLabels ?? null,
+    },
+  };
 }
 
 function assertExecutionContent(
@@ -591,8 +665,8 @@ function assertExecutionContent(
     throw new FacebookError("FACEBOOK_COMMENT_STRUCTURE_CHANGED", "La estructura configurada del compositor cambio antes de ejecutar.", 409);
   }
   const row = database.prepare(`
-    SELECT c.like_enabled, c.comment_enabled, p.context_hash, p.source_url, p.final_url,
-      a.status AS assignment_status
+    SELECT c.like_enabled, c.comment_enabled, c.share_enabled, p.context_hash, p.source_url, p.final_url,
+      a.status AS assignment_status, p.content_kind
     FROM assignments a
     JOIN campaigns c ON c.id = a.campaign_id
     JOIN posts p ON p.id = a.post_id
@@ -600,17 +674,24 @@ function assertExecutionContent(
   `).get(payload.assignmentId, payload.campaignId, payload.postId, payload.deviceId) as {
     like_enabled: 0 | 1;
     comment_enabled: 0 | 1;
+    share_enabled: 0 | 1;
     context_hash: string | null;
     source_url: string;
     final_url: string | null;
     assignment_status: string;
+    content_kind: FacebookContentKind | null;
   } | undefined;
   if (!row || !["approved", "scheduled"].includes(row.assignment_status)
     || Boolean(row.like_enabled) !== payload.actions.like
     || Boolean(row.comment_enabled) !== payload.actions.comment
+    || Boolean(row.share_enabled) !== payload.actions.share
     || row.context_hash !== payload.contextHash
-    || (row.final_url ?? row.source_url) !== payload.postUrl) {
+    || (row.final_url ?? row.source_url) !== payload.postUrl
+    || row.content_kind !== payload.contentKind) {
     throw new FacebookError("EXECUTION_CONTENT_CHANGED", "La campana cambio antes de la ejecucion.", 409);
+  }
+  if (payload.actions.share && (!payload.contentKind || payload.contentKind !== facebookContentKind(payload.postUrl))) {
+    throw new FacebookError("SHARE_CONTENT_NOT_VERIFIED", "La publicacion debe resolverse y verificarse antes de compartir.", 409);
   }
   if (payload.actions.comment) {
     const comment = database.prepare(`
@@ -633,6 +714,13 @@ function assertExecutionContent(
       || comment.stale) {
       throw new FacebookError("EXECUTION_COMMENT_CHANGED", "El comentario cambio antes de la ejecucion.", 409);
     }
+  }
+  if (payload.actions.share && (
+    stableJson(payload.expectedShareLabels) !== stableJson(appConfig.facebookShareLabels)
+    || stableJson(payload.expectedShareNowLabels) !== stableJson(appConfig.facebookShareNowLabels)
+    || stableJson(payload.expectedShareConfirmationLabels) !== stableJson(appConfig.facebookShareConfirmationLabels)
+  )) {
+    throw new FacebookError("FACEBOOK_SHARE_STRUCTURE_CHANGED", "Los selectores de Compartir cambiaron antes de ejecutar.", 409);
   }
 }
 
@@ -665,7 +753,7 @@ function saveCheckpoint(
   action: FacebookAction,
 ) {
   return database.transaction(() => {
-    const phase = action === "like" ? "before_like" : "before_comment";
+    const phase = `before_${action}`;
     const previous = database.prepare("SELECT id FROM checkpoints WHERE operation_id = ? AND phase = ? AND sequence = 1")
       .get(operationId, phase) as { id: string } | undefined;
     const checkpointId = previous?.id ?? randomUUID();
@@ -890,6 +978,7 @@ export async function executeFacebookAssignment(
           payload.postUrl,
           payload.expectedTargetText,
           dependencies.signal,
+          payload.contentKind ?? undefined,
         );
 
         if (payload.actions.like && actionStatus(database, operationId, "like")?.status !== "confirmed") {
@@ -925,6 +1014,19 @@ export async function executeFacebookAssignment(
           await mobile.submitComment(sessionId, submitElementId, dependencies.signal);
           await mobile.confirmCommentVisible(sessionId, payload.comment.text, dependencies.signal);
           confirmAction(database, operationId, owner, "comment", "sent");
+        }
+
+        if (payload.actions.share) {
+          assertNotCancelled(database, operationId, dependencies.signal);
+          const shareElementId = await mobile.prepareShare(sessionId, dependencies.signal);
+          await mobile.openShareMenu(sessionId, shareElementId, dependencies.signal);
+          const shareNowElementId = await mobile.prepareShareNow(sessionId, dependencies.signal);
+          saveCheckpoint(database, operationId, payload, "share");
+          assertNotCancelled(database, operationId, dependencies.signal);
+          armAction(database, operationId, owner, "share");
+          await mobile.submitShare(sessionId, shareNowElementId, dependencies.signal);
+          await mobile.confirmShare(sessionId, dependencies.signal);
+          confirmAction(database, operationId, owner, "share", "sent");
         }
         return completeExecution(database, operationId, payload);
       },
