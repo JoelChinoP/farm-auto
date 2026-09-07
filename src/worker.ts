@@ -110,11 +110,16 @@ export async function runWorker(options: WorkerDependencies = {}) {
       leaseController.signal,
     );
     signal.throwIfAborted();
-    try {
-      await refreshDeviceInventory(database, adb, signal, owner);
-    } catch {
-      // Each preparation persists its own concrete ADB failure.
-    }
+    let inventoryInFlight: Promise<unknown> | null = null;
+    const kickInventory = () => {
+      if (inventoryInFlight) return;
+      inventoryInFlight = refreshDeviceInventory(database, adb, signal, owner)
+        .catch(() => undefined)
+        .finally(() => {
+          inventoryInFlight = null;
+        });
+    };
+    kickInventory();
     signal.throwIfAborted();
     assertRuntimeOwnership(database, owner);
     recoverStaleJobs(database, owner);
@@ -204,12 +209,7 @@ export async function runWorker(options: WorkerDependencies = {}) {
           throw new Error("El worker perdio su lease.");
         }
         if (Date.now() >= nextInventoryAt) {
-          try {
-            await refreshDeviceInventory(database, adb, signal, owner);
-          } catch {
-            // Inventory is best-effort; preparation records concrete device failures.
-          }
-          signal.throwIfAborted();
+          kickInventory();
           nextInventoryAt = Date.now() + 5_000;
         }
         await recoverRequestedUncertainSessions(
