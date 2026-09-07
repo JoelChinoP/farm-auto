@@ -216,15 +216,17 @@ export function buildAssignments(draft: CampaignDraft) {
   return { posts, assignments };
 }
 
-export function scheduleAssignments(draft: CampaignDraft, now: string) {
-  const requested = draft.scheduleStart === "custom" && draft.scheduleDateTime ? new Date(draft.scheduleDateTime) : new Date(now);
-  const base = Number.isNaN(requested.getTime()) ? new Date(now) : requested;
-  const stepMinutes = draft.posts.length > 1 ? Math.max(1, Math.floor(draft.maxWaitMinutes / (draft.posts.length - 1))) : 0;
-  return draft.assignments.map((assignment) => {
-    const post = draft.posts.find((item) => item.id === assignment.postId);
-    const scheduled = new Date(base.getTime() + Math.max(0, (post?.position ?? 1) - 1) * stepMinutes * 60_000);
-    return { ...assignment, scheduledAt: scheduled.toISOString(), status: "scheduled" as const };
-  });
+export function randomDeviceSchedule(deviceIds: string[], now: number, deadline: number | null) {
+  const effectiveNow = Number.isFinite(now) && now > 0 ? now : Date.now();
+  const latest = deadline === null || !Number.isFinite(deadline) || deadline <= effectiveNow
+    ? effectiveNow
+    : deadline;
+  return new Map(deviceIds.map((deviceId) => [
+    deviceId,
+    latest === effectiveNow
+      ? effectiveNow
+      : effectiveNow + Math.floor(Math.random() * (latest - effectiveNow)),
+  ]));
 }
 
 function device(
@@ -285,11 +287,7 @@ function emptyDraft(platform: Platform): CampaignDraft {
     posts: [],
     assignments: [],
     selectedPostId: null,
-    scheduleStart: "now",
-    scheduleDateTime: "",
-    maxWaitMinutes: 30,
-    scheduleStatus: "none",
-    reviewGrouping: "post",
+    scheduleDeadline: "",
   };
 }
 
@@ -397,11 +395,7 @@ export function createInitialState(now = new Date().toISOString()): ControlState
     facebookDraft: emptyDraft("facebook"),
     tiktokDraft: tiktok,
     history: [],
-    notice: {
-      kind: "status",
-      title: "Fase 6 TikTok",
-      message: "TikTok post opera N×M; Live permanece bloqueado hasta una prueba física independiente.",
-    },
+    notice: null,
     activeModal: null,
     demoOperations: {
       now,

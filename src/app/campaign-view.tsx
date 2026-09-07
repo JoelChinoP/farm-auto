@@ -1,4 +1,4 @@
-import { Alert, Badge, Text, Title } from "@mantine/core";
+import { Badge, Text, Title } from "@mantine/core";
 
 import type { ControlDispatch, ControlState, Platform } from "./control-panel.types";
 import { statusLabels } from "./demo-state";
@@ -6,6 +6,7 @@ import { CampaignPipeline } from "./campaign-pipeline";
 import { CampaignPlanningReview } from "./campaign-planning-review";
 import { CampaignSetup } from "./campaign-setup";
 import { draftFor } from "./campaign-view.utils";
+import type { TikTokConfiguration } from "./tiktok-live-panel";
 
 interface CampaignViewProps {
   platform: Platform;
@@ -16,9 +17,10 @@ interface CampaignViewProps {
   experimentalActions: ("tap_tap")[];
   state: ControlState;
   dispatch: ControlDispatch;
+  configuration?: TikTokConfiguration | null;
 }
 
-export function CampaignView({ platform, label, accent, allowedHosts, requiredCapability, experimentalActions, state, dispatch }: CampaignViewProps) {
+export function CampaignView({ platform, label, accent, allowedHosts, requiredCapability, experimentalActions, state, dispatch, configuration }: CampaignViewProps) {
   const draft = draftFor(state, platform);
 
   return (
@@ -32,7 +34,7 @@ export function CampaignView({ platform, label, accent, allowedHosts, requiredCa
         <div className="campaign-state"><span>ESTADO DE CAMPAÑA</span><Badge size="lg" variant="light">{statusLabels[draft.status]}</Badge><small>{requiredCapability}</small></div>
       </header>
       <CampaignSetup platform={platform} label={label} allowedHosts={allowedHosts} experimentalActions={experimentalActions} draft={draft} state={state} dispatch={dispatch} />
-      {draft.posts.length > 0 && <><CampaignPipeline platform={platform} draft={draft} state={state} dispatch={dispatch} /><CampaignPlanningReview platform={platform} label={label} draft={draft} state={state} dispatch={dispatch} /></>}
+      {draft.posts.length > 0 && <><CampaignPipeline platform={platform} draft={draft} state={state} dispatch={dispatch} /><CampaignPlanningReview platform={platform} draft={draft} state={state} dispatch={dispatch} configuration={configuration} /></>}
     </div>
   );
 }

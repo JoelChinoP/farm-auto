@@ -784,8 +784,9 @@ test("the Appium driver scopes target controls to the verified post container", 
   await assert.rejects(mobile.prepareLike("session"), /URL efectiva autorizada/i);
 });
 
-test("the structural Facebook fallback verifies the active profile before reading Like state", async () => {
+test("the structural Facebook fallback verifies the active profile and scrolls the target post before reading Like state", async () => {
   let screen: "feed" | "profile" | "target" = "target";
+  let postControlsVisible = false;
   const adb = {
     execute: async () => { screen = "feed"; },
     getForeground: async () => ({ packageName: "com.facebook.katana", activityName: ".Main" }),
@@ -798,10 +799,14 @@ test("the structural Facebook fallback verifies the active profile before readin
       if (using === "accessibility id" && value === "Ir al perfil" && screen === "feed") return [{ elementId: "profile-link" }];
       if (using === "xpath" && value.includes(ACCOUNT) && screen === "profile") return [{ elementId: "account" }];
       if (using === "xpath" && value.includes(TARGET_TEXT) && value.includes("ancestor::") && screen === "target") return [{ elementId: "target-post" }];
+      if (using === "-android uiautomator") {
+        postControlsVisible = true;
+        return [];
+      }
       return [];
     },
     findElementsFromElement: async (_sessionId: string, parent: string, using: string, value: string) => (
-      parent === "target-post" && using === "xpath" && value === ".//android.widget.Button"
+      postControlsVisible && parent === "target-post" && using === "xpath" && value === ".//android.widget.Button"
         ? [{ elementId: "like" }, { elementId: "comment" }]
         : []
     ),
@@ -829,6 +834,7 @@ test("the structural Facebook fallback verifies the active profile before readin
     TARGET_TEXT,
   );
   assert.equal(await mobile.readLikeState("session"), true);
+  assert.equal(postControlsVisible, true);
 });
 
 test("a Home failure cannot make confirmed effects retryable", async () => {

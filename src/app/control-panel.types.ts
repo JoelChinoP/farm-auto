@@ -30,7 +30,6 @@ export type ViewId = "devices" | "facebook" | "tiktok" | "history";
 export type HealthStatus = "checking" | "ready" | "degraded" | "unavailable";
 export type ConnectionStatus = "connected" | "offline" | "unauthorized";
 export type CapabilityStatus = "not_installed" | "session_required" | "ready";
-export type ScheduleStatus = "none" | "valid" | "stale" | "frozen";
 export type Tone = "Cercano" | "Entusiasta" | "Informativo" | "Breve";
 
 export interface RuntimeService {
@@ -155,11 +154,7 @@ export interface CampaignDraft {
   posts: CampaignPost[];
   assignments: CampaignAssignment[];
   selectedPostId: string | null;
-  scheduleStart: "now" | "custom";
-  scheduleDateTime: string;
-  maxWaitMinutes: number;
-  scheduleStatus: ScheduleStatus;
-  reviewGrouping: "post" | "device";
+  scheduleDeadline: string;
 }
 
 export interface HistoryAssignment {
@@ -212,7 +207,6 @@ export type ActiveModal =
   | { type: "edit-device"; deviceId: string }
   | { type: "retire-device"; deviceId: string }
   | { type: "clear-devices" }
-  | { type: "start-campaign"; platform: Platform }
   | { type: "regenerate-post"; platform: Platform; postId: string }
   | { type: "abort-all" }
   | { type: "history-detail"; campaignId: string };
@@ -312,11 +306,8 @@ export type ControlAction =
   | { type: "start-comment-regeneration"; platform: Platform; postId: string; commentIds: string[] }
   | { type: "finish-comment-regeneration"; platform: Platform; postId: string; commentIds: string[] }
   | { type: "request-regenerate-post"; platform: Platform; postId: string }
-  | { type: "set-schedule"; platform: Platform; field: "scheduleStart" | "scheduleDateTime" | "maxWaitMinutes"; value: string | number }
-  | { type: "generate-schedule"; platform: Platform }
-  | { type: "set-review-group"; platform: Platform; value: "post" | "device" }
+  | { type: "set-schedule-deadline"; platform: Platform; value: string }
   | { type: "request-start-campaign"; platform: Platform }
-  | { type: "start-campaign"; platform: Platform }
   | { type: "cancel-assignment"; operationId: string }
   | { type: "reconcile-assignment"; platform: Platform; assignmentId: string; operationId: string; action: "like" | "comment"; resolution: "sent" | "not_sent" }
   | { type: "advance-running-campaign"; platform: Platform }

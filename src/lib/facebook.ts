@@ -839,7 +839,8 @@ export function requestFacebookCampaignSchedule(
   if (!Number.isInteger(input.expectedRevision) || Number(input.expectedRevision) < 1) {
     throw new FacebookError("INVALID_CONFIRMATION", "La revision confirmada no es valida.");
   }
-  if (!Number.isSafeInteger(input.scheduledAt) || Number(input.scheduledAt) < 0) {
+  const fallbackScheduledAt = typeof input.scheduledAt === "number" ? Number(input.scheduledAt) : null;
+  if (fallbackScheduledAt !== null && (!Number.isSafeInteger(fallbackScheduledAt) || fallbackScheduledAt < 0)) {
     throw new FacebookError("INVALID_SCHEDULE", "La fecha programada no es valida.");
   }
   if (input.confirmed !== true || input.controlledAccount !== true || input.controlledContent !== true) {
@@ -890,6 +891,10 @@ export function requestFacebookCampaignSchedule(
         textHash: comment.textHash,
       };
     }
+    const scheduledAt = Number(confirmation.scheduledAt ?? fallbackScheduledAt);
+    if (!Number.isSafeInteger(scheduledAt) || scheduledAt < 0) {
+      throw new FacebookError("INVALID_SCHEDULE", `assignments[${index}].scheduledAt no es valida.`);
+    }
     return {
       assignmentId: nonEmptyString(confirmation.assignmentId, `assignments[${index}].assignmentId`, 200),
       postId: nonEmptyString(confirmation.postId, `assignments[${index}].postId`, 200),
@@ -898,6 +903,7 @@ export function requestFacebookCampaignSchedule(
       expectedPostUrl: nonEmptyString(confirmation.expectedPostUrl, `assignments[${index}].expectedPostUrl`, 2_048),
       expectedTargetText,
       expectedComment,
+      scheduledAt,
     };
   });
   if (new Set(confirmations.map((confirmation) => confirmation.assignmentId)).size !== confirmations.length) {
@@ -908,7 +914,6 @@ export function requestFacebookCampaignSchedule(
     allowSharedAccounts: input.allowSharedAccounts === true,
     assignments: confirmations,
     expectedRevision: Number(input.expectedRevision),
-    scheduledAt: Number(input.scheduledAt),
   })).digest("hex");
 
   return database.transaction(() => {
@@ -1026,12 +1031,20 @@ export function requestFacebookCampaignSchedule(
     const now = Date.now();
     database.prepare("UPDATE assignments SET status = 'approved', updated_at = ? WHERE campaign_id = ?")
       .run(now, campaignId);
+    const scheduledAtByAssignment = new Map(confirmations.map((confirmation) => [confirmation.assignmentId, confirmation.scheduledAt]));
+    const firstScheduledAt = Math.min(...scheduledAtByAssignment.values());
     freezeFacebookCampaignManifest(
       database,
       campaignId,
-      Number(input.scheduledAt),
+      firstScheduledAt,
       input.allowSharedAccounts === true,
     );
+    const updateSchedule = database.prepare("UPDATE schedules SET scheduled_at = ?, updated_at = ? WHERE assignment_id = ?");
+    const updateAssignmentSchedule = database.prepare("UPDATE assignments SET scheduled_at = ?, updated_at = ? WHERE id = ?");
+    for (const [assignmentId, scheduledAt] of scheduledAtByAssignment) {
+      updateSchedule.run(scheduledAt, now, assignmentId);
+      updateAssignmentSchedule.run(scheduledAt, now, assignmentId);
+    }
 
     const insertAction = database.prepare(`
       INSERT INTO assignment_action_results (
@@ -1071,7 +1084,7 @@ export function requestFacebookCampaignSchedule(
         operationId: operation.id,
         priority: rows.length - item.row.position,
         maxAttempts: 2,
-        availableAt: Number(input.scheduledAt),
+        availableAt: scheduledAtByAssignment.get(item.row.id) ?? firstScheduledAt,
         effectPhase: "before_effect",
       });
       if (index === 0) firstJob = job;

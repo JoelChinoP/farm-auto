@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import type { CampaignDraft } from "../src/app/control-panel.types.ts";
-import { buildAssignments, parseCampaignUrls, scheduleAssignments } from "../src/app/demo-state.ts";
+import { buildAssignments, parseCampaignUrls, randomDeviceSchedule } from "../src/app/demo-state.ts";
 
 function draft(urls: string[], devices: string[]): CampaignDraft {
   return {
@@ -17,11 +17,7 @@ function draft(urls: string[], devices: string[]): CampaignDraft {
     posts: [],
     assignments: [],
     selectedPostId: null,
-    scheduleStart: "now",
-    scheduleDateTime: "",
-    maxWaitMinutes: 30,
-    scheduleStatus: "none",
-    reviewGrouping: "post",
+    scheduleDeadline: "",
   };
 }
 
@@ -60,16 +56,19 @@ test("accepts 1-10 TikTok posts and builds the exact 2-post by 5-device plan", (
   }
 });
 
-test("builds the exact cartesian product and serializes each device schedule", () => {
+test("builds the exact cartesian product and spreads each device randomly between now and the deadline", () => {
   const source = draft(["https://facebook.com/post/1", "https://facebook.com/post/2", "https://facebook.com/post/3"], ["one", "two"]);
   const built = buildAssignments(source);
   assert.equal(built.assignments.length, 6);
   assert.equal(built.posts.flatMap((post) => post.comments).length, 6);
 
-  const scheduled = scheduleAssignments({ ...source, ...built }, "2026-09-03T12:00:00.000Z");
-  for (const deviceId of source.selectedDeviceIds) {
-    const times = scheduled.filter((item) => item.deviceId === deviceId).map((item) => item.scheduledAt);
-    assert.equal(new Set(times).size, source.urls.length);
+  const now = Date.parse("2026-09-03T12:00:00.000Z");
+  const deadline = now + 60 * 60_000;
+  const schedule = randomDeviceSchedule(source.selectedDeviceIds, now, deadline);
+  assert.equal(schedule.size, 2);
+  for (const [, at] of schedule) {
+    assert.ok(at >= now && at <= deadline);
   }
-  assert.equal(scheduled[0].scheduledAt, scheduled[1].scheduledAt);
+  assert.equal(randomDeviceSchedule(["one"], now, null).get("one"), now);
+  assert.equal(randomDeviceSchedule(["one"], now, now - 5).get("one"), now);
 });

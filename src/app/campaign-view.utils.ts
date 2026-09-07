@@ -1,4 +1,4 @@
-import type { CampaignDraft, ControlState, Device, Platform } from "./control-panel.types";
+import type { ControlState, Device, Platform } from "./control-panel.types";
 import { isDeviceEligible, statusLabels } from "./demo-state";
 
 export function draftFor(state: ControlState, platform: Platform) {
@@ -27,26 +27,6 @@ export function domainLabel(url: string) {
 export function shortSerial(serial?: string) {
   if (!serial) return "Sin serial";
   return serial.length > 12 ? `${serial.slice(0, 5)}…${serial.slice(-5)}` : serial;
-}
-
-export function groupAssignments(draft: CampaignDraft, devices: Device[]) {
-  if (draft.reviewGrouping === "post") {
-    return draft.posts.map((post) => ({
-      label: `${String(post.position).padStart(2, "0")} / ${domainLabel(post.url)}`,
-      items: draft.assignments.filter((item) => item.postId === post.id).map((item) => ({
-        ...item,
-        detail: devices.find((device) => device.id === item.deviceId)?.alias ?? "Dispositivo retirado",
-      })),
-    }));
-  }
-
-  return draft.selectedDeviceIds.map((deviceId) => ({
-    label: devices.find((device) => device.id === deviceId)?.alias ?? "Dispositivo retirado",
-    items: draft.assignments.filter((item) => item.deviceId === deviceId).map((item) => ({
-      ...item,
-      detail: domainLabel(draft.posts.find((post) => post.id === item.postId)?.url ?? ""),
-    })),
-  }));
 }
 
 export { isDeviceEligible };
