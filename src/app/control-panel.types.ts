@@ -309,6 +309,9 @@ export type ControlAction =
   | { type: "finish-comment-regeneration"; platform: Platform; postId: string; commentIds: string[] }
   | { type: "request-regenerate-post"; platform: Platform; postId: string }
   | { type: "set-schedule-deadline"; platform: Platform; value: string }
+  | { type: "request-schedule-campaign"; platform: "facebook" }
+  | { type: "request-publish-executions"; platform: "facebook" }
+  | { type: "request-execute-now"; platform: "facebook" }
   | { type: "request-start-campaign"; platform: Platform }
   | { type: "cancel-assignment"; operationId: string }
   | { type: "reconcile-assignment"; platform: Platform; assignmentId: string; operationId: string; action: "like" | "comment" | "share"; resolution: "sent" | "not_sent" }

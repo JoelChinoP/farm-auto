@@ -792,6 +792,7 @@ async function cleanupSession(
   timeoutMs: number,
   sessionAlreadyClosed = false,
   parentSignal?: AbortSignal,
+  cleanupPackage?: string,
 ) {
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const signal = parentSignal ? AbortSignal.any([parentSignal, timeoutSignal]) : timeoutSignal;
@@ -810,6 +811,7 @@ async function cleanupSession(
     }
   }
   try {
+    if (cleanupPackage) await adb.forceStopApp(deviceId, cleanupPackage, { signal, timeoutMs });
     await adb.inspectDevice(deviceId, { signal, timeoutMs });
     await adb.goHome(deviceId, { signal, timeoutMs });
   } catch (error) {
@@ -844,12 +846,16 @@ export async function prepareDevice(
   dependencies: PrepareDependencies,
 ) {
   const operation = database.prepare(`
-    SELECT device_id AS deviceId FROM operations
+    SELECT device_id AS deviceId, request_json AS requestJson FROM operations
     WHERE id = ? AND kind = 'device.prepare' AND status = 'running'
-  `).get(operationId) as { deviceId: string | null } | undefined;
+  `).get(operationId) as { deviceId: string | null; requestJson: string } | undefined;
   if (!operation?.deviceId) throw new Error("La operacion de preparacion no tiene un dispositivo valido.");
   const profile = getDeviceProfile(database, operation.deviceId);
   if (!profile) throw new Error("El dispositivo no esta permitido.");
+  const launchPackage = (() => {
+    const value = JSON.parse(operation.requestJson) as { launchPackage?: unknown };
+    return typeof value.launchPackage === "string" ? value.launchPackage : null;
+  })();
   const locked = withRuntimeOwnership(database, owner, () => {
     const acquired = acquireDeviceLock(database, profile.deviceId, operationId, owner, Date.now(), appConfig.workerLeaseMs);
     if (acquired) {
@@ -868,6 +874,12 @@ export async function prepareDevice(
   let appiumSessionId: string | null = null;
   try {
     const identity = await dependencies.adb.verifyDeviceIdentity(profile.deviceId, { signal: dependencies.signal });
+    if (launchPackage) {
+      withRuntimeOwnership(database, owner, () => {
+        setPreparation(database, profile.deviceId, operationId, "preparing", "Reiniciando Facebook Lite", null, Date.now());
+      });
+      await dependencies.adb.resetToHomeAndLaunchApp(profile.deviceId, launchPackage, { signal: dependencies.signal });
+    }
     session = withRuntimeOwnership(database, owner, () => {
       persistVerifiedIdentity(database, identity, Date.now());
       setPreparation(database, profile.deviceId, operationId, "preparing", "Creando sesion Appium", null, Date.now());
@@ -951,6 +963,7 @@ export async function prepareDevice(
       updateOperationRuntime(database, operationId, "active", "pending", Date.now());
       setPreparation(database, profile.deviceId, operationId, "preparing", "Validando acceso UiAutomator2", null, Date.now());
     });
+    if (launchPackage) await dependencies.appium.activateApp(appiumSessionId, launchPackage, { signal: dependencies.signal });
     await dependencies.appium.getPageSource(appiumSessionId, { signal: dependencies.signal });
 
     assertRuntimeOwnership(database, owner);
@@ -960,6 +973,14 @@ export async function prepareDevice(
       dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs,
       dependencies.leaseSignal,
     );
+    if (launchPackage) {
+      try {
+        await dependencies.adb.forceStopApp(profile.deviceId, launchPackage, { signal: dependencies.leaseSignal });
+        await dependencies.adb.goHome(profile.deviceId, { signal: dependencies.leaseSignal });
+      } catch (error) {
+        cleanup.errors.push(`Facebook Lite/Home: ${messageOf(error)}`);
+      }
+    }
     assertRuntimeOwnership(database, owner);
     if (cleanup.errors.length) {
       const evidenceTimeout = AbortSignal.timeout(dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs);
@@ -1040,6 +1061,14 @@ export async function prepareDevice(
       cleanupTimeoutMs,
       dependencies.leaseSignal,
     );
+    if (launchPackage) {
+      try {
+        await dependencies.adb.forceStopApp(profile.deviceId, launchPackage, { signal: dependencies.leaseSignal });
+        await dependencies.adb.goHome(profile.deviceId, { signal: dependencies.leaseSignal });
+      } catch (cleanupError) {
+        cleanup.errors.push(`Facebook Lite/Home: ${messageOf(cleanupError)}`);
+      }
+    }
     assertRuntimeOwnership(database, owner);
     if (cleanup.errors.length) {
       if (evidenceError) cleanup.errors.push(evidenceError);
@@ -1083,6 +1112,7 @@ export type DeviceAutomationDependencies = {
   adb: AdbClient;
   appium: AppiumClient;
   requiredPackage: string;
+  cleanupPackage?: string;
   artifactsPath?: string;
   cleanupTimeoutMs?: number;
   signal?: AbortSignal;
@@ -1257,6 +1287,7 @@ export async function runOwnedDeviceAutomation<T>(
       dependencies.cleanupTimeoutMs ?? appConfig.cleanupTimeoutMs,
       false,
       dependencies.leaseSignal,
+      dependencies.cleanupPackage,
     );
     assertRuntimeOwnership(database, owner);
     if (cleanup.errors.length) {
@@ -1344,6 +1375,7 @@ export async function runOwnedDeviceAutomation<T>(
       cleanupTimeoutMs,
       false,
       dependencies.leaseSignal,
+      dependencies.cleanupPackage,
     );
     if (cleanup.errors.length) {
       if (evidenceError) cleanup.errors.push(evidenceError);

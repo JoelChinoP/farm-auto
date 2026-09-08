@@ -37,6 +37,7 @@ import {
 } from "./demo-state";
 import { DevicesView } from "./devices-view";
 import { HistoryView } from "./history-view";
+import { epochToLocalDateTimeInput, localDateTimeInputToEpoch } from "@/lib/local-time";
 import { TikTokLivePanel, type TikTokConfiguration, type TikTokLiveInput } from "./tiktok-live-panel";
 
 const navItems: { id: ViewId; index: string; label: string }[] = [
@@ -223,7 +224,7 @@ function mapCampaignSnapshot(snapshot: FacebookSnapshot): CampaignDraft {
       execution: assignment.execution,
     })),
     selectedPostId: snapshot.posts[0]?.id ?? null,
-    scheduleDeadline: snapshot.manifest ? new Date(snapshot.manifest.scheduledAt).toISOString().slice(0, 16) : "",
+    scheduleDeadline: snapshot.manifest ? epochToLocalDateTimeInput(snapshot.manifest.scheduledAt) : "",
   };
 }
 
@@ -1142,7 +1143,33 @@ export function ControlPanel() {
       return;
     }
 
-    if (action.type === "request-start-campaign" && action.platform === "facebook") {
+    if (action.type === "request-publish-executions") {
+      const draft = state.facebookDraft;
+      if (!draft.id) return;
+      void apiRequest<{ campaign: FacebookSnapshot; jobIds: string[] }>(`/api/facebook/campaigns/${draft.id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+        body: JSON.stringify({ action: "publish" }),
+      }).then(({ campaign, jobIds }) => {
+        hydrateFacebookWhenIdle(campaign);
+        rawDispatch({
+          type: "set-notice",
+          notice: {
+            kind: "status",
+            title: jobIds.length ? "Ejecuciones publicadas" : "No hay ejecuciones pendientes",
+            message: jobIds.length
+              ? `${jobIds.length} ejecuciones esperan su hora programada.`
+              : "La solicitud fue idempotente o las ejecuciones ya estaban publicadas.",
+          },
+        });
+      }).catch((error: unknown) => rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudieron publicar las ejecuciones", message: error instanceof Error ? error.message : String(error) },
+      }));
+      return;
+    }
+
+    if (["request-schedule-campaign", "request-execute-now"].includes(action.type)) {
       const draft = state.facebookDraft;
       if (dirtyFacebookFields.current.size) {
         rawDispatch({
@@ -1152,7 +1179,7 @@ export function ControlPanel() {
         return;
       }
       if (!draft.id || !draft.revision || !draft.assignments.length) return;
-      const deadlineValue = draft.scheduleDeadline ? new Date(draft.scheduleDeadline).getTime() : null;
+      const deadlineValue = draft.scheduleDeadline ? localDateTimeInputToEpoch(draft.scheduleDeadline) : null;
       const scheduledByDevice = randomDeviceSchedule(draft.selectedDeviceIds, Date.now(), deadlineValue);
       const confirmations = draft.assignments.map((assignment) => {
         const post = draft.posts.find((item) => item.id === assignment.postId);
@@ -1185,7 +1212,8 @@ export function ControlPanel() {
       const sharedAccounts = new Set(validConfirmations.map((confirmation) => confirmation.expectedAccount.normalize("NFKC").replace(/\s+/gu, " ").toLocaleLowerCase("es")))
         .size < new Set(validConfirmations.map((confirmation) => confirmation.deviceId)).size;
       rawDispatch({ type: "campaign-requested", platform: "facebook" });
-      void apiRequest<{ operation: { id: string } }>(`/api/facebook/campaigns/${draft.id}`, {
+      const executeNow = action.type === "request-execute-now";
+      void apiRequest<{ campaign: FacebookSnapshot }>(`/api/facebook/campaigns/${draft.id}`, {
         method: "POST",
         headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
         body: JSON.stringify({
@@ -1199,15 +1227,25 @@ export function ControlPanel() {
           controlledAccount: true,
           controlledContent: true,
         }),
-      }).then(({ operation }) => {
-        pollOperation(operation.id);
+      }).then(async ({ campaign }) => {
+        hydrateFacebookWhenIdle(campaign);
+        if (executeNow) {
+          const publication = await apiRequest<{ campaign: FacebookSnapshot; jobIds: string[] }>(`/api/facebook/campaigns/${draft.id}`, {
+            method: "POST",
+            headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
+            body: JSON.stringify({ action: "publish" }),
+          });
+          hydrateFacebookWhenIdle(publication.campaign);
+        }
         rawDispatch({
           type: "set-notice",
-          notice: { kind: "status", title: "Campaña publicada", message: "El worker revalidará cada dispositivo, cuenta y publicación antes de cualquier efecto." },
+          notice: executeNow
+            ? { kind: "status", title: "Ejecuciones publicadas", message: "El worker revalidará cada dispositivo, cuenta y publicación antes de cualquier efecto." }
+            : { kind: "status", title: "Plan programado", message: "No se creó ningún job. Publica las ejecuciones cuando estés listo." },
         });
       }).catch((error: unknown) => rawDispatch({
         type: "set-notice",
-        notice: { kind: "error", title: "No se pudo publicar la campaña", message: error instanceof Error ? error.message : String(error) },
+        notice: { kind: "error", title: "No se pudo programar la campaña", message: error instanceof Error ? error.message : String(error) },
       }));
       return;
     }

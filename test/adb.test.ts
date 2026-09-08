@@ -189,6 +189,32 @@ test("presses Home and polls until the resolved launcher is foreground", async (
   }
 });
 
+test("resets Facebook Lite with force-stop, Home and monkey before validating foreground", async () => {
+  const database = createDatabase();
+  let launched = false;
+  const mock = recordingExecutor((args) => {
+    const command = args.slice(2).join(" ");
+    if (command.includes("resolve-activity")) return { stdout: "com.android.launcher3/.Launcher\n" };
+    if (command === "shell dumpsys window windows") {
+      return { stdout: launched
+        ? "mCurrentFocus=Window{42 u0 com.facebook.lite/.Main}\n"
+        : "mCurrentFocus=Window{42 u0 com.android.launcher3/.Launcher}\n" };
+    }
+    if (command === "shell monkey -p com.facebook.lite -c android.intent.category.LAUNCHER 1") launched = true;
+    return {};
+  });
+  const client = new AdbClient({ database, executor: mock.executor, homeTimeoutMs: 100, homePollIntervalMs: 10, sleep: async () => {} });
+
+  try {
+    await client.resetToHomeAndLaunchApp("serial-1", "com.facebook.lite");
+    assert.deepEqual(mock.calls[0].args, ["-s", "serial-1", "shell", "am", "force-stop", "com.facebook.lite"]);
+    assert.ok(mock.calls.some((call) => call.args.slice(2).join(" ") === "shell input keyevent KEYCODE_HOME"));
+    assert.ok(mock.calls.some((call) => call.args.slice(2).join(" ") === "shell monkey -p com.facebook.lite -c android.intent.category.LAUNCHER 1"));
+  } finally {
+    database.close();
+  }
+});
+
 test("waits for a delayed safe URL handler to reach foreground", async () => {
   const database = createDatabase();
   let checks = 0;

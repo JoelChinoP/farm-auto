@@ -2,6 +2,7 @@ import { getDatabase } from "@/lib/database";
 import {
   FacebookError,
   getFacebookCampaignSnapshot,
+  requestFacebookCampaignPublication,
   requestFacebookCampaignExecution,
   requestFacebookCampaignSchedule,
 } from "@/lib/facebook";
@@ -25,13 +26,18 @@ export async function POST(request: Request, context: RouteContext<"/api/faceboo
   try {
     const body = await request.json() as Record<string, unknown>;
     const campaignId = (await context.params).id;
+    if (body.action === "publish") {
+      const result = requestFacebookCampaignPublication(getDatabase(), campaignId);
+      return apiSuccess({ campaign: result.campaign, jobIds: result.jobs.map((job) => job.id), replayed: result.replayed });
+    }
     const result = Array.isArray(body.assignments)
       ? requestFacebookCampaignSchedule(getDatabase(), campaignId, body)
       : requestFacebookCampaignExecution(getDatabase(), campaignId, body);
     const status = ["pending", "running"].includes(result.operation.status) ? 202 : 200;
     return apiSuccess({
       operation: result.operation,
-      jobId: result.job.id,
+      jobId: "job" in result ? result.job.id : null,
+      campaign: "campaign" in result ? result.campaign : null,
       replayed: result.replayed,
     }, status);
   } catch (error) {

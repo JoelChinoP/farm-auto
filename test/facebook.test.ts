@@ -27,6 +27,8 @@ import {
   recordFacebookDeviceIdentity,
   reduceFacebookCampaignExecution,
   requestFacebookCampaignSchedule,
+  requestFacebookCampaignPublication,
+  reconcileDueFacebookSchedules,
   requestFacebookExecutionCancellation,
   requestFacebookPostOperation,
   restoreFacebookExtractedContext,
@@ -81,7 +83,11 @@ function createCampaign(database: Database.Database, request: ReturnType<typeof 
     request,
   }).operation;
   enqueueJob(database, "campaign.create", request, { operationId: operation.id, maxAttempts: 2 });
-  return { operation, snapshot: createFacebookCampaign(database, operation.id, request) };
+  const snapshot = createFacebookCampaign(database, operation.id, request);
+  database.prepare("UPDATE device_preparations SET status = 'ready', step = 'Listo' WHERE operation_id IN (SELECT id FROM operations WHERE campaign_id = ? AND kind = 'device.prepare')")
+    .run(snapshot!.id);
+  database.prepare("DELETE FROM jobs WHERE kind = 'device.prepare'").run();
+  return { operation, snapshot };
 }
 
 test("normalizes only safe Facebook URLs and detects canonical duplicates", () => {
@@ -108,6 +114,18 @@ test("normalizes only safe Facebook URLs and detects canonical duplicates", () =
 });
 
 test("allows official Facebook share links to resolve to identifiable canonical posts", () => {
+  assert.deepEqual(
+    [
+      "https://web.facebook.com/share/r/1EzgxdEzer/",
+      "https://web.facebook.com/share/p/1BrqJhaJR4/",
+      "https://web.facebook.com/share/p/1DnFRz4Cwg/",
+    ].map((url) => normalizeFacebookUrl(url).normalizedUrl),
+    [
+      "https://www.facebook.com/share/r/1EzgxdEzer",
+      "https://www.facebook.com/share/p/1BrqJhaJR4",
+      "https://www.facebook.com/share/p/1DnFRz4Cwg",
+    ],
+  );
   assert.equal(isAllowedFacebookTargetRedirect(
     "https://www.facebook.com/share/p/short-id/",
     "https://www.facebook.com/example/posts/canonical-id",
@@ -314,8 +332,10 @@ test("schedules one job per assignment and claims posts in order on each device"
       "post-url-id",
     );
     assert.equal(scheduled.replayed, false);
-    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'assignment.execute'").get() as { total: number }).total, 4);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'assignment.execute'").get() as { total: number }).total, 0);
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM schedules WHERE status = 'pending'").get() as { total: number }).total, 4);
+    assert.equal(requestFacebookCampaignPublication(database, snapshot!.id, now).jobs.length, 4);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'assignment.execute'").get() as { total: number }).total, 4);
     assert.deepEqual(
       database.prepare("SELECT DISTINCT max_attempts FROM jobs WHERE kind = 'assignment.execute'").all(),
       [{ max_attempts: 2 }],
@@ -357,6 +377,41 @@ test("schedules one job per assignment and claims posts in order on each device"
   }
 });
 
+test("reconciles overdue schedules that were never published", () => {
+  const database = openDatabase(":memory:");
+  try {
+    const { snapshot } = createCampaign(database, campaignRequest([addEligibleDevice(database, 1)], false));
+    const scheduledAt = 1_000;
+    requestFacebookCampaignSchedule(database, snapshot!.id, {
+      idempotencyKey: randomUUID(),
+      expectedRevision: snapshot!.revision,
+      scheduledAt,
+      expectedActions: snapshot!.actions,
+      assignments: snapshot!.assignments.map((assignment) => {
+        const post = snapshot!.posts.find((item) => item.id === assignment.postId)!;
+        return {
+          assignmentId: assignment.id,
+          postId: post.id,
+          deviceId: assignment.deviceId,
+          expectedAccount: `Cuenta ${assignment.deviceId}`,
+          expectedPostUrl: post.finalUrl ?? post.url,
+          expectedTargetText: `Contenido controlado ${post.position}`,
+          expectedComment: null,
+        };
+      }),
+      confirmed: true,
+      controlledAccount: true,
+      controlledContent: true,
+    }, "account-id", "post-id", "post-url-id");
+    assert.equal(reconcileDueFacebookSchedules(database, scheduledAt - 1).length, 0);
+    assert.equal(reconcileDueFacebookSchedules(database, scheduledAt).length, 2);
+    assert.equal(reconcileDueFacebookSchedules(database, scheduledAt + 1).length, 0);
+    assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'assignment.execute'").get() as { total: number }).total, 2);
+  } finally {
+    database.close();
+  }
+});
+
 test("persists the maximum 10-post cartesian plan without dropping assignments", () => {
   const database = openDatabase(":memory:");
   try {
@@ -386,6 +441,7 @@ test("persists the maximum 10-post cartesian plan without dropping assignments",
       controlledAccount: true,
       controlledContent: true,
     }, "account-id", "post-id", "post-url-id");
+    requestFacebookCampaignPublication(database, snapshot!.id, scheduledAt);
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM assignments WHERE campaign_id = ?").get(snapshot!.id) as { total: number }).total, 30);
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM schedules").get() as { total: number }).total, 30);
     assert.equal((database.prepare("SELECT COUNT(*) AS total FROM jobs WHERE kind = 'assignment.execute'").get() as { total: number }).total, 30);
@@ -421,6 +477,7 @@ test("individual cancellation preserves other work while global cancellation blo
       controlledAccount: true,
       controlledContent: true,
     }, "account-id", "post-id", "post-url-id");
+    requestFacebookCampaignPublication(database, snapshot!.id, now);
     database.prepare("DELETE FROM jobs WHERE kind != 'assignment.execute'").run();
     const jobs = database.prepare(`
       SELECT j.id FROM jobs j JOIN assignments a ON a.id = j.assignment_id

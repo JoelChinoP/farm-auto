@@ -4,6 +4,7 @@ import type { CampaignDraft, ControlDispatch, ControlState, Device, Platform } f
 import { formatDate } from "./demo-state";
 import { isDeviceEligible } from "./campaign-view.utils";
 import type { TikTokConfiguration } from "./tiktok-live-panel";
+import { localDateTimeInputToEpoch } from "@/lib/local-time";
 
 interface CampaignPlanningReviewProps {
   platform: Platform;
@@ -19,7 +20,7 @@ export function CampaignPlanningReview({ platform, draft, state, dispatch, confi
   const staleComments = draft.posts.flatMap((post) => post.comments).filter((comment) => comment.stale).length;
   const invalidComments = draft.posts.flatMap((post) => post.comments).filter((comment) => comment.text.trim().length < 2 || comment.text.length > 500 || ["failed", "generating", "regenerating", "pending"].includes(comment.status)).length;
   const failedPosts = draft.posts.filter((post) => ["failed", "session_required", "intervention_required"].includes(post.contextStatus)).length;
-  const deadlineValid = !draft.scheduleDeadline || !Number.isNaN(new Date(draft.scheduleDeadline).getTime());
+  const deadlineValid = !draft.scheduleDeadline || localDateTimeInputToEpoch(draft.scheduleDeadline) !== null;
   const targetTextsValid = draft.posts.every((post) => post.context.trim().length >= 5);
   const executionBlocked = draft.assignments.some((assignment) => ["running", "cancellation_requested", "sent", "outcome_unknown"].includes(assignment.status));
   const scheduledDevices = selectedDevices.filter((device) =>
@@ -28,7 +29,7 @@ export function CampaignPlanningReview({ platform, draft, state, dispatch, confi
 
   if (platform === "facebook") {
     const missingAccounts = selectedDevices.filter((device) => !device.facebookAccount).length;
-    const canPublish = draft.status === "ready"
+    const canSchedule = draft.status === "ready"
       && !selectedInvalid
       && failedPosts === 0
       && staleComments === 0
@@ -65,13 +66,19 @@ export function CampaignPlanningReview({ platform, draft, state, dispatch, confi
               onChange={(event) => dispatch({ type: "set-schedule-deadline", platform, value: event.currentTarget.value })}
             />
             <Alert color="blue" title="¿Cómo funciona?">
-              Si dejas la hora vacía o ya pasó, los {draft.assignments.length} jobs se publican de inmediato. Cada equipo publica sus publicaciones en orden, en paralelo con los demás.
+              Programar solo congela el plan y sus horas. Publicar ejecuciones crea los jobs; cada equipo procesa sus publicaciones en orden y los equipos trabajan en paralelo.
             </Alert>
             {draft.actions.share && <Alert color="red" title="Compartir es una acción pública">El worker abre el menú del post o reel, confirma “Compartir ahora” y exige una confirmación visible de Facebook. Si no puede confirmarla, la asignación quedará bloqueada para reconciliación manual.</Alert>}
-            <Button size="lg" color="red" fullWidth disabled={!canPublish} onClick={() => dispatch({ type: "request-start-campaign", platform })}>
-              Publicar {draft.assignments.length} ejecuciones
+            <Button size="lg" fullWidth disabled={!canSchedule} onClick={() => dispatch({ type: "request-schedule-campaign", platform })}>
+              Programar {draft.assignments.length} ejecuciones
             </Button>
-            {!canPublish && <Text className="review-blockers">Pendientes: {blockers.join(" · ") || "campaña lista"}</Text>}
+            <Button size="lg" color="red" fullWidth disabled={draft.status !== "scheduled"} onClick={() => dispatch({ type: "request-publish-executions", platform })}>
+              Publicar ejecuciones programadas
+            </Button>
+            <Button variant="light" fullWidth disabled={!canSchedule} onClick={() => dispatch({ type: "request-execute-now", platform })}>
+              Ejecutar ahora
+            </Button>
+            {!canSchedule && draft.status === "ready" && <Text className="review-blockers">Pendientes: {blockers.join(" · ") || "campaña lista"}</Text>}
           </div>
           <div className="schedule-explainer">
             <span>REPARTO ALEATORIO</span>

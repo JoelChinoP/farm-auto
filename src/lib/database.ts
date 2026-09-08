@@ -19,7 +19,7 @@ import {
   SESSION_STATUSES,
 } from "./domain.ts";
 
-export const DATABASE_VERSION = 16;
+export const DATABASE_VERSION = 17;
 
 function sqlValues(values: readonly string[]) {
   return values.map((value) => `'${value}'`).join(", ");
@@ -581,6 +581,13 @@ function migrateToVersion16(database: Database.Database) {
   `);
 }
 
+function migrateToVersion17(database: Database.Database) {
+  const columns = database.prepare("PRAGMA table_info(assignment_action_results)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "started_at")) {
+    database.exec("ALTER TABLE assignment_action_results ADD COLUMN started_at INTEGER");
+  }
+}
+
 function hasTable(database: Database.Database, name: string) {
   return Boolean(database.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 }
@@ -819,6 +826,7 @@ export function openDatabase(filename: string) {
       if (currentVersion < 14) migrateToVersion14(database);
       if (currentVersion < 15) migrateToVersion15(database);
       if (currentVersion < 16) migrateToVersion16(database);
+      if (currentVersion < 17) migrateToVersion17(database);
       if (currentVersion < DATABASE_VERSION) database.pragma(`user_version = ${DATABASE_VERSION}`);
     }).immediate();
 

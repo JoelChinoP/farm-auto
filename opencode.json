@@ -8,15 +8,13 @@
   "mcp": {
     "codegraph": {
       "type": "local",
-      "enabled": true,
-      "command": [
-        "codegraph",
-        "mcp",
-        "serve",
-        "--root",
-        ".",
-        "--stdio"
-      ]
+      "command": ["codegraph", "serve", "--mcp"],
+      "enabled": true
+    },
+    "engram": {
+      "type": "local",
+      "command": ["C:\\Users\\Usuario\\bin\\engram.exe", "mcp", "--project=farm-auto", "--tools=agent"],
+      "enabled": true
     },
     "context7": {
       "type": "remote",

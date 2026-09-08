@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
 
 import { appConfig } from "./config.ts";
-import { CURRENT_SETUP_REVISION } from "./device-runtime.ts";
+import { CURRENT_SETUP_REVISION, queueDevicePreparation } from "./device-runtime.ts";
 import { completeOperation, createOperation, getOperation, stableJson } from "./operations.ts";
 import { enqueueJob, getJob, requestJobCancellation } from "./queue.ts";
 
@@ -232,7 +232,7 @@ export function recordFacebookDeviceIdentity(
   if (existing?.account_fingerprint !== undefined && existing.account_fingerprint !== fingerprint) {
     const active = database.prepare(`
       SELECT 1 FROM jobs j JOIN operations o ON o.id = j.operation_id
-      WHERE o.device_id = ? AND j.status IN ('pending', 'running') LIMIT 1
+      WHERE o.device_id = ? AND o.kind = 'assignment.execute' AND j.status IN ('pending', 'running') LIMIT 1
     `).get(normalizedDeviceId);
     if (active) throw new FacebookError("FACEBOOK_ACCOUNT_LOCKED", "La cuenta no puede cambiar mientras el dispositivo tiene trabajo programado.", 409);
   }
@@ -317,8 +317,11 @@ export function freezeFacebookCampaignManifest(
       SELECT DISTINCT i.device_id
       FROM facebook_device_identities i
       JOIN operations o ON o.device_id = i.device_id
-      JOIN jobs j ON j.operation_id = o.id
-      WHERE j.status IN ('pending', 'running')
+      LEFT JOIN jobs j ON j.operation_id = o.id
+      WHERE (
+        j.status IN ('pending', 'running')
+        OR (o.kind = 'assignment.execute' AND o.status = 'pending' AND json_extract(o.request_json, '$.scheduleHash') IS NOT NULL)
+      )
         AND i.account_fingerprint IN (${devices.map(() => "?").join(", ")})
         AND i.device_id NOT IN (${devices.map(() => "?").join(", ")})
     `).all(
@@ -1052,9 +1055,11 @@ export function requestFacebookCampaignSchedule(
       deviceId: payloads[0].row.device_id,
     });
     if (first.replayed) {
-      const job = database.prepare("SELECT id FROM jobs WHERE operation_id = ?").get(first.operation.id) as { id: string } | undefined;
-      if (!job) throw new Error("La programacion idempotente no conserva su job.");
-      return { operation: first.operation, job: getJob(database, job.id)!, replayed: true };
+      return {
+        operation: first.operation,
+        campaign: getFacebookCampaignSnapshot(database, campaignId),
+        replayed: true,
+      };
     }
     if (campaign.revision !== Number(input.expectedRevision)) {
       throw new FacebookError("CAMPAIGN_REVISION_CHANGED", "La campana cambio; revisa el contenido y confirma de nuevo.", 409);
@@ -1097,7 +1102,6 @@ export function requestFacebookCampaignSchedule(
         comment_id, comment_version, text_hash, created_at, updated_at, completed_at
       ) VALUES (?, ?, ?, ?, 'pending', NULL, ?, ?, ?, ?, ?, NULL)
     `);
-    let firstJob = null as ReturnType<typeof getJob>;
     for (const [index, item] of payloads.entries()) {
       const operation = index === 0 ? first.operation : createOperation(database, {
         kind: "assignment.execute",
@@ -1123,19 +1127,94 @@ export function requestFacebookCampaignSchedule(
           now,
         );
       }
-      const job = enqueueJob(database, "assignment.execute", item.payload, {
-        campaignId,
-        postId: item.row.post_id,
-        assignmentId: item.row.id,
-        operationId: operation.id,
-        priority: rows.length - item.row.position,
-        maxAttempts: 2,
-        availableAt: scheduledAtByAssignment.get(item.row.id) ?? firstScheduledAt,
-        effectPhase: "before_effect",
-      });
-      if (index === 0) firstJob = job;
     }
-    return { operation: first.operation, job: firstJob!, replayed: false };
+    return {
+      operation: first.operation,
+      campaign: getFacebookCampaignSnapshot(database, campaignId),
+      replayed: false,
+    };
+  }).immediate();
+}
+
+function enqueueFacebookCampaignSchedules(
+  database: Database.Database,
+  campaignId: string,
+  now: number,
+  dueOnly: boolean,
+) {
+  const rows = database.prepare(`
+    SELECT s.assignment_id, s.scheduled_at, o.id AS operation_id, o.request_json,
+      a.post_id, p.position
+    FROM schedules s
+    JOIN assignments a ON a.id = s.assignment_id
+    JOIN posts p ON p.id = a.post_id
+    JOIN operations o ON o.assignment_id = a.id
+      AND o.kind = 'assignment.execute'
+      AND json_extract(o.request_json, '$.scheduleHash') IS NOT NULL
+    LEFT JOIN jobs j ON j.operation_id = o.id
+    WHERE a.campaign_id = ?
+      AND s.status = 'pending'
+      AND o.status = 'pending'
+      AND j.id IS NULL
+      AND (? = 0 OR s.scheduled_at <= ?)
+    ORDER BY p.position, a.device_id, o.created_at
+  `).all(campaignId, Number(dueOnly), now) as Array<{
+    assignment_id: string;
+    scheduled_at: number;
+    operation_id: string;
+    request_json: string;
+    post_id: string;
+    position: number;
+  }>;
+
+  return rows.map((row) => enqueueJob(database, "assignment.execute", JSON.parse(row.request_json) as FacebookExecutionPayload, {
+    campaignId,
+    postId: row.post_id,
+    assignmentId: row.assignment_id,
+    operationId: row.operation_id,
+    priority: 1_000_000 - row.position,
+    maxAttempts: 2,
+    availableAt: row.scheduled_at,
+    effectPhase: "before_effect",
+  }));
+}
+
+export function requestFacebookCampaignPublication(database: Database.Database, campaignId: string, now = Date.now()) {
+  return database.transaction(() => {
+    const campaign = database.prepare("SELECT status FROM campaigns WHERE id = ? AND platform = 'facebook'")
+      .get(campaignId) as { status: string } | undefined;
+    if (!campaign) throw new FacebookError("CAMPAIGN_NOT_FOUND", "La campana no existe.", 404);
+    if (!['scheduled', 'running', 'completed_with_issues'].includes(campaign.status)) {
+      throw new FacebookError("CAMPAIGN_NOT_SCHEDULED", "La campana debe programarse antes de publicar ejecuciones.", 409);
+    }
+    const jobs = enqueueFacebookCampaignSchedules(database, campaignId, now, false);
+    return {
+      campaign: getFacebookCampaignSnapshot(database, campaignId),
+      jobs,
+      replayed: jobs.length === 0,
+    };
+  }).immediate();
+}
+
+export function reconcileDueFacebookSchedules(database: Database.Database, now = Date.now()) {
+  return database.transaction(() => {
+    const campaigns = database.prepare(`
+      SELECT DISTINCT c.id
+      FROM campaigns c
+      JOIN assignments a ON a.campaign_id = c.id
+      JOIN schedules s ON s.assignment_id = a.id
+      JOIN operations o ON o.assignment_id = a.id
+        AND o.kind = 'assignment.execute'
+        AND json_extract(o.request_json, '$.scheduleHash') IS NOT NULL
+      LEFT JOIN jobs j ON j.operation_id = o.id
+      WHERE c.platform = 'facebook'
+        AND c.status IN ('scheduled', 'running', 'completed_with_issues')
+        AND s.status = 'pending'
+        AND s.scheduled_at <= ?
+        AND o.status = 'pending'
+        AND j.id IS NULL
+    `).all(now) as Array<{ id: string }>;
+    return campaigns.flatMap((campaign) => enqueueFacebookCampaignSchedules(database, campaign.id, now, true));
   }).immediate();
 }
 
@@ -1309,6 +1388,22 @@ export function createFacebookCampaign(
       .run(campaignId, committed, now, operationId);
     database.prepare("UPDATE jobs SET campaign_id = ?, result_json = ?, updated_at = ? WHERE operation_id = ?")
       .run(campaignId, committed, now, operationId);
+    for (const deviceId of input.deviceIds) {
+      const preparationRequest = { deviceId, launchPackage: FACEBOOK_APP_PACKAGE };
+      const preparation = createOperation(database, {
+        kind: "device.prepare",
+        idempotencyKey: randomUUID(),
+        request: preparationRequest,
+        campaignId,
+        deviceId,
+      }).operation;
+      queueDevicePreparation(database, deviceId, preparation.id);
+      enqueueJob(database, "device.prepare", preparationRequest, {
+        campaignId,
+        operationId: preparation.id,
+        maxAttempts: 3,
+      });
+    }
     return getFacebookCampaignSnapshot(database, campaignId);
   }).immediate();
 }

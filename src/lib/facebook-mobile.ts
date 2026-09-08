@@ -745,6 +745,23 @@ function actionStatus(database: Database.Database, operationId: string, action: 
   `).get(operationId, action) as { status: string } | undefined;
 }
 
+function startAction(database: Database.Database, operationId: string, action: FacebookAction) {
+  database.prepare(`
+    UPDATE assignment_action_results
+    SET started_at = COALESCE(started_at, ?), updated_at = ?
+    WHERE operation_id = ? AND action = ? AND status = 'pending'
+  `).run(Date.now(), Date.now(), operationId, action);
+}
+
+function failAction(database: Database.Database, operationId: string, action: FacebookAction, error: unknown) {
+  const now = Date.now();
+  database.prepare(`
+    UPDATE assignment_action_results
+    SET status = 'failed', error = ?, updated_at = ?, completed_at = ?
+    WHERE operation_id = ? AND action = ? AND status = 'pending'
+  `).run(error instanceof Error ? error.message : String(error), now, now, operationId, action);
+}
+
 function saveCheckpoint(
   database: Database.Database,
   operationId: string,
@@ -838,15 +855,19 @@ function confirmAction(
 
 function completeExecution(database: Database.Database, operationId: string, payload: FacebookExecutionPayload) {
   return database.transaction(() => {
-    const incomplete = (database.prepare(`
+    const pending = (database.prepare(`
       SELECT COUNT(*) AS total FROM assignment_action_results
-      WHERE operation_id = ? AND status != 'confirmed'
+      WHERE operation_id = ? AND status IN ('pending', 'effect_possible')
     `).get(operationId) as { total: number }).total;
-    if (incomplete) throw new Error("No todas las acciones publicas fueron confirmadas.");
+    if (pending) throw new Error("No todas las acciones terminaron.");
+    const failed = (database.prepare(`
+      SELECT COUNT(*) AS total FROM assignment_action_results
+      WHERE operation_id = ? AND status = 'failed'
+    `).get(operationId) as { total: number }).total;
     const now = Date.now();
-    const result = { assignmentId: payload.assignmentId, domainCommitted: true };
-    database.prepare("UPDATE assignments SET status = 'sent', updated_at = ?, completed_at = ? WHERE id = ?")
-      .run(now, now, payload.assignmentId);
+    const result = { assignmentId: payload.assignmentId, domainCommitted: true, failedActions: failed };
+    database.prepare("UPDATE assignments SET status = ?, updated_at = ?, completed_at = ? WHERE id = ?")
+      .run(failed ? "failed" : "sent", now, now, payload.assignmentId);
     database.prepare("UPDATE operations SET result_json = ?, updated_at = ? WHERE id = ?")
       .run(stableJson(result), now, operationId);
     database.prepare("UPDATE jobs SET result_json = ?, updated_at = ? WHERE operation_id = ?")
@@ -960,6 +981,7 @@ export async function executeFacebookAssignment(
         adb: dependencies.adb,
         appium: dependencies.appium,
         requiredPackage: FACEBOOK_APP_PACKAGE,
+        cleanupPackage: FACEBOOK_APP_PACKAGE,
         artifactsPath: dependencies.artifactsPath,
         cleanupTimeoutMs: dependencies.cleanupTimeoutMs,
         signal: dependencies.signal,
@@ -980,53 +1002,71 @@ export async function executeFacebookAssignment(
           payload.contentKind ?? undefined,
         );
 
-        if (payload.actions.like && actionStatus(database, operationId, "like")?.status !== "confirmed") {
-          assertNotCancelled(database, operationId, dependencies.signal);
-          if (await mobile.readLikeState(sessionId, dependencies.signal)) {
-            confirmAction(database, operationId, owner, "like", "already_active");
-          } else {
-            const likeElementId = await mobile.prepareLike(sessionId, dependencies.signal);
-            saveCheckpoint(database, operationId, payload, "like");
-            assertNotCancelled(database, operationId, dependencies.signal);
-            armAction(database, operationId, owner, "like");
-            await mobile.tapLike(sessionId, likeElementId, dependencies.signal);
-            if (!await mobile.readLikeState(sessionId, dependencies.signal)) {
-              throw new FacebookError("FACEBOOK_LIKE_NOT_CONFIRMED", "Facebook no confirmo el Like.", 422);
+        const runAction = async (action: FacebookAction, execute: (signal: AbortSignal) => Promise<void>) => {
+          if (actionStatus(database, operationId, action)?.status === "confirmed") return;
+          const timeout = AbortSignal.timeout(appConfig.facebookActionTimeoutMs);
+          const signal = dependencies.signal
+            ? AbortSignal.any([dependencies.signal, timeout])
+            : timeout;
+          startAction(database, operationId, action);
+          try {
+            await execute(signal);
+          } catch (error) {
+            if (dependencies.signal?.aborted || dependencies.leaseSignal?.aborted || actionStatus(database, operationId, action)?.status === "effect_possible") {
+              throw error;
             }
-            confirmAction(database, operationId, owner, "like", "activated");
+            failAction(database, operationId, action, error);
           }
-        }
+        };
 
-        if (payload.actions.comment && payload.comment) {
-          assertNotCancelled(database, operationId, dependencies.signal);
-          await mobile.openCommentComposer(sessionId, dependencies.signal);
-          await mobile.assertCommentAbsent(sessionId, payload.comment.text, dependencies.signal);
-          await mobile.enterComment(sessionId, payload.comment.text, dependencies.signal);
-          const observed = await mobile.readCommentDraft(sessionId, dependencies.signal);
-          if (observed !== payload.comment.text) {
+        if (payload.actions.like) await runAction("like", async (signal) => {
+          assertNotCancelled(database, operationId, signal);
+          if (await mobile.readLikeState(sessionId, signal)) {
+            confirmAction(database, operationId, owner, "like", "already_active");
+            return;
+          }
+          const likeElementId = await mobile.prepareLike(sessionId, signal);
+          saveCheckpoint(database, operationId, payload, "like");
+          assertNotCancelled(database, operationId, signal);
+          armAction(database, operationId, owner, "like");
+          await mobile.tapLike(sessionId, likeElementId, signal);
+          if (!await mobile.readLikeState(sessionId, signal)) {
+            throw new FacebookError("FACEBOOK_LIKE_NOT_CONFIRMED", "Facebook no confirmo el Like.", 422);
+          }
+          confirmAction(database, operationId, owner, "like", "activated");
+        });
+
+        const comment = payload.comment;
+        if (payload.actions.comment && comment) await runAction("comment", async (signal) => {
+          assertNotCancelled(database, operationId, signal);
+          await mobile.openCommentComposer(sessionId, signal);
+          await mobile.assertCommentAbsent(sessionId, comment.text, signal);
+          await mobile.enterComment(sessionId, comment.text, signal);
+          const observed = await mobile.readCommentDraft(sessionId, signal);
+          if (observed !== comment.text) {
             throw new FacebookError("FACEBOOK_COMMENT_TEXT_MISMATCH", "El compositor no contiene el texto exacto.", 422);
           }
-          const submitElementId = await mobile.prepareCommentSubmit(sessionId, dependencies.signal);
+          const submitElementId = await mobile.prepareCommentSubmit(sessionId, signal);
           saveCheckpoint(database, operationId, payload, "comment");
-          assertNotCancelled(database, operationId, dependencies.signal);
+          assertNotCancelled(database, operationId, signal);
           armAction(database, operationId, owner, "comment");
-          await mobile.submitComment(sessionId, submitElementId, dependencies.signal);
-          await mobile.confirmCommentVisible(sessionId, payload.comment.text, dependencies.signal);
+          await mobile.submitComment(sessionId, submitElementId, signal);
+          await mobile.confirmCommentVisible(sessionId, comment.text, signal);
           confirmAction(database, operationId, owner, "comment", "sent");
-        }
+        });
 
-        if (payload.actions.share) {
-          assertNotCancelled(database, operationId, dependencies.signal);
-          const shareElementId = await mobile.prepareShare(sessionId, dependencies.signal);
-          await mobile.openShareMenu(sessionId, shareElementId, dependencies.signal);
-          const shareNowElementId = await mobile.prepareShareNow(sessionId, dependencies.signal);
+        if (payload.actions.share) await runAction("share", async (signal) => {
+          assertNotCancelled(database, operationId, signal);
+          const shareElementId = await mobile.prepareShare(sessionId, signal);
+          await mobile.openShareMenu(sessionId, shareElementId, signal);
+          const shareNowElementId = await mobile.prepareShareNow(sessionId, signal);
           saveCheckpoint(database, operationId, payload, "share");
-          assertNotCancelled(database, operationId, dependencies.signal);
+          assertNotCancelled(database, operationId, signal);
           armAction(database, operationId, owner, "share");
-          await mobile.submitShare(sessionId, shareNowElementId, dependencies.signal);
-          await mobile.confirmShare(sessionId, dependencies.signal);
+          await mobile.submitShare(sessionId, shareNowElementId, signal);
+          await mobile.confirmShare(sessionId, signal);
           confirmAction(database, operationId, owner, "share", "sent");
-        }
+        });
         return completeExecution(database, operationId, payload);
       },
     );

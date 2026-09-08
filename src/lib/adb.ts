@@ -393,6 +393,21 @@ export class AdbClient {
     return this.waitForForeground(serial, packageName, options);
   }
 
+  async forceStopApp(serial: string, packageName: string, options: AdbCommandOptions = {}) {
+    this.validatePackageName(packageName);
+    return this.execute(serial, ["shell", "am", "force-stop", packageName], options);
+  }
+
+  async resetToHomeAndLaunchApp(serial: string, packageName: string, options: AdbCommandOptions = {}) {
+    this.validatePackageName(packageName);
+    await this.forceStopApp(serial, packageName, options);
+    await this.goHome(serial, options);
+    await this.execute(serial, [
+      "shell", "monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1",
+    ], options);
+    return this.waitForForeground(serial, packageName, options);
+  }
+
   async openSafeUrl(serial: string, url: string, options: AdbCommandOptions = {}) {
     if (url !== SAFE_ADB_URL) throw new Error(`ADB solo puede abrir ${SAFE_ADB_URL}.`);
     return this.execute(serial, [
@@ -432,6 +447,12 @@ export class AdbClient {
       maxBuffer: this.maxBuffer,
       signal: options.signal,
     });
+  }
+
+  private validatePackageName(packageName: string) {
+    if (!/^[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+$/u.test(packageName)) {
+      throw new Error("El paquete Android no es valido.");
+    }
   }
 
   private validateSerial(serial: string) {

@@ -27,6 +27,7 @@ import {
   createFacebookCampaign,
   extractFacebookPost,
   generateFacebookComments,
+  reconcileDueFacebookSchedules,
 } from "./lib/facebook.ts";
 import type { DeepSeekFetch, FacebookCampaignRequest, FacebookExtractor } from "./lib/facebook.ts";
 import { claimNextJob, completeJob, failJob, getJob, recoverStaleJobs } from "./lib/queue.ts";
@@ -127,6 +128,7 @@ export async function runWorker(options: WorkerDependencies = {}) {
     recoverStaleJobs(database, owner);
     recoverFacebookExecutions(database, owner);
     recoverTikTokExecutions(database, owner);
+    reconcileDueFacebookSchedules(database);
     let nextInventoryAt = Date.now() + 5_000;
     const activeDeviceJobs = new Set<Promise<void>>();
     const activeAiJobs = new Set<Promise<void>>();
@@ -223,9 +225,10 @@ export async function runWorker(options: WorkerDependencies = {}) {
           appConfig.artifactsPath,
           leaseController.signal,
         );
+        reconcileDueFacebookSchedules(database);
         signal.throwIfAborted();
         const excludeKinds = [
-          ...(activeDeviceJobs.size >= deviceConcurrency ? ["assignment.execute"] : []),
+          ...(activeDeviceJobs.size >= deviceConcurrency ? ["assignment.execute", "device.prepare"] : []),
           ...(activeAiJobs.size >= aiConcurrency ? ["comments.generate"] : []),
         ];
         const job = claimNextJob(database, owner, Date.now(), { excludeKinds });
@@ -239,9 +242,9 @@ export async function runWorker(options: WorkerDependencies = {}) {
           await sleep(appConfig.workerPollMs, signal);
           continue;
         }
-        if (["assignment.execute", "comments.generate"].includes(job.kind) && !options.once) {
+        if (["assignment.execute", "device.prepare", "comments.generate"].includes(job.kind) && !options.once) {
           const running = runJob(job);
-          const activeJobs = job.kind === "assignment.execute" ? activeDeviceJobs : activeAiJobs;
+          const activeJobs = ["assignment.execute", "device.prepare"].includes(job.kind) ? activeDeviceJobs : activeAiJobs;
           activeJobs.add(running);
           void running.then(
             () => activeJobs.delete(running),

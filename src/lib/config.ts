@@ -44,7 +44,7 @@ const commentMaxWords = positiveInteger("COMMENT_MAX_WORDS", 15);
 if (commentMaxWords < commentMinWords) {
   throw new Error("COMMENT_MAX_WORDS debe ser igual o mayor que COMMENT_MIN_WORDS.");
 }
-const workerDeviceConcurrency = positiveInteger("WORKER_DEVICE_CONCURRENCY", 4);
+const workerDeviceConcurrency = positiveInteger("WORKER_DEVICE_CONCURRENCY", 5);
 if (workerDeviceConcurrency > 100) throw new Error("WORKER_DEVICE_CONCURRENCY no puede superar 100.");
 const deepSeekConcurrency = positiveInteger("DEEPSEEK_CONCURRENCY", 2);
 if (deepSeekConcurrency > 4) throw new Error("DEEPSEEK_CONCURRENCY no puede superar 4.");
@@ -75,6 +75,7 @@ export const appConfig = Object.freeze({
   facebookCommentSubmitResourceId: process.env.FACEBOOK_COMMENT_SUBMIT_RESOURCE_ID?.trim() || "",
   facebookCommentResultContainerResourceId: process.env.FACEBOOK_COMMENT_RESULT_CONTAINER_RESOURCE_ID?.trim() || "",
   facebookUiTimeoutMs: positiveInteger("FACEBOOK_UI_TIMEOUT_MS", 15_000),
+  facebookActionTimeoutMs: positiveInteger("FACEBOOK_ACTION_TIMEOUT_MS", 10_000),
   facebookLikeActiveLabels: labels("FACEBOOK_LIKE_ACTIVE_LABELS", "Ya no me gusta|Unlike|Remove Like|Quitar Me gusta"),
   facebookLikeInactiveLabels: labels("FACEBOOK_LIKE_INACTIVE_LABELS", "Me gusta|Like"),
   facebookCommentLabels: labels("FACEBOOK_COMMENT_LABELS", "Comentar|Comment"),

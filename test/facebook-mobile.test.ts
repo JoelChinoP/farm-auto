@@ -19,6 +19,7 @@ import {
   reconcileFacebookAssignment,
   reduceFacebookCampaignExecution,
   requestFacebookCampaignExecution,
+  requestFacebookCampaignPublication,
   requestFacebookCampaignSchedule,
   requestFacebookExecutionCancellation,
 } from "../src/lib/facebook.ts";
@@ -112,6 +113,8 @@ async function setupExecution(actions: FacebookActions = { like: true, comment: 
   }
   database.prepare("UPDATE assignments SET status = 'draft', updated_at = 2 WHERE id = ?").run(assignment.id);
   database.prepare("UPDATE campaigns SET status = 'ready', updated_at = 2 WHERE id = ?").run(created!.id);
+  database.prepare("UPDATE device_preparations SET status = 'ready', step = 'Listo' WHERE operation_id IN (SELECT id FROM operations WHERE campaign_id = ? AND kind = 'device.prepare')")
+    .run(created!.id);
   database.prepare("DELETE FROM jobs").run();
 
   let sessionCounter = 0;
@@ -142,6 +145,7 @@ async function setupExecution(actions: FacebookActions = { like: true, comment: 
   };
   const adb = {
     inspectDevice: async () => inspection,
+    forceStopApp: async () => undefined,
     goHome: async () => {
       if (failHome) throw new Error("Home no confirmado");
       return inspection.launcher;
@@ -347,6 +351,8 @@ test("executes a complete multidispositivo plan once and in order per device", a
     }).operation;
     enqueueJob(database, "campaign.create", campaignRequest, { operationId: creation.id });
     const campaign = createFacebookCampaign(database, creation.id, campaignRequest)!;
+    database.prepare("UPDATE device_preparations SET status = 'ready', step = 'Listo' WHERE operation_id IN (SELECT id FROM operations WHERE campaign_id = ? AND kind = 'device.prepare')")
+      .run(campaign.id);
     database.prepare("DELETE FROM jobs").run();
     const scheduled = requestFacebookCampaignSchedule(database, campaign.id, {
       idempotencyKey: randomUUID(),
@@ -370,6 +376,7 @@ test("executes a complete multidispositivo plan once and in order per device", a
       controlledContent: true,
     }, ACCOUNT_RESOURCE_ID, POST_CONTAINER_RESOURCE_ID, POST_URL_RESOURCE_ID);
     assert.equal(scheduled.replayed, false);
+    requestFacebookCampaignPublication(database, campaign.id);
     assert.equal(claimRuntimeOwnership(database, OWNER, 1, Date.now(), 60_000), true);
 
     let sessionCounter = 0;
@@ -399,6 +406,7 @@ test("executes a complete multidispositivo plan once and in order per device", a
           launcher: { packageName: "launcher", activityName: "Launcher", component: "launcher/Launcher" },
         } satisfies AdbDeviceInspection;
       },
+      forceStopApp: async () => undefined,
       goHome: async () => ({ packageName: "launcher", activityName: "Launcher", component: "launcher/Launcher" }),
       getForeground: async () => ({ packageName: "com.facebook.lite", activityName: "Main", component: "com.facebook.lite/Main" }),
     } as unknown as AdbClient;
@@ -516,27 +524,23 @@ test("a safe failure before Like performs no effect and is not retried automatic
   }
 });
 
-test("a confirmed Like is preserved when Comment fails and is never tapped again", async () => {
+test("a failed Comment preserves Like and finishes the assignment with the action error", async () => {
   const setup = await setupExecution();
   try {
     requestExecution(setup);
     claimRuntimeOwnership(setup.database, OWNER, 1, Date.now(), 60_000);
     const first = mobileDriver({ openCommentComposer: async () => { throw new Error("compositor ausente"); } });
-    const failed = await runClaimed(setup, first.driver);
-    assert.equal(failed.job.status, "failed");
-    assert.equal(first.calls.filter((call) => call === "tap-like").length, 1);
-
-    const secondRequest = requestExecution(setup);
-    const preserved = setup.database.prepare(`
-      SELECT status, result FROM assignment_action_results
-      WHERE operation_id = ? AND action = 'like'
-    `).get(secondRequest.operation.id) as { status: string; result: string };
-    assert.deepEqual(preserved, { status: "confirmed", result: "preserved" });
-    const second = mobileDriver();
-    const completed = await runClaimed(setup, second.driver);
+    const completed = await runClaimed(setup, first.driver);
     assert.equal(completed.job.status, "succeeded");
-    assert.equal(second.calls.includes("tap-like"), false);
-    assert.equal(second.calls.includes("submit-comment"), true);
+    assert.equal(first.calls.filter((call) => call === "tap-like").length, 1);
+    assert.equal(getFacebookCampaignSnapshot(setup.database, setup.campaignId)!.assignments[0].status, "failed");
+    assert.deepEqual(
+      setup.database.prepare("SELECT action, status, error FROM assignment_action_results ORDER BY action").all(),
+      [
+        { action: "comment", status: "failed", error: "compositor ausente" },
+        { action: "like", status: "confirmed", error: null },
+      ],
+    );
   } finally {
     await setup.close();
   }
