@@ -15,7 +15,7 @@
     "test": "node --test --experimental-strip-types test/**/*.test.ts",
     "test:e2e:appium": "node --env-file-if-exists=.env --test --experimental-strip-types e2e/appium/smoke.test.ts",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
-    "worker": "node --env-file-if-exists=.env --experimental-strip-types src/worker.ts",
+    "worker": "node --watch --env-file-if-exists=.env --experimental-strip-types src/worker.ts",
     "appium:server": "appium server --address 127.0.0.1 --port 4723 --use-drivers=uiautomator2",
     "appium:doctor": "appium driver doctor uiautomator2"
   },
@@ -24,6 +24,7 @@
     "@mantine/hooks": "9.6.0",
     "better-sqlite3": "13.0.3",
     "next": "16.3.4",
+    "opencode-codegraph": "^0.1.38",
     "playwright-core": "^1.61.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"

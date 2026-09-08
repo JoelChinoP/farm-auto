@@ -6,6 +6,18 @@
   "instructions": ["AGENTS.md"],
   "plugin": ["@dietrichgebert/ponytail@4.9.0"],
   "mcp": {
+    "codegraph": {
+      "type": "local",
+      "enabled": true,
+      "command": [
+        "codegraph",
+        "mcp",
+        "serve",
+        "--root",
+        ".",
+        "--stdio"
+      ]
+    },
     "context7": {
       "type": "remote",
       "url": "https://mcp.context7.com/mcp",

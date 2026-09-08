@@ -147,7 +147,7 @@ function mapDeviceSnapshots(devices: DeviceSnapshot[]): Device[] {
       preparation,
       preparationStep: device.preparationStep ?? undefined,
       capabilities: {
-        facebook: packages.has("com.facebook.katana") ? "ready" : "not_installed",
+        facebook: packages.has("com.facebook.lite") ? "ready" : "not_installed",
         tiktok: packages.has("com.zhiliaoapp.musically") ? "ready" : "not_installed",
       },
       activity: preparation === "recovery_required" ? "recovery_required" : device.farmAvailability,

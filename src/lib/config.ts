@@ -61,6 +61,7 @@ export const appConfig = Object.freeze({
   cleanupTimeoutMs: positiveInteger("CLEANUP_TIMEOUT_MS", 15_000),
   workerLeaseMs: positiveInteger("WORKER_LEASE_MS", 15_000),
   workerPollMs: positiveInteger("WORKER_POLL_MS", 500),
+  workerShutdownTimeoutMs: positiveInteger("WORKER_SHUTDOWN_TIMEOUT_MS", 60_000),
   workerDeviceConcurrency,
   facebookBrowserExecutablePath: process.env.FACEBOOK_BROWSER_EXECUTABLE_PATH?.trim() || undefined,
   facebookBrowserProfilePath: facebookProfilePath(),

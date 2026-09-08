@@ -49,7 +49,7 @@ type WorkerDependencies = {
   deviceConcurrency?: number;
   aiConcurrency?: number;
   sleep?: (milliseconds: number, signal?: AbortSignal) => Promise<void>;
-  facebookBrowser?: FacebookExtractor & { close?: () => Promise<void> };
+  facebookBrowser?: FacebookExtractor & { close?: () => Promise<void>; warmup?: () => Promise<void> };
   deepSeekFetch?: DeepSeekFetch;
   facebookMobile?: FacebookMobileDriver;
   tiktokPostMobile?: TikTokPostMobileDriver;
@@ -84,10 +84,13 @@ export async function runWorker(options: WorkerDependencies = {}) {
   if (!claimRuntimeOwnership(database, owner, process.pid, Date.now(), appConfig.workerLeaseMs)) {
     throw new Error("Otro worker de Farm Appium mantiene el lease activo.");
   }
+  // ponytail: keeps Edge warm for the first extraction; idle cost is RAM until the worker exits.
+  void facebookBrowser.warmup?.();
   const leaseController = new AbortController();
   const signal = options.signal
     ? AbortSignal.any([options.signal, leaseController.signal])
     : leaseController.signal;
+  let inventoryInFlight: Promise<unknown> | null = null;
   const heartbeat = setInterval(() => {
     try {
       if (!claimRuntimeOwnership(database, owner, process.pid, Date.now(), appConfig.workerLeaseMs)) {
@@ -110,7 +113,6 @@ export async function runWorker(options: WorkerDependencies = {}) {
       leaseController.signal,
     );
     signal.throwIfAborted();
-    let inventoryInFlight: Promise<unknown> | null = null;
     const kickInventory = () => {
       if (inventoryInFlight) return;
       inventoryInFlight = refreshDeviceInventory(database, adb, signal, owner)
@@ -255,6 +257,7 @@ export async function runWorker(options: WorkerDependencies = {}) {
   } finally {
     clearInterval(heartbeat);
     try {
+      await inventoryInFlight;
       await facebookBrowser.close?.();
     } finally {
       releaseRuntimeOwnership(database, owner);
@@ -262,13 +265,37 @@ export async function runWorker(options: WorkerDependencies = {}) {
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+export async function runWorkerProcess(options: WorkerDependencies = {}) {
   const controller = new AbortController();
-  const stop = () => controller.abort(new Error("Worker detenido"));
+  const signal = options.signal
+    ? AbortSignal.any([options.signal, controller.signal])
+    : controller.signal;
+  let shutdownDeadline: NodeJS.Timeout | undefined;
+  const stop = () => {
+    controller.abort(new Error("Worker detenido"));
+    shutdownDeadline ??= setTimeout(() => {
+      console.error("El worker excedio el tiempo de apagado; la siguiente ejecucion recuperara el estado persistido.");
+      process.exit(1);
+    }, appConfig.workerShutdownTimeoutMs);
+    shutdownDeadline.unref();
+  };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  runWorker({ signal: controller.signal, once: process.argv.includes("--once") }).catch((error: unknown) => {
+  try {
+    await runWorker({ ...options, signal, once: options.once ?? process.argv.includes("--once") });
+    return 0;
+  } catch (error) {
     if (!controller.signal.aborted) console.error(error);
-    process.exitCode = controller.signal.aborted ? 0 : 1;
+    return controller.signal.aborted ? 0 : 1;
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+    if (shutdownDeadline) clearTimeout(shutdownDeadline);
+  }
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  void runWorkerProcess().then((exitCode) => {
+    process.exitCode = exitCode;
   });
 }

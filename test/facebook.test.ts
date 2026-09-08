@@ -43,7 +43,7 @@ function addEligibleDevice(database: Database.Database, index: number) {
   database.prepare(`
     INSERT INTO device_observations (
       device_id, connection, hardware_id, packages_json, observed_at
-    ) VALUES (?, 'connected', ?, '["com.facebook.katana"]', 1)
+    ) VALUES (?, 'connected', ?, '["com.facebook.lite"]', 1)
   `).run(deviceId, hardwareId);
   const operation = createOperation(database, {
     kind: "device.prepare",

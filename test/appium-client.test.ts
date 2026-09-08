@@ -111,8 +111,8 @@ test("uses owned W3C sessions for the required Android interaction primitives", 
     },
   });
 
-  await client.activateApp("session-1", "com.facebook.katana");
-  await client.executeScript("session-1", "mobile: deepLink", [{ url: "https://facebook.com/post/1", package: "com.facebook.katana" }]);
+  await client.activateApp("session-1", "com.facebook.lite");
+  await client.executeScript("session-1", "mobile: deepLink", [{ url: "https://facebook.com/post/1", package: "com.facebook.lite" }]);
   assert.deepEqual(await client.findElements("session-1", "accessibility id", "Me gusta"), [{ elementId: "element-1" }]);
   assert.deepEqual(await client.findElementsFromElement("session-1", "element-1", "xpath", ".//*[@text='objetivo']"), [{ elementId: "element-2" }]);
   assert.equal(await client.getElementText("session-1", "element-1"), "texto exacto");
@@ -122,7 +122,7 @@ test("uses owned W3C sessions for the required Android interaction primitives", 
   await client.clickElement("session-1", "element-1");
 
   assert.match(requests[0].url, /appium\/device\/activate_app$/);
-  assert.deepEqual(requests[1].body, { script: "mobile: deepLink", args: [{ url: "https://facebook.com/post/1", package: "com.facebook.katana" }] });
+  assert.deepEqual(requests[1].body, { script: "mobile: deepLink", args: [{ url: "https://facebook.com/post/1", package: "com.facebook.lite" }] });
   assert.deepEqual(requests[2].body, { using: "accessibility id", value: "Me gusta" });
   assert.match(requests[3].url, /element\/element-1\/elements$/);
   assert.deepEqual(requests[7].body, { text: "á", value: ["á"] });

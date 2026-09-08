@@ -41,6 +41,7 @@ import {
 
 const OWNER = "worker-1";
 const ACCOUNT = "Cuenta Controlada QA";
+// Facebook Lite 527 keeps the com.facebook.katana resource namespace.
 const ACCOUNT_RESOURCE_ID = "com.facebook.katana:id/active_account";
 const POST_CONTAINER_RESOURCE_ID = "com.facebook.katana:id/post_container";
 const POST_URL_RESOURCE_ID = "com.facebook.katana:id/post_url";
@@ -64,7 +65,7 @@ async function setupExecution(actions: FacebookActions = { like: true, comment: 
   database.prepare(`
     INSERT INTO device_observations (
       device_id, connection, hardware_id, packages_json, observed_at
-    ) VALUES (?, 'connected', ?, '["com.facebook.katana"]', 1)
+    ) VALUES (?, 'connected', ?, '["com.facebook.lite"]', 1)
   `).run(DEVICE_ID, hardwareId);
   const preparation = createOperation(database, {
     kind: "device.prepare",
@@ -135,7 +136,7 @@ async function setupExecution(actions: FacebookActions = { like: true, comment: 
     roSerialNo: "physical",
     androidId: "android",
     hardwareId,
-    packages: ["com.facebook.katana"],
+    packages: ["com.facebook.lite"],
     foreground: null,
     launcher: { packageName: "launcher", activityName: "Launcher", component: "launcher/Launcher" },
   };
@@ -145,7 +146,7 @@ async function setupExecution(actions: FacebookActions = { like: true, comment: 
       if (failHome) throw new Error("Home no confirmado");
       return inspection.launcher;
     },
-    getForeground: async () => ({ packageName: "com.facebook.katana", activityName: "Main", component: "com.facebook.katana/Main" }),
+    getForeground: async () => ({ packageName: "com.facebook.lite", activityName: "Main", component: "com.facebook.lite/Main" }),
   } as unknown as AdbClient;
 
   const close = async () => {
@@ -315,7 +316,7 @@ test("executes a complete multidispositivo plan once and in order per device", a
         .run(hardwareId, deviceId, `Equipo ${index + 1}`, index + 1, 8200 + index, 1, 1);
       database.prepare(`
         INSERT INTO device_observations (device_id, connection, hardware_id, packages_json, observed_at)
-        VALUES (?, 'connected', ?, '["com.facebook.katana"]', 1)
+        VALUES (?, 'connected', ?, '["com.facebook.lite"]', 1)
       `).run(deviceId, hardwareId);
       const preparation = createOperation(database, {
         kind: "device.prepare",
@@ -393,13 +394,13 @@ test("executes a complete multidispositivo plan once and in order per device", a
           roSerialNo: `physical-${index + 1}`,
           androidId: `android-${index + 1}`,
           hardwareId: String(index + 1).repeat(64),
-          packages: ["com.facebook.katana"],
+          packages: ["com.facebook.lite"],
           foreground: null,
           launcher: { packageName: "launcher", activityName: "Launcher", component: "launcher/Launcher" },
         } satisfies AdbDeviceInspection;
       },
       goHome: async () => ({ packageName: "launcher", activityName: "Launcher", component: "launcher/Launcher" }),
-      getForeground: async () => ({ packageName: "com.facebook.katana", activityName: "Main", component: "com.facebook.katana/Main" }),
+      getForeground: async () => ({ packageName: "com.facebook.lite", activityName: "Main", component: "com.facebook.lite/Main" }),
     } as unknown as AdbClient;
 
     const uncertainJob = claimNextJob(database, OWNER, Date.now());
@@ -833,13 +834,21 @@ test("the structural Facebook fallback verifies the active profile and scrolls t
   let screen: "feed" | "profile" | "target" = "target";
   let postControlsVisible = false;
   const adb = {
-    execute: async () => { screen = "feed"; },
-    getForeground: async () => ({ packageName: "com.facebook.katana", activityName: ".Main" }),
-    waitForForeground: async () => ({ packageName: "com.facebook.katana", activityName: ".Main" }),
+    execute: async () => undefined,
+    launchApp: async (_deviceId: string, packageName: string) => {
+      assert.equal(packageName, "com.facebook.lite");
+      screen = "feed";
+      return { packageName, activityName: ".Main" };
+    },
+    getForeground: async () => ({ packageName: "com.facebook.lite", activityName: ".Main" }),
+    waitForForeground: async () => ({ packageName: "com.facebook.lite", activityName: ".Main" }),
   } as unknown as AdbClient;
   const appium = {
-    activateApp: async () => undefined,
-    executeScript: async () => { screen = "target"; },
+    activateApp: async (_sessionId: string, packageName: string) => assert.equal(packageName, "com.facebook.lite"),
+    executeScript: async (_sessionId: string, _script: string, args: Array<{ package: string }>) => {
+      assert.equal(args[0].package, "com.facebook.lite");
+      screen = "target";
+    },
     findElements: async (_sessionId: string, using: string, value: string) => {
       if (using === "accessibility id" && value === "Ir al perfil" && screen === "feed") return [{ elementId: "profile-link" }];
       if (using === "xpath" && value.includes(ACCOUNT) && screen === "profile") return [{ elementId: "account" }];
@@ -885,9 +894,14 @@ test("the structural Facebook fallback verifies the active profile and scrolls t
 test("the structural Facebook fallback accepts a dynamic Reel Compartir label only inside the verified Reel", async () => {
   let screen: "feed" | "profile" | "target" = "target";
   const adb = {
-    execute: async () => { screen = "feed"; },
-    getForeground: async () => ({ packageName: "com.facebook.katana", activityName: ".Main" }),
-    waitForForeground: async () => ({ packageName: "com.facebook.katana", activityName: ".Main" }),
+    execute: async () => undefined,
+    launchApp: async (_deviceId: string, packageName: string) => {
+      assert.equal(packageName, "com.facebook.lite");
+      screen = "feed";
+      return { packageName, activityName: ".Main" };
+    },
+    getForeground: async () => ({ packageName: "com.facebook.lite", activityName: ".Main" }),
+    waitForForeground: async () => ({ packageName: "com.facebook.lite", activityName: ".Main" }),
   } as unknown as AdbClient;
   const appium = {
     activateApp: async () => undefined,

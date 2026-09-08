@@ -316,8 +316,7 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
       const deviceId = this.#devices.get(sessionId);
       if (!deviceId) throw new FacebookError("FACEBOOK_ACCOUNT_MISMATCH", "No se pudo vincular la sesion con el dispositivo controlado.", 422);
       await this.#adb.execute(deviceId, ["shell", "am", "force-stop", FACEBOOK_APP_PACKAGE], { signal });
-      await this.#adb.execute(deviceId, ["shell", "am", "start", "-n", `${FACEBOOK_APP_PACKAGE}/.LoginActivity`], { signal });
-      await this.#adb.waitForForeground(deviceId, FACEBOOK_APP_PACKAGE, { signal });
+      await this.#adb.launchApp(deviceId, FACEBOOK_APP_PACKAGE, { signal });
       let profileButtons = await this.#appium.findElements(sessionId, "accessibility id", "Ir al perfil", { signal });
       if (!profileButtons.length) {
         await this.#appium.findElements(

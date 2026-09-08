@@ -7,7 +7,7 @@ import { completeOperation, createOperation, getOperation, stableJson } from "./
 import { enqueueJob, getJob, requestJobCancellation } from "./queue.ts";
 
 export const FACEBOOK_TONES = ["Cercano", "Entusiasta", "Informativo", "Breve"] as const;
-export const FACEBOOK_APP_PACKAGE = "com.facebook.katana";
+export const FACEBOOK_APP_PACKAGE = "com.facebook.lite";
 
 export class FacebookError extends Error {
   readonly code: string;

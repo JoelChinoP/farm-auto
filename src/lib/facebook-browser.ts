@@ -9,6 +9,10 @@ import { facebookContentKind, FacebookError, type FacebookContentKind, normalize
 
 const EXTRACTOR_VERSION = "facebook-edge-v2";
 const MESSAGE_SELECTOR = '[data-ad-rendering-role="story_message"], [data-ad-preview="message"], [data-testid="post_message"]';
+const MESSAGE_WAIT_TIMEOUT_MS = 6_000;
+// ponytail: heuristic waits tuned against Facebook rendering; lower risks truncated context.
+const CONTEXT_STABILITY_POLL_MS = 200;
+const CONTEXT_STABILITY_BUDGET_MS = 5_000;
 const COLLAPSED_DESCRIPTION = /(?:…|\.\.\.)\s*(?:(?:ver|see)\s+)?(?:más|mas|more)\s*$/iu;
 const BOILERPLATE = [
   "create an account or log into facebook",
@@ -60,12 +64,16 @@ export function buildFacebookPostContext(messages: string[], metadata = "", maxL
   return result;
 }
 
-function readMessages(scope: Locator) {
-  return scope.evaluate((node, selector) =>
-    [...node.querySelectorAll(selector)]
+type ScopeRead = { messages: string[]; nodeCount: number };
+
+function readScope(scope: Locator): Promise<ScopeRead> {
+  return scope.evaluate((node, selector) => ({
+    messages: [...node.querySelectorAll(selector)]
       .map((element) => (element.textContent ?? "").trim())
-      .filter((value) => value.length > 0), MESSAGE_SELECTOR)
-    .catch(() => [] as string[]);
+      .filter((value) => value.length > 0),
+    nodeCount: node.querySelectorAll("*").length,
+  }), MESSAGE_SELECTOR)
+    .catch(() => ({ messages: [] as string[], nodeCount: Number.POSITIVE_INFINITY }));
 }
 
 async function findPostScope(page: Page) {
@@ -75,12 +83,12 @@ async function findPostScope(page: Page) {
     const count = Math.min(await scopes.count(), 10);
     for (let index = 0; index < count; index++) {
       const scope = scopes.nth(index);
-      const messages = await readMessages(scope);
-      if (!messages.length) continue;
+      const read = await readScope(scope);
+      if (!read.messages.length) continue;
       matches.push({
         scope,
-        signature: [...new Set(messages.map(normalizeText))].sort().join("\n"),
-        nodeCount: await scope.evaluate((node) => node.querySelectorAll("*").length).catch(() => Number.POSITIVE_INFINITY),
+        signature: [...new Set(read.messages.map(normalizeText))].sort().join("\n"),
+        nodeCount: read.nodeCount,
       });
     }
     if (matches.length) {
@@ -99,8 +107,9 @@ async function expandPostText(page: Page, scope: Locator) {
   for (let attempt = 0; attempt < 3; attempt++) {
     const clicked = await scope.evaluate((node) => {
       const candidate = [...node.querySelectorAll("span, div")]
-        .filter((element) => /^(?:…|\.\.\.)?\s*(?:ver más|see more)$/iu
-          .test((element.textContent ?? "").replace(/[\s\uFEFF]+/gu, " ").trim()))
+        .filter((element) => element.children.length <= 2
+          && /^(?:…|\.\.\.)?\s*(?:ver más|see more)$/iu
+            .test((element.textContent ?? "").replace(/[\s\uFEFF]+/gu, " ").trim()))
         .sort((left, right) => left.querySelectorAll("*").length - right.querySelectorAll("*").length)[0];
       if (!candidate || !(candidate instanceof HTMLElement)) return false;
       candidate.click();
@@ -112,12 +121,13 @@ async function expandPostText(page: Page, scope: Locator) {
 }
 
 async function readPostContext(page: Page) {
-  await page.waitForSelector(MESSAGE_SELECTOR, { state: "visible", timeout: 8_000 }).catch(() => undefined);
+  await page.waitForSelector(MESSAGE_SELECTOR, { state: "visible", timeout: MESSAGE_WAIT_TIMEOUT_MS }).catch(() => undefined);
   const scope = await findPostScope(page);
   let previous = "";
-  for (let attempt = 0; attempt < 5; attempt++) {
+  const deadline = Date.now() + CONTEXT_STABILITY_BUDGET_MS;
+  while (true) {
     await expandPostText(page, scope);
-    const messages = await readMessages(scope);
+    const { messages } = await readScope(scope);
     const metadata = await page.evaluate(() => {
       const meta = document.querySelector('meta[property="og:description"], meta[name="description"]');
       return meta?.getAttribute("content") ?? "";
@@ -125,7 +135,8 @@ async function readPostContext(page: Page) {
     const context = buildFacebookPostContext(messages, metadata);
     if (context.length >= 5 && !COLLAPSED_DESCRIPTION.test(context) && context === previous) return context;
     previous = context;
-    await page.waitForTimeout(400);
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(CONTEXT_STABILITY_POLL_MS);
   }
   if (COLLAPSED_DESCRIPTION.test(previous)) {
     throw new FacebookError("FACEBOOK_CONTENT_TRUNCATED", "Facebook no expandio el contenido completo.", 422);
@@ -163,37 +174,41 @@ function reelPatterns() {
 
 async function readReelContext(page: Page) {
   let previous = "";
-  for (let attempt = 0; attempt < 3; attempt++) {
+  const deadline = Date.now() + CONTEXT_STABILITY_BUDGET_MS;
+  while (true) {
     const raw = await page.evaluate((patterns) => {
       const header = new RegExp(patterns.headerSource, patterns.headerFlags);
       const toggle = new RegExp(patterns.toggleSource, patterns.toggleFlags);
-      const nodes = document.querySelectorAll("body div");
-      const pick = (maxLength: number) => {
-        let bestContainer: HTMLElement | null = null;
-        let bestCount = Infinity;
-        for (const node of nodes) {
-          const text = node.textContent ?? "";
-          if (text.length < 40 || text.length > maxLength) continue;
-          if (!header.test(text) || !toggle.test(text)) continue;
-          const count = node.querySelectorAll("*").length;
-          if (count < bestCount) {
-            bestCount = count;
-            bestContainer = node as HTMLElement;
-          }
+      let bestSmall: HTMLElement | null = null;
+      let bestSmallCount = Infinity;
+      let bestLarge: HTMLElement | null = null;
+      let bestLargeCount = Infinity;
+      for (const node of document.querySelectorAll("body div")) {
+        // The caption container is small; skip big subtrees before touching textContent.
+        if (node.children.length > 60) continue;
+        const text = node.textContent ?? "";
+        if (text.length < 40 || !header.test(text) || !toggle.test(text)) continue;
+        const count = node.querySelectorAll("*").length;
+        if (text.length <= 8_000 && count < bestSmallCount) {
+          bestSmallCount = count;
+          bestSmall = node as HTMLElement;
+        } else if (text.length > 8_000 && count < bestLargeCount) {
+          bestLargeCount = count;
+          bestLarge = node as HTMLElement;
         }
-        return bestContainer;
-      };
-      const container = pick(8_000) ?? pick(Number.POSITIVE_INFINITY);
+      }
+      const container = bestSmall ?? bestLarge;
       if (!container) return "";
       const expand = [...container.querySelectorAll("*")].find((node) => node.children.length === 0
         && /^(?:…|\.\.\.)?\s*(?:ver más|see more)$/iu.test((node.textContent ?? "").replace(/[\s\uFEFF]+/gu, " ").trim())) as HTMLElement | undefined;
       if (expand) expand.click();
       return container.innerText;
     }, reelPatterns());
-    await page.waitForTimeout(400);
     const context = reelCaptionFromLines(raw);
     if (context.length >= 5 && context === previous) return context;
     previous = context;
+    if (Date.now() >= deadline) break;
+    await page.waitForTimeout(CONTEXT_STABILITY_POLL_MS);
   }
   if (COLLAPSED_DESCRIPTION.test(previous)) {
     throw new FacebookError("FACEBOOK_CONTENT_TRUNCATED", "Facebook no expandio el contenido completo.", 422);
@@ -342,6 +357,11 @@ export class FacebookBrowser {
     this.releaseLock();
   }
 
+  async warmup() {
+    // Pre-launch Edge so the first extraction does not pay startup cost.
+    await this.ensureContext(true).catch(() => undefined);
+  }
+
   async extract(url: string, signal?: AbortSignal) {
     signal?.throwIfAborted();
     const requestedUrl = normalizeFacebookUrl(url);
@@ -369,6 +389,9 @@ export class FacebookBrowser {
           await route.abort("blockedbyclient");
           return;
         }
+      } else if (["image", "media", "font"].includes(request.resourceType())) {
+        await route.abort("blockedbyclient");
+        return;
       }
       await route.continue();
     });
@@ -399,10 +422,11 @@ export class FacebookBrowser {
       if (!isAllowedFacebookTargetRedirect(requestedUrl.sourceUrl, finalUrl)) {
         throw new FacebookError("FACEBOOK_TARGET_REDIRECTED", "El enlace no resolvio a la publicacion esperada.", 422);
       }
-      const visiblePageText = await page.locator("body").innerText().catch(() => "");
-      const contentKind: FacebookContentKind = facebookContentKind(finalUrl) === "reel" || reelCaptionFromLines(visiblePageText).length >= 5
+      const contentKind: FacebookContentKind = facebookContentKind(finalUrl) === "reel"
         ? "reel"
-        : "post";
+        : await page.evaluate(() => /·\s*(?:audio original|original audio)/iu.test(document.body.textContent ?? "")).catch(() => false)
+          ? "reel"
+          : "post";
       const contextText = await readPostContextWithReelFallback(page, contentKind === "reel");
       signal?.throwIfAborted();
       return { context: contextText, finalUrl, contentKind, extractorVersion: EXTRACTOR_VERSION };
