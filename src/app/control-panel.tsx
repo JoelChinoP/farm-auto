@@ -314,11 +314,20 @@ function preserveDirtyFacebookFields(current: CampaignDraft, incoming: CampaignD
   };
 }
 
-async function apiRequest<T>(url: string, init?: RequestInit) {
-  const response = await fetch(url, init);
-  const payload = await response.json() as { success: boolean; data?: T; message?: string };
-  if (!response.ok || !payload.success || !payload.data) throw new Error(payload.message || `HTTP ${response.status}`);
-  return payload.data;
+async function apiRequest<T>(url: string, init?: RequestInit, timeoutMs = 30_000) {
+  const timeout = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : null;
+  const signal = timeout && init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout ?? init?.signal;
+  try {
+    const response = await fetch(url, { ...init, ...(signal ? { signal } : {}) });
+    const payload = await response.json() as { success: boolean; data?: T; message?: string };
+    if (!response.ok || !payload.success || !payload.data) throw new Error(payload.message || `HTTP ${response.status}`);
+    return payload.data;
+  } catch (error) {
+    if (timeout?.aborted && !init?.signal?.aborted) {
+      throw new Error(`La peticion a ${url} excedio ${timeoutMs} ms.`);
+    }
+    throw error;
+  }
 }
 
 function draftKey(platform: Platform) {
@@ -893,6 +902,7 @@ export function ControlPanel() {
     liveCalibrations: [],
   });
   const timers = useRef<number[]>([]);
+  const importingDevices = useRef(false);
   const dirtyFacebookFields = useRef(new Set<string>());
   const dirtyTikTokFields = useRef(new Set<string>());
   const stateRef = useRef(state);
@@ -909,54 +919,65 @@ export function ControlPanel() {
     let lastView = stateRef.current.activeView;
     const scheduledTimers = timers.current;
     const CAMPAIGN_POLL_MS = 30_000;
+    const reportRefreshError = (error: unknown) => {
+      if (!active || reportedError) return;
+      reportedError = true;
+      rawDispatch({
+        type: "set-notice",
+        notice: { kind: "error", title: "No se pudo actualizar el snapshot", message: error instanceof Error ? error.message : String(error) },
+      });
+    };
     const refresh = async (campaignsDue = false) => {
       if (refreshing) return;
       refreshing = true;
       try {
-         const activeView = stateRef.current.activeView;
-         const now = Date.now();
-         const wantCampaigns = campaignsDue || now - lastCampaignsAt >= CAMPAIGN_POLL_MS;
-         if (wantCampaigns) lastCampaignsAt = now;
-         const [deviceData, campaignData, tiktokData] = await Promise.all([
-           apiRequest<{ devices: DeviceSnapshot[] }>("/api/devices"),
-           wantCampaigns && (activeView === "facebook" || activeView === "history")
-             ? apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[] }>("/api/facebook/campaigns")
-             : Promise.resolve(null),
-           wantCampaigns && (activeView === "tiktok" || activeView === "history")
-             ? apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[]; configuration: TikTokConfiguration }>("/api/tiktok/campaigns")
-             : Promise.resolve(null),
-         ]);
-         if (!active) return;
-         const devices = mapDeviceSnapshots(deviceData.devices);
-         rawDispatch({ type: "hydrate-devices", devices });
-         if (campaignData) rawDispatch({ type: "hydrate-history", platform: "facebook", history: mapCampaignHistory(campaignData.history, devices) });
-         if (tiktokData) {
-           rawDispatch({ type: "hydrate-history", platform: "tiktok", history: mapCampaignHistory(tiktokData.history, devices) });
-           setTikTokConfiguration(tiktokData.configuration);
-         }
-         if (campaignData?.campaign) {
-           const incoming = mapCampaignSnapshot(campaignData.campaign);
-           rawDispatch({
-             type: "hydrate-facebook",
-             draft: preserveDirtyFacebookFields(stateRef.current.facebookDraft, incoming, dirtyFacebookFields.current),
-             force: dirtyFacebookFields.current.size > 0,
-           });
-         }
-         if (tiktokData?.campaign) {
-           const incoming = mapCampaignSnapshot(tiktokData.campaign);
-           rawDispatch({
-             type: "hydrate-tiktok",
-             draft: preserveDirtyFacebookFields(stateRef.current.tiktokDraft, incoming, dirtyTikTokFields.current),
-             force: dirtyTikTokFields.current.size > 0,
-           });
-         }
+        const activeView = stateRef.current.activeView;
+        const now = Date.now();
+        const wantCampaigns = campaignsDue || now - lastCampaignsAt >= CAMPAIGN_POLL_MS;
+        if (wantCampaigns) lastCampaignsAt = now;
+        const deviceData = await apiRequest<{ devices: DeviceSnapshot[] }>("/api/devices")
+          .catch((error: unknown) => {
+            reportRefreshError(error);
+            return null;
+          });
+        if (!active || !deviceData) return;
+        const devices = mapDeviceSnapshots(deviceData.devices);
+        rawDispatch({ type: "hydrate-devices", devices });
         reportedError = false;
-      } catch (error) {
-        if (active && !reportedError) {
-          reportedError = true;
+        const campaignData = wantCampaigns && (activeView === "facebook" || activeView === "history")
+          ? await apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[] }>("/api/facebook/campaigns")
+            .catch((error: unknown) => {
+              reportRefreshError(error);
+              return null;
+            })
+          : null;
+        const tiktokData = wantCampaigns && (activeView === "tiktok" || activeView === "history")
+          ? await apiRequest<{ campaign: FacebookSnapshot | null; history: FacebookSnapshot[]; configuration: TikTokConfiguration }>("/api/tiktok/campaigns")
+            .catch((error: unknown) => {
+              reportRefreshError(error);
+              return null;
+            })
+          : null;
+        if (!active) return;
+        if (campaignData) rawDispatch({ type: "hydrate-history", platform: "facebook", history: mapCampaignHistory(campaignData.history, devices) });
+        if (tiktokData) {
+          rawDispatch({ type: "hydrate-history", platform: "tiktok", history: mapCampaignHistory(tiktokData.history, devices) });
+          setTikTokConfiguration(tiktokData.configuration);
+        }
+        if (campaignData?.campaign) {
+          const incoming = mapCampaignSnapshot(campaignData.campaign);
           rawDispatch({
-            type: "set-notice",
-            notice: { kind: "error", title: "No se pudo actualizar el snapshot", message: error instanceof Error ? error.message : String(error) },
+            type: "hydrate-facebook",
+            draft: preserveDirtyFacebookFields(stateRef.current.facebookDraft, incoming, dirtyFacebookFields.current),
+            force: dirtyFacebookFields.current.size > 0,
+          });
+        }
+        if (tiktokData?.campaign) {
+          const incoming = mapCampaignSnapshot(tiktokData.campaign);
+          rawDispatch({
+            type: "hydrate-tiktok",
+            draft: preserveDirtyFacebookFields(stateRef.current.tiktokDraft, incoming, dirtyTikTokFields.current),
+            force: dirtyTikTokFields.current.size > 0,
           });
         }
       } finally {
@@ -1076,11 +1097,13 @@ export function ControlPanel() {
         rawDispatch(action);
         return;
       }
+      if (importingDevices.current) return;
+      importingDevices.current = true;
       void apiRequest<{ devices: DeviceSnapshot[] }>("/api/devices", {
         method: "POST",
         headers: { "content-type": "application/json", "x-control-panel-client": "control-panel" },
         body: JSON.stringify({ serials: parsed.serials }),
-      }).then(({ devices }) => {
+      }, Math.max(30_000, parsed.serials.length * 75_000 + 10_000)).then(({ devices }) => {
         rawDispatch({ type: "hydrate-devices", devices: mapDeviceSnapshots(devices) });
         rawDispatch({ type: "set-device-import", value: "" });
         rawDispatch({
@@ -1090,7 +1113,9 @@ export function ControlPanel() {
       }).catch((error: unknown) => rawDispatch({
         type: "set-notice",
         notice: { kind: "error", title: "No se pudieron incorporar los dispositivos", message: error instanceof Error ? error.message : String(error) },
-      }));
+      })).finally(() => {
+        importingDevices.current = false;
+      });
       return;
     }
 

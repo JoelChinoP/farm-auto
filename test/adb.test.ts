@@ -242,6 +242,32 @@ test("waits for a delayed safe URL handler to reach foreground", async () => {
   }
 });
 
+test("the foreground deadline is measured in wall-clock time, not only in sleeps", async () => {
+  const database = createDatabase();
+  const mock = recordingExecutor(() => ({
+    stdout: "mCurrentFocus=Window{42 u0 com.other.app/.Main}\n",
+    stderr: "",
+  }));
+  const client = new AdbClient({
+    database,
+    executor: mock.executor,
+    homeTimeoutMs: 30,
+    homePollIntervalMs: 5,
+    sleep: async () => {},
+  });
+
+  try {
+    const started = Date.now();
+    await assert.rejects(
+      client.waitForForeground("serial-1", "com.android.chrome"),
+      /foreground/,
+    );
+    assert.ok(Date.now() - started >= 20, "the deadline must elapse in real time even with instant commands");
+  } finally {
+    database.close();
+  }
+});
+
 test("opens only the fixed safe URL with ACTION_VIEW", async () => {
   const database = createDatabase();
   const mock = recordingExecutor();

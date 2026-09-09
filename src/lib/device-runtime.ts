@@ -208,7 +208,13 @@ export async function registerConnectedDevices(
   }
   if (new Set(deviceIds).size !== deviceIds.length) throw new TypeError("Los seriales ADB no pueden repetirse.");
   const inspections = [] as AdbDeviceInspection[];
-  for (const deviceId of deviceIds) inspections.push(await adb.inspectUnregisteredDevice(deviceId, { signal }));
+  for (const deviceId of deviceIds) {
+    try {
+      inspections.push(await adb.inspectUnregisteredDevice(deviceId, { signal }));
+    } catch (error) {
+      throw new Error(`Fallo la inspeccion de ${deviceId}: ${messageOf(error)}`);
+    }
+  }
 
   return database.transaction(() => {
     const profiles = database.prepare("SELECT * FROM device_profiles").all() as Array<Parameters<typeof mapProfile>[0]>;
@@ -614,6 +620,16 @@ function setPreparation(
 
 export function queueDevicePreparation(database: Database.Database, deviceId: string, operationId: string) {
   setPreparation(database, deviceId, operationId, "preparing", "En cola para comprobar Appium", null, Date.now());
+}
+
+export function cancelQueuedDevicePreparation(database: Database.Database, operationId: string, now = Date.now()) {
+  database.prepare(`
+    UPDATE device_preparations
+    SET status = 'failed', step = 'Cancelada antes de comenzar',
+        error = 'Cancelacion solicitada antes de que el worker iniciara la preparacion.',
+        updated_at = ?, completed_at = ?
+    WHERE operation_id = ? AND status = 'preparing'
+  `).run(now, now, operationId);
 }
 
 function updateOperationRuntime(

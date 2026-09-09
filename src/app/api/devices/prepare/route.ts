@@ -31,7 +31,7 @@ export async function POST(request: Request) {
         operationId: created.operation.id,
         maxAttempts: 1,
       });
-      queueDevicePreparation(database, deviceId, created.operation.id);
+      if (!created.replayed) queueDevicePreparation(database, deviceId, created.operation.id);
       return { created, job };
     }).immediate();
     const status = ["pending", "running"].includes(created.operation.status) ? 202 : 200;

@@ -1,5 +1,6 @@
 import { getDatabase } from "@/lib/database";
 import { AdbClient } from "@/lib/adb";
+import { appConfig } from "@/lib/config";
 import { clearDeviceList, listDeviceSnapshots, registerConnectedDevices, upsertDeviceProfile } from "@/lib/device-runtime";
 import { FacebookError, recordFacebookDeviceIdentity } from "@/lib/facebook";
 import { apiError, apiSuccess } from "@/lib/http";
@@ -15,15 +16,29 @@ export function GET() {
 export async function POST(request: Request) {
   const securityError = validateMutationRequest(request);
   if (securityError) return apiError(securityError.code, securityError.message, 403);
+  const body = await request.json() as Record<string, unknown>;
+  if (!Array.isArray(body.serials) || body.serials.some((serial) => typeof serial !== "string")) {
+    return apiError("DEVICE_IMPORT_INVALID", "serials debe ser una lista de textos.", 400);
+  }
+  const deadlineMs = appConfig.adbTimeoutMs * 8 * Math.max(1, body.serials.length);
+  const timeoutSignal = AbortSignal.timeout(deadlineMs);
+  const signal = request.signal ? AbortSignal.any([request.signal, timeoutSignal]) : timeoutSignal;
   try {
-    const body = await request.json() as Record<string, unknown>;
-    if (!Array.isArray(body.serials) || body.serials.some((serial) => typeof serial !== "string")) {
-      return apiError("DEVICE_IMPORT_INVALID", "serials debe ser una lista de textos.", 400);
-    }
     const database = getDatabase();
-    const profiles = await registerConnectedDevices(database, new AdbClient({ database }), body.serials);
+    const profiles = await registerConnectedDevices(
+      database,
+      new AdbClient({ database, timeoutMs: appConfig.adbTimeoutMs }),
+      body.serials,
+      signal,
+    );
     return apiSuccess({ profiles, devices: listDeviceSnapshots(database) });
   } catch (error) {
+    if (signal.aborted) {
+      const message = request.signal?.aborted
+        ? "La incorporacion fue cancelada desde el panel."
+        : `La incorporacion excedio el plazo de ${Math.round(deadlineMs / 1000)} s.`;
+      return apiError("DEVICE_IMPORT_FAILED", message, 400);
+    }
     return apiError("DEVICE_IMPORT_FAILED", error instanceof Error ? error.message : String(error), 400);
   }
 }

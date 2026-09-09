@@ -310,51 +310,23 @@ export class AppiumFacebookMobileDriver implements FacebookMobileDriver {
     signal?: AbortSignal,
     contentKind?: FacebookContentKind,
   ) {
-    if (accountResourceId === STRUCTURAL_SELECTOR
-      && postContainerResourceId === STRUCTURAL_SELECTOR
-      && postUrlResourceId === STRUCTURAL_SELECTOR) {
-      const deviceId = this.#devices.get(sessionId);
-      if (!deviceId) throw new FacebookError("FACEBOOK_ACCOUNT_MISMATCH", "No se pudo vincular la sesion con el dispositivo controlado.", 422);
-      await this.#adb.execute(deviceId, ["shell", "am", "force-stop", FACEBOOK_APP_PACKAGE], { signal });
-      await this.#adb.launchApp(deviceId, FACEBOOK_APP_PACKAGE, { signal });
-      let profileButtons = await this.#appium.findElements(sessionId, "accessibility id", "Ir al perfil", { signal });
-      if (!profileButtons.length) {
-        await this.#appium.findElements(
-          sessionId,
-          "-android uiautomator",
-          'new UiScrollable(new UiSelector().resourceId("android:id/list")).scrollToBeginning(10)',
-          { signal },
-        );
-        profileButtons = await this.#appium.findElements(sessionId, "accessibility id", "Ir al perfil", { signal });
-      }
-      if (profileButtons.length !== 1) throw new FacebookError("FACEBOOK_ACCOUNT_AMBIGUOUS", "No existe un unico acceso al perfil de la cuenta activa.", 422);
-      await this.#appium.clickElement(sessionId, profileButtons[0].elementId, { signal });
+    // La identidad estructural ya esta ligada al dispositivo; openPost abre directamente el objetivo en Lite.
+    if (accountResourceId !== STRUCTURAL_SELECTOR
+      || postContainerResourceId !== STRUCTURAL_SELECTOR
+      || postUrlResourceId !== STRUCTURAL_SELECTOR) {
       await this.#waitFor(async () => {
-        const accounts = await this.#appium.findElements(
-          sessionId,
-          "xpath",
-          `//*[normalize-space(@text) = ${xpathLiteral(visibleText(account))} or normalize-space(@content-desc) = ${xpathLiteral(visibleText(account))}]`,
-          { signal },
-        );
+        const accounts = await this.#appium.findElements(sessionId, "id", accountResourceId, { signal });
         if (accounts.length > 1) throw new FacebookError("FACEBOOK_ACCOUNT_AMBIGUOUS", "El indicador de cuenta activa es ambiguo.", 422);
-        return accounts[0] ?? null;
+        if (!accounts[0]) return null;
+        const [text, description] = await Promise.all([
+          this.#appium.getElementText(sessionId, accounts[0].elementId, { signal }),
+          this.#appium.getElementAttribute(sessionId, accounts[0].elementId, "content-desc", { signal }),
+        ]);
+        if (![text, description].some((value) => value !== null && normalized(value) === normalized(account))) {
+          throw new FacebookError("FACEBOOK_ACCOUNT_MISMATCH", "El indicador de cuenta activa no coincide con la cuenta controlada.", 422);
+        }
+        return true;
       }, "el indicador estable de la cuenta controlada", signal);
-      await this.#appium.executeScript(sessionId, "mobile: deepLink", [{ url: postUrl, package: FACEBOOK_APP_PACKAGE }], { signal });
-      await this.#adb.waitForForeground(deviceId, FACEBOOK_APP_PACKAGE, { signal });
-    } else {
-    await this.#waitFor(async () => {
-      const accounts = await this.#appium.findElements(sessionId, "id", accountResourceId, { signal });
-      if (accounts.length > 1) throw new FacebookError("FACEBOOK_ACCOUNT_AMBIGUOUS", "El indicador de cuenta activa es ambiguo.", 422);
-      if (!accounts[0]) return null;
-      const [text, description] = await Promise.all([
-        this.#appium.getElementText(sessionId, accounts[0].elementId, { signal }),
-        this.#appium.getElementAttribute(sessionId, accounts[0].elementId, "content-desc", { signal }),
-      ]);
-      if (![text, description].some((value) => value !== null && normalized(value) === normalized(account))) {
-        throw new FacebookError("FACEBOOK_ACCOUNT_MISMATCH", "El indicador de cuenta activa no coincide con la cuenta controlada.", 422);
-      }
-      return true;
-    }, "el indicador estable de la cuenta controlada", signal);
     }
     this.#targets.set(sessionId, {
       text: targetText,

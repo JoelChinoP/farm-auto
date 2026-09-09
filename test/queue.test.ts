@@ -9,7 +9,12 @@ import test from "node:test";
 import Database from "better-sqlite3";
 
 import { openDatabase } from "../src/lib/database.ts";
-import { claimRuntimeOwnership } from "../src/lib/device-runtime.ts";
+import {
+  claimRuntimeOwnership,
+  queueDevicePreparation,
+  upsertDeviceProfile,
+} from "../src/lib/device-runtime.ts";
+import { calculateHardwareId } from "../src/lib/adb.ts";
 import {
   completeOperation,
   createOperation,
@@ -193,6 +198,39 @@ test("cancellation is idempotent and prevents pending claims", async () => {
     assert.equal(requestJobCancellation(database, queued.id, 200).completedAt, 100);
     assert.equal(getOperation(database, operation.id)?.status, "cancelled");
     assert.equal(claimNextJob(database, "worker", 300), null);
+
+    database.close();
+  });
+});
+
+test("cancelling a pending preparation finalizes its persisted device state", async () => {
+  await withDatabase((filename) => {
+    const database = openDatabase(filename);
+    upsertDeviceProfile(database, {
+      hardwareId: calculateHardwareId("physical-1", "android-1"),
+      deviceId: "device-1",
+      alias: "Equipo 1",
+      physicalOrder: 1,
+      systemPort: 8200,
+    });
+    const operation = createOperation(database, {
+      kind: "device.prepare",
+      idempotencyKey: randomUUID(),
+      request: { deviceId: "device-1" },
+      deviceId: "device-1",
+    }).operation;
+    queueDevicePreparation(database, "device-1", operation.id);
+    const queued = enqueueJob(database, "device.prepare", { deviceId: "device-1" }, {
+      operationId: operation.id,
+      maxAttempts: 1,
+    });
+
+    assert.equal(requestJobCancellation(database, queued.id, 100).status, "cancelled");
+    const preparation = database.prepare(
+      "SELECT status, completed_at FROM device_preparations WHERE operation_id = ?",
+    ).get(operation.id) as { status: string; completed_at: number | null };
+    assert.equal(preparation.status, "failed");
+    assert.ok(preparation.completed_at !== null);
 
     database.close();
   });

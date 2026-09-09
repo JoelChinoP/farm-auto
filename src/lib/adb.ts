@@ -338,14 +338,12 @@ export class AdbClient {
   }
 
   async waitForForeground(serial: string, packageName: string, options: AdbCommandOptions = {}) {
-    let elapsed = 0;
+    const deadline = Date.now() + this.homeTimeoutMs;
     while (true) {
       const foreground = await this.getForeground(serial, options);
       if (foreground?.packageName === packageName) return foreground;
-      if (elapsed >= this.homeTimeoutMs) throw new Error(`Android no confirmo ${packageName} en foreground en ${serial}.`);
-      const wait = Math.min(this.homePollIntervalMs, this.homeTimeoutMs - elapsed);
-      await this.sleep(wait, options.signal);
-      elapsed += wait;
+      if (Date.now() >= deadline) throw new Error(`Android no confirmo ${packageName} en foreground en ${serial}.`);
+      await this.sleep(Math.min(this.homePollIntervalMs, Math.max(1, deadline - Date.now())), options.signal);
     }
   }
 

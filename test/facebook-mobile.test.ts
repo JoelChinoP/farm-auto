@@ -834,29 +834,21 @@ test("the Appium driver scopes target controls to the verified post container", 
   await assert.rejects(mobile.prepareLike("session"), /URL efectiva autorizada/i);
 });
 
-test("the structural Facebook fallback verifies the active profile and scrolls the target post before reading Like state", async () => {
-  let screen: "feed" | "profile" | "target" = "target";
+test("the structural Facebook fallback uses the direct Lite link and scrolls the target post before reading Like state", async () => {
+  let deepLinks = 0;
   let postControlsVisible = false;
   const adb = {
-    execute: async () => undefined,
-    launchApp: async (_deviceId: string, packageName: string) => {
-      assert.equal(packageName, "com.facebook.lite");
-      screen = "feed";
-      return { packageName, activityName: ".Main" };
-    },
     getForeground: async () => ({ packageName: "com.facebook.lite", activityName: ".Main" }),
-    waitForForeground: async () => ({ packageName: "com.facebook.lite", activityName: ".Main" }),
   } as unknown as AdbClient;
   const appium = {
     activateApp: async (_sessionId: string, packageName: string) => assert.equal(packageName, "com.facebook.lite"),
     executeScript: async (_sessionId: string, _script: string, args: Array<{ package: string }>) => {
       assert.equal(args[0].package, "com.facebook.lite");
-      screen = "target";
+      deepLinks += 1;
     },
     findElements: async (_sessionId: string, using: string, value: string) => {
-      if (using === "accessibility id" && value === "Ir al perfil" && screen === "feed") return [{ elementId: "profile-link" }];
-      if (using === "xpath" && value.includes(ACCOUNT) && screen === "profile") return [{ elementId: "account" }];
-      if (using === "xpath" && value.includes(TARGET_TEXT) && value.includes("ancestor::") && screen === "target") return [{ elementId: "target-post" }];
+      if (using === "accessibility id" && value === "Ir al perfil") assert.fail("No debe abrir el perfil");
+      if (using === "xpath" && value.includes(TARGET_TEXT) && value.includes("ancestor::")) return [{ elementId: "target-post" }];
       if (using === "-android uiautomator") {
         postControlsVisible = true;
         return [];
@@ -872,7 +864,6 @@ test("the structural Facebook fallback verifies the active profile and scrolls t
     getElementAttribute: async (_sessionId: string, elementId: string) => (
       elementId === "like" ? 'Botón "Me gusta" presionado. Toca dos veces para cambiar la reacción.' : null
     ),
-    clickElement: async (_sessionId: string, elementId: string) => { if (elementId === "profile-link") screen = "profile"; },
   } as unknown as AppiumClient;
   const mobile = new AppiumFacebookMobileDriver(adb, appium, {
     composer: "@accessibility",
@@ -892,6 +883,7 @@ test("the structural Facebook fallback verifies the active profile and scrolls t
     TARGET_TEXT,
   );
   assert.equal(await mobile.readLikeState("session"), true);
+  assert.equal(deepLinks, 1);
   assert.equal(postControlsVisible, true);
 });
 

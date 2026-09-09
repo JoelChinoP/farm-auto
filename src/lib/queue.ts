@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { EFFECT_PHASES } from "./domain.ts";
 import type { EffectPhase } from "./domain.ts";
-import { completeDeviceRetirementIfIdle } from "./device-runtime.ts";
+import { cancelQueuedDevicePreparation, completeDeviceRetirementIfIdle } from "./device-runtime.ts";
 import { IdempotencyConflictError, stableJson } from "./operations.ts";
 
 export type JobStatus = "pending" | "running" | "succeeded" | "failed" | "cancelled" | "outcome_unknown";
@@ -484,6 +484,9 @@ export function requestJobCancellation(database: Database.Database, id: string, 
         SET status = 'cancelled', cancellation_requested_at = ?, updated_at = ?, completed_at = ?
         WHERE id = ? AND status = 'pending'
       `).run(now, now, now, id);
+      if (job.kind === "device.prepare" && job.operationId) {
+        cancelQueuedDevicePreparation(database, job.operationId, now);
+      }
     } else if (job.cancellationRequestedAt === null) {
       database.prepare("UPDATE jobs SET cancellation_requested_at = ?, updated_at = ? WHERE id = ?")
         .run(now, now, id);

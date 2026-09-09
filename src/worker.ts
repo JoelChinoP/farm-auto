@@ -85,6 +85,14 @@ export async function runWorker(options: WorkerDependencies = {}) {
   if (!claimRuntimeOwnership(database, owner, process.pid, Date.now(), appConfig.workerLeaseMs)) {
     throw new Error("Otro worker de Farm Appium mantiene el lease activo.");
   }
+  const releaseOwnershipOnExit = () => {
+    try {
+      releaseRuntimeOwnership(database, owner);
+    } catch {
+      // Process exit cannot wait or recover from a closed database.
+    }
+  };
+  process.once("exit", releaseOwnershipOnExit);
   // ponytail: keeps Edge warm for the first extraction; idle cost is RAM until the worker exits.
   void facebookBrowser.warmup?.();
   const leaseController = new AbortController();
@@ -101,7 +109,6 @@ export async function runWorker(options: WorkerDependencies = {}) {
       leaseController.abort(error);
     }
   }, Math.max(250, Math.floor(appConfig.workerLeaseMs / 3)));
-  heartbeat.unref();
 
   try {
     await recoverOwnedSessions(
@@ -132,6 +139,14 @@ export async function runWorker(options: WorkerDependencies = {}) {
     let nextInventoryAt = Date.now() + 5_000;
     const activeDeviceJobs = new Set<Promise<void>>();
     const activeAiJobs = new Set<Promise<void>>();
+    const activeSupportJobs = new Set<Promise<void>>();
+    const trackJob = (set: Set<Promise<void>>, running: Promise<void>) => {
+      set.add(running);
+      void running.then(
+        () => set.delete(running),
+        () => set.delete(running),
+      );
+    };
 
     const runJob = async (job: NonNullable<ReturnType<typeof claimNextJob>>) => {
       const jobController = new AbortController();
@@ -230,28 +245,29 @@ export async function runWorker(options: WorkerDependencies = {}) {
         const excludeKinds = [
           ...(activeDeviceJobs.size >= deviceConcurrency ? ["assignment.execute", "device.prepare"] : []),
           ...(activeAiJobs.size >= aiConcurrency ? ["comments.generate"] : []),
+          ...(activeSupportJobs.size >= 1 ? ["campaign.create", "post.extract"] : []),
         ];
         const job = claimNextJob(database, owner, Date.now(), { excludeKinds });
         if (!job) {
-          const activeJobs = [...activeDeviceJobs, ...activeAiJobs];
+          const activeJobs = [...activeDeviceJobs, ...activeAiJobs, ...activeSupportJobs];
           if (activeJobs.length) {
-            await Promise.race(activeJobs);
+            await Promise.race([...activeJobs, sleep(appConfig.workerPollMs, signal)]);
             continue;
           }
           if (options.once) break;
           await sleep(appConfig.workerPollMs, signal);
           continue;
         }
-        if (["assignment.execute", "device.prepare", "comments.generate"].includes(job.kind) && !options.once) {
-          const running = runJob(job);
-          const activeJobs = ["assignment.execute", "device.prepare"].includes(job.kind) ? activeDeviceJobs : activeAiJobs;
-          activeJobs.add(running);
-          void running.then(
-            () => activeJobs.delete(running),
-            () => activeJobs.delete(running),
-          );
-        } else {
+        if (options.once) {
           await runJob(job);
+          continue;
+        }
+        if (["assignment.execute", "device.prepare"].includes(job.kind)) {
+          trackJob(activeDeviceJobs, runJob(job));
+        } else if (job.kind === "comments.generate") {
+          trackJob(activeAiJobs, runJob(job));
+        } else {
+          trackJob(activeSupportJobs, runJob(job));
         }
       } while (!options.once);
     } finally {
@@ -261,10 +277,14 @@ export async function runWorker(options: WorkerDependencies = {}) {
     clearInterval(heartbeat);
     try {
       await inventoryInFlight;
-      await facebookBrowser.close?.();
     } finally {
-      releaseRuntimeOwnership(database, owner);
+      try {
+        releaseRuntimeOwnership(database, owner);
+      } finally {
+        process.off("exit", releaseOwnershipOnExit);
+      }
     }
+    await facebookBrowser.close?.();
   }
 }
 
