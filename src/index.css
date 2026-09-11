@@ -1,0 +1,37 @@
+:root {
+  --ink: #1e231b;
+  --paper: #e9e4d8;
+  --panel: #f6f2e8;
+  --panel-strong: #e0dacd;
+  --line: #b8b3a6;
+  --line-dark: #64655d;
+  --muted: #595c52;
+  --signal: #d7f542;
+  --danger: #9a3029;
+  --sans: "Trebuchet MS", "Segoe UI", sans-serif;
+  --mono: "Courier New", monospace;
+  color: var(--ink);
+  background: var(--paper);
+  font-family: var(--sans);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+
+* { box-sizing: border-box; }
+body { min-width: 320px; margin: 0; }
+button, input, textarea { font: inherit; }
+button, a, input, textarea, summary { -webkit-tap-highlight-color: transparent; }
+a { color: inherit; text-underline-offset: 4px; }
+button, input, textarea, a, summary { touch-action: manipulation; }
+:focus-visible { outline: 3px solid var(--ink); outline-offset: 4px; }
+::selection { background: var(--signal); color: var(--ink); }
+button:disabled, input:disabled { cursor: not-allowed; }
+h1, h2, p { margin-top: 0; }
+fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+code { font-family: var(--mono); overflow-wrap: anywhere; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
+}

@@ -1,79 +1,72 @@
-# Farm Appium
+# Farm
 
-Base local para reconstruir el panel descrito en `ANALISIS_FARM_AUTO.md`.
+Panel local React + FastAPI para enviar contenido a GenFarmer.
+Dispositivos desde GenFarmer, contexto publico de Facebook y una unica tabla SQLite
+para horarios y acuses. El historial de acciones se consulta en GenFarmer.
 
-## Inicio
+## Preparacion
 
-```bash
+Python 3.11+ y Node compatible con Vite 8 (20.19+ o 22.12+).
+
+```sh
 npm install
-npm run appium:doctor
+python -m venv backend/.venv
 ```
 
-Ejecuta cada proceso en una terminal separada:
+Windows PowerShell:
 
-```bash
-npm run appium:server
-npm run worker
-npm run dev
+```powershell
+backend\.venv\Scripts\python -m pip install -r backend/requirements.txt
+backend\.venv\Scripts\python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-El worker es obligatorio para preparación, extracción, generación y ejecuciones Facebook/TikTok. Usa un único claim transaccional en SQLite, procesa dispositivos diferentes en paralelo y mantiene secuencia estricta dentro de cada dispositivo. `WORKER_DEVICE_CONCURRENCY` limita el paralelismo móvil; `DEEPSEEK_CONCURRENCY` parte de 2 y admite hasta 4 solicitudes. `SIGINT`/`SIGTERM` abortan el trabajo, esperan cleanup e inventario ADB y fuerzan la salida tras `WORKER_SHUTDOWN_TIMEOUT_MS` para no dejar workers zombies; el siguiente arranque recupera cualquier estado persistido pendiente.
+Linux:
 
-Para generación configura `API_DEEPSEEK`. La primera extracción sin cookie `c_user` abre Microsoft Edge con un perfil dedicado fuera del repositorio; inicia sesión manualmente y pulsa `Reintentar extracción`. Farm Appium no automatiza login, 2FA, CAPTCHA ni checkpoints.
-
-La automatización móvil de Facebook requiere Facebook Lite (`com.facebook.lite`). Para habilitarla configura `FACEBOOK_ACCOUNT_RESOURCE_ID` con el resource-id del indicador de cuenta activa, `FACEBOOK_POST_CONTAINER_RESOURCE_ID` con el contenedor de una publicación y `FACEBOOK_POST_URL_RESOURCE_ID` con el permalink/URL canónico expuesto dentro de ese contenedor. Facebook Lite 527 todavía expone internamente el namespace de recursos `com.facebook.katana`; si esos IDs aparecen ofuscados como `(name removed)`, usa `@accessibility` en los siete `FACEBOOK_*_RESOURCE_ID`: el adaptador verificará el perfil propio, el texto objetivo único y controles accesibles acotados al post. Si se habilitan comentarios, configura también `FACEBOOK_COMMENT_COMPOSER_RESOURCE_ID`, `FACEBOOK_COMMENT_EDITOR_RESOURCE_ID`, `FACEBOOK_COMMENT_SUBMIT_RESOURCE_ID` y `FACEBOOK_COMMENT_RESULT_CONTAINER_RESOURCE_ID`. La cuenta esperada se guarda por dispositivo desde **Dispositivos > Editar**; `FACEBOOK_CONTROLLED_ACCOUNT` solo sirve como fallback para ejecuciones 1×1 antiguas.
-
-La UI acepta de 1 a 10 publicaciones, exige selección explícita de dispositivos y muestra la matriz exacta `N × M` antes de autorizarla. El worker vuelve a verificar hardware, paquete, foreground, cuenta, URL efectiva y texto objetivo, y busca cada control dentro de la estructura objetivo; no usa coordenadas. Las etiquetas accesibles de Like y del disparador de comentarios pueden calibrarse con `FACEBOOK_*_LABELS` usando `|` como separador. Para incorporar un equipo nuevo, su serial debe estar conectado y autorizado por ADB para registrar la identidad física antes de persistir el perfil.
-
-Un Like ya activo no se pulsa. Cada posible efecto tiene un checkpoint previo. Si un comentario pudo enviarse pero no puede confirmarse, la asignación queda `outcome_unknown`, conserva screenshot, page source y metadatos, y solo puede continuar tras marcar manualmente `sent` o `not_sent` en Historial. Nunca se reintenta automáticamente.
-
-TikTok post usa un adaptador móvil propio y admite de 1 a 10 publicaciones × los dispositivos seleccionados (`N × M`): cada equipo procesa cada publicación, con contexto manual por post y una cuenta controlada en `TIKTOK_CONTROLLED_ACCOUNT`. La confirmación muestra las asignaciones exactas y sus comentarios antes de autorizar efectos públicos. Sus resource IDs y etiquetas se configuran con `TIKTOK_*`; `TIKTOK_PUBLIC_EFFECTS_ENABLED=false` mantiene bloqueados Like y comentario hasta validar los selectores en contenido controlado.
-
-TikTok Live es un flujo independiente de tap tap. Admite de 1 a 10 URLs `/@usuario/live` × los dispositivos seleccionados, 1–50 rondas por ejecución y coordenadas X/Y de 0–5000; guarda un checkpoint antes de cada doble toque y no reintenta una ronda incierta. La calibración física X/Y se guarda por dispositivo en SQLite desde **Guardar calibración física** y se reutiliza al volver al panel, sin tener que editar las coordenadas. `TIKTOK_LIVE_CALIBRATED_DEVICE_ID`, `TIKTOK_LIVE_CALIBRATED_X` y `TIKTOK_LIVE_CALIBRATED_Y` solo sirven como respaldo para un equipo sin calibración persistida. **El chat de TikTok Live no está implementado.** `TIKTOK_LIVE_EFFECTS_ENABLED=false` mantiene bloqueados los gestos por defecto.
-
-Orden pendiente de pruebas físicas, siempre con cuentas y contenido controlados y autorización explícita: primero validar TikTok Live y su calibración por dispositivo; después probar TikTok post con **2 publicaciones × 5 dispositivos = 10 asignaciones**. Mantener ambos flags de efectos en `false` por defecto; estas pruebas no se consideran completadas por pasar los tests unitarios.
-
-## OpenCode
-
-`opencode.json` habilita permisos sin confirmacion y configura:
-
-- Ponytail 4.9.0.
-- Context7 remoto.
-- Android MCP sobre ADB.
-- Appium MCP oficial con UiAutomator2.
-- Playwright MCP para verificar el panel web.
-
-OpenCode reenvia `ANDROID_HOME` y `JAVA_HOME` desde el entorno del proceso con `{env:...}`. No hay rutas absolutas dependientes del sistema operativo. `adb` debe estar en `PATH`; `ADB_PATH` puede definirse para el runtime si hace falta.
-
-`CAPABILITIES_CONFIG` y `SCREENSHOTS_DIR` son opcionales para Appium MCP. Si se usan, deben definirse en el entorno con rutas validas para la maquina; `.appium/capabilities.json` sirve como base. Reinicia OpenCode despues de cambiar la configuracion, plugins, MCPs o skills.
-
-## Estructura inicial
-
-```text
-.opencode/skills/       instrucciones especializadas para agentes
-.appium/                capacidades MCP locales
-src/app/                UI y route handlers Next.js
-src/lib/                configuracion, SQLite y cola
-test/                   pruebas unitarias sin framework adicional
-data/                   SQLite local ignorado por Git
+```sh
+backend/.venv/bin/python -m pip install -r backend/requirements.txt
+backend/.venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-La cola y el worker único usan SQLite; no se agrega Redis ni WebdriverIO.
+En otra terminal, `npm run dev` abre el panel en `http://127.0.0.1:5173`.
+Vite delega `/api` al backend. `npm run build` y `npm run preview` permiten comprobar
+el bundle de produccion, tambien con el backend encendido.
 
-## Convivencia con GenFarmer en Windows
+## GenFarmer
 
-En Windows, GenFarmer es una herramienta externa de inspeccion y comandos ADB. Farm Appium no inicia, cierra, reinicia, sondea ni administra su proceso. Nunca ejecuta `adb kill-server`; toda operacion ADB usa `-s <serial>`. Solo cierra sesiones Appium creadas por Farm Appium y utiliza un `systemPort` exclusivo por dispositivo.
+1. Iniciar GenFarmer en el mismo equipo, con la sesion operativa abierta.
+2. Revisar `backend/.env.example` y ajustar `backend/.env`. Puerto inicial: `55554`.
+3. Importar `backend/automations/open-content.genfarm`, `facebook.genfarm` y
+   `tiktok.genfarm` desde GenFarmer. Configurar sus IDs reales en
+   `GENFARMER_OPEN_APP_ID`, `GENFARMER_FACEBOOK_APP_ID` y `GENFARMER_TIKTOK_APP_ID`.
+4. Verificar la API instalada y `GENFARMER_EXPLICIT_START` antes de usar acciones.
+   Reiniciar el backend al cambiar configuracion.
 
-- Next.js y Appium permanecen en loopback.
-- La integracion futura usara `appium:suppressKillServer=true`.
-- Nunca se ejecutara `taskkill` por nombre ni se cerraran procesos Edge o Chrome ajenos.
-- La UI solo afirmara `Disponible para Farm Appium`, no disponibilidad global.
-- Los puertos Appium deben reservarse sin colisionar con GenFarmer.
-- El aborto global solo afecta campañas, tareas y sesiones propias.
-- GenFarmer puede permanecer abierto durante toda la operacion.
+No se importa nada ni se inicia una automatizacion al abrir la web. Sin configurar
+los workflows se pueden consultar dispositivos y extraer contexto, pero no enviar.
 
-## Verificacion
+## Uso
 
-```bash
-npm run check
+- **Dispositivos:** refleja GenFarmer; no hay altas, bajas ni preparacion local.
+- **Facebook / TikTok:** elegir equipos, URLs, acciones, revisar texto y enviar o
+  programar. Los flags son independientes; sin flags solo se abre el contenido.
+- **Envios:** `Programado`, `Enviando`, `Enviado`, `No enviado`, `Por verificar` o
+  `Cancelado`. Pulsar **Actualizar** para consultar cambios.
+
+**Enviado no significa accion completada.** Consultar resultados y errores de
+ejecucion en GenFarmer mediante Task ID / Run ID. No se reintentan envios inciertos.
+Los horarios sobreviven a reinicios; el backend debe estar encendido para enviarlos.
+Usar una sola instancia, sin `--reload` durante envios.
+
+## Comprobaciones
+
+```sh
+npm run lint
+npm run typecheck
+npm run build
+python -m compileall -x '/\.venv/' backend/app
+python backend/check.py
 ```
+
+`check.py` usa SQLite temporal y un GenFarmer simulado: nunca contacta telefonos.
+Los paquetes y el contrato deben validarse en el servidor Windows antes de acciones
+reales. Reglas y limites: [IMPLEMENTATION_CONTRACT.md](IMPLEMENTATION_CONTRACT.md).

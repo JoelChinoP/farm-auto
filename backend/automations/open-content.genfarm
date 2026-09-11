@@ -1,0 +1,66 @@
+{
+  "id": "farm-open-content",
+  "userId": 0,
+  "name": "Farm - Abrir contenido",
+  "description": "Abre HTTPS en Facebook Lite o TikTok, sin interacciones. Esquema historico; pendiente de importar y validar en GenFarmer Windows. No requiere peticiones al servicio desde el script.",
+  "logo": null,
+  "version": "1.0.0",
+  "input": [
+    {
+      "id": "input-content-url", "type": "input", "name": "Enlace de contenido",
+      "options": {
+        "variable": { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
+        "hideLabel": false, "value": "", "placeholder": "https://...", "width": null, "height": null, "labelWidth": 190,
+        "maxLength": 2048, "minLength": 1, "disabled": false, "showCount": false
+      }
+    },
+    {
+      "id": "select-package-name", "type": "select", "name": "Aplicacion",
+      "options": {
+        "variable": { "id": "package_name", "name": "packageName", "label": "Paquete Android", "value": "com.facebook.lite", "secret": false },
+        "hideLabel": false, "value": "com.facebook.lite",
+        "options": [ { "label": "Facebook Lite", "value": "com.facebook.lite" }, { "label": "TikTok", "value": "com.zhiliaoapp.musically" } ],
+        "isMultiple": false, "placeholder": "Aplicacion", "width": null, "height": null, "labelWidth": 190
+      }
+    }
+  ],
+  "script": {
+    "id": "farm-open-content", "name": "Farm - Abrir contenido",
+    "description": "Solo abrir. Error o timeout sin ruta de exito; no reintenta el intent.", "version": "1.0.0",
+    "variables": [
+      { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
+      { "id": "package_name", "name": "packageName", "label": "Paquete Android", "value": "com.facebook.lite", "secret": false }
+    ],
+    "flow": {
+      "nodes": [
+        {
+          "id": "open_start", "type": "input", "position": { "x": 60, "y": 180 },
+          "data": { "action": "Start", "options": {}, "successNode": "open_run", "failNode": null },
+          "label": "Start", "sourcePosition": "right", "targetPosition": "left", "deletable": false, "class": ""
+        },
+        {
+          "id": "open_run", "type": "custom", "position": { "x": 300, "y": 180 },
+          "data": {
+            "icon": "actionEval", "action": "Javascript",
+            "options": {
+              "script": "const v = this.variables;\nconst deadline = Date.now() + 40000;\nconst call = async fn => {\n  const remaining = Math.min(8000, deadline - Date.now());\n  if (remaining <= 0) throw new Error('Timeout');\n  let timer;\n  try { return await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), remaining); })]); }\n  finally { clearTimeout(timer); }\n};\ntry {\n  const packages = ['com.facebook.lite', 'com.zhiliaoapp.musically'];\n  if (!packages.includes(v.packageName) || typeof v.contentUrl !== 'string' || v.contentUrl.length > 2048 || /[\\u0000-\\u0020\\u007f]/.test(v.contentUrl)) throw new Error('Entrada invalida');\n  const url = new URL(v.contentUrl);\n  const domain = v.packageName === 'com.facebook.lite' ? 'facebook.com' : 'tiktok.com';\n  const hostOK = url.hostname === domain || url.hostname.endsWith('.' + domain) || (v.packageName === 'com.facebook.lite' && url.hostname === 'fb.watch');\n  if (url.protocol !== 'https:' || url.username || url.password || url.port || !hostOK) throw new Error('URL invalida');\n  const quote = s => \"'\" + s.replace(/'/g, \"'\\\"'\\\"'\") + \"'\";\n  const output = await call(() => this.clientAdb.shell('am start -W -a android.intent.action.VIEW -d ' + quote(v.contentUrl) + ' -p ' + quote(v.packageName)));\n  if (typeof output !== 'string' || !/^Status:\\s*ok\\s*$/m.test(output) || /Error:|Exception|unable to resolve/i.test(output)) throw new Error('Intent no confirmado');\n  const until = Date.now() + 12000;\n  do {\n    const { xmlDump } = await call(() => this.clientUiAutomator.dumpWindowHierarchy());\n    if (typeof xmlDump !== 'string' || !xmlDump.includes('</hierarchy>')) throw new Error('Jerarquia invalida');\n    const selector = \"(//*[@package='\" + v.packageName + \"' and @enabled='true' and not(@visible-to-user='false') and @bounds and @bounds!='[0,0][0,0]' and not(ancestor::*[@visible-to-user='false'])])[1]\";\n    if (await call(() => this.clientUiAutomator.xpath(selector, xmlDump))) return;\n    await new Promise(resolve => setTimeout(resolve, 400));\n  } while (Date.now() < until);\n  throw new Error('Aplicacion no visible');\n} catch {\n  throw new Error('No se confirmo la apertura. Revisar entrada, respuesta ADB e interfaz; no se reintento.');\n}",
+              "disabled": false, "nodeSleep": "0", "nodeTimeout": "50", "timeoutNextNode": "failNode",
+              "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
+            },
+            "successNode": "open_stop", "failNode": null
+          },
+          "label": "Validar y abrir", "sourcePosition": "right", "targetPosition": "left", "class": ""
+        },
+        {
+          "id": "open_stop", "type": "custom", "position": { "x": 540, "y": 180 },
+          "data": { "icon": "actionStop", "action": "Stop", "options": {}, "successNode": null, "failNode": null },
+          "label": "Stop", "sourcePosition": "right", "targetPosition": "left", "class": ""
+        }
+      ],
+      "edges": [
+        { "id": "edge-open-start-run", "type": "custom", "source": "open_start", "target": "open_run", "sourceHandle": "open_start", "targetHandle": "success", "data": { "sourceHandle": "open_start", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-open_start target-open_run" },
+        { "id": "edge-open-run-stop", "type": "custom", "source": "open_run", "target": "open_stop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-open_run target-open_stop" }
+      ]
+    }
+  }
+}

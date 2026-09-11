@@ -1,0 +1,150 @@
+{
+  "id": "farm-facebook", "userId": 0, "name": "Farm - Facebook Lite",
+  "description": "Acciones independientes; todos false solo abre. Share publica mediante Compartir ahora (publico). Selectores XPath editables en script.variables, ES/EN conservadores. Texto de comentario de una linea, hasta 500 caracteres. Pendiente de validacion en Windows: importador, Loop 1..0, respuesta ADB string y selectores. Confirmacion solo por UI, no por servidor; no repetir automaticamente un resultado incierto.",
+  "logo": null, "version": "1.0.0",
+  "input": [
+    {
+      "id": "input-content-url", "type": "input", "name": "Enlace de contenido",
+      "options": {
+        "variable": { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
+        "hideLabel": false, "value": "", "placeholder": "https://www.facebook.com/...", "width": null, "height": null, "labelWidth": 190,
+        "maxLength": 2048, "minLength": 1, "disabled": false, "showCount": false
+      }
+    },
+    {
+      "id": "select-like", "type": "select", "name": "Like",
+      "options": {
+        "variable": { "id": "like", "name": "like", "label": "Like", "value": false, "secret": false },
+        "hideLabel": false, "value": false, "options": [ { "label": "No", "value": false }, { "label": "Si", "value": true } ],
+        "isMultiple": false, "placeholder": "Like", "width": null, "height": null, "labelWidth": 190
+      }
+    },
+    {
+      "id": "select-comment", "type": "select", "name": "Comentar",
+      "options": {
+        "variable": { "id": "comment", "name": "comment", "label": "Comentar", "value": false, "secret": false },
+        "hideLabel": false, "value": false, "options": [ { "label": "No", "value": false }, { "label": "Si", "value": true } ],
+        "isMultiple": false, "placeholder": "Comentar", "width": null, "height": null, "labelWidth": 190
+      }
+    },
+    {
+      "id": "select-share", "type": "select", "name": "Compartir",
+      "options": {
+        "variable": { "id": "share", "name": "share", "label": "Compartir", "value": false, "secret": false },
+        "hideLabel": false, "value": false, "options": [ { "label": "No", "value": false }, { "label": "Si", "value": true } ],
+        "isMultiple": false, "placeholder": "Compartir", "width": null, "height": null, "labelWidth": 190
+      }
+    },
+    {
+      "id": "textarea-comment-text", "type": "textarea", "name": "Comentario aprobado",
+      "options": {
+        "variable": { "id": "comment_text", "name": "commentText", "label": "Comentario aprobado", "value": "", "secret": true },
+        "hideLabel": false, "value": "", "placeholder": "Obligatorio solo si comment=true; una linea", "width": null, "height": 100, "labelWidth": 190,
+        "maxLength": 500, "minLength": null, "disabled": false, "showCount": false
+      }
+    },
+    {
+      "id": "input-target-text", "type": "input", "name": "Texto visible objetivo (opcional)",
+      "options": {
+        "variable": { "id": "target_text", "name": "targetText", "label": "Texto visible objetivo", "value": "", "secret": false },
+        "hideLabel": false, "value": "", "placeholder": "Fragmento exacto visible antes de cada efecto", "width": null, "height": null, "labelWidth": 190,
+        "maxLength": 500, "minLength": null, "disabled": false, "showCount": false
+      }
+    }
+  ],
+  "script": {
+    "id": "farm-facebook", "name": "Farm - Facebook Lite", "description": "Start, preparar acciones, comentario cero o una vez, Stop. Fallos sin ruta de exito.", "version": "1.0.0",
+    "variables": [
+      { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
+      { "id": "like", "name": "like", "label": "Like", "value": false, "secret": false },
+      { "id": "comment", "name": "comment", "label": "Comentar", "value": false, "secret": false },
+      { "id": "share", "name": "share", "label": "Compartir", "value": false, "secret": false },
+      { "id": "comment_text", "name": "commentText", "label": "Comentario aprobado", "value": "", "secret": true },
+      { "id": "target_text", "name": "targetText", "label": "Texto visible objetivo", "value": "", "secret": false },
+      { "id": "like_xpath", "name": "likeXPath", "label": "Like: control principal unico", "value": "//*[@clickable='true' and (@text='Like' or @content-desc='Like' or @text='Me gusta' or @content-desc='Me gusta' or @text='Liked' or @content-desc='Liked' or @text='Unlike' or @content-desc='Unlike' or @text='Ya no me gusta' or @content-desc='Ya no me gusta')]", "secret": false },
+      { "id": "liked_predicate", "name": "likedPredicate", "label": "Like: predicado de estado activo", "value": "@selected='true' or @checked='true' or @text='Liked' or @content-desc='Liked' or @text='Unlike' or @content-desc='Unlike' or @text='Ya no me gusta' or @content-desc='Ya no me gusta'", "secret": false },
+      { "id": "unliked_predicate", "name": "unlikedPredicate", "label": "Like: predicado de estado inactivo", "value": "not(@selected='true') and not(@checked='true') and (@text='Like' or @content-desc='Like' or @text='Me gusta' or @content-desc='Me gusta')", "secret": false },
+      { "id": "comments_xpath", "name": "commentsXPath", "label": "Abrir comentarios", "value": "//*[@clickable='true' and (@text='Comment' or @content-desc='Comment' or @text='Comentar' or @content-desc='Comentar')]", "secret": false },
+      { "id": "editor_xpath", "name": "editorXPath", "label": "Editor de comentario unico", "value": "//*[(contains(@class,'EditText') or contains(@class,'AutoCompleteTextView')) and @focusable='true' and (contains(@hint,'comment') or contains(@hint,'Comment') or contains(@hint,'comentario') or contains(@hint,'Comentario') or contains(@content-desc,'comment') or contains(@content-desc,'Comment') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario'))]", "secret": false },
+      { "id": "send_comment_xpath", "name": "sendCommentXPath", "label": "Enviar comentario una vez", "value": "//*[@clickable='true' and (@content-desc='Post comment' or @content-desc='Publicar comentario' or @content-desc='Enviar comentario' or @text='Post' or @text='Publicar' or @text='Enviar')]", "secret": false },
+      { "id": "published_comment_xpath", "name": "publishedCommentXPath", "label": "Texto publicado fuera de editores; afinar al hilo", "value": "//*[@class='android.widget.TextView' and not(@editable='true') and not(ancestor::*[contains(@class,'EditText') or contains(@class,'AutoCompleteTextView')])]", "secret": false },
+      { "id": "share_xpath", "name": "shareXPath", "label": "Abrir compartir", "value": "//*[@clickable='true' and (@text='Share' or @content-desc='Share' or @text='Compartir' or @content-desc='Compartir')]", "secret": false },
+      { "id": "share_submit_xpath", "name": "shareSubmitXPath", "label": "Compartir ahora publicamente", "value": "//*[@clickable='true' and (@text='Share now (Public)' or @content-desc='Share now (Public)' or @text='Compartir ahora (p\u00fablico)' or @content-desc='Compartir ahora (p\u00fablico)')]", "secret": false },
+      { "id": "share_confirmed_xpath", "name": "shareConfirmedXPath", "label": "Confirmacion visible de compartir; ajustar en Windows", "value": "//*[@text='Post shared' or @text='Your post has been shared.' or @text='Publicaci\u00f3n compartida']", "secret": false },
+      { "id": "comment_passes", "name": "commentPasses", "label": "Interno: 0 o 1", "value": 0, "secret": false },
+      { "id": "type_text_xpath", "name": "typeTextXPath", "label": "Interno: editor unico y vacio", "value": "//*[false()]", "secret": false },
+      { "id": "comment_submitted", "name": "commentSubmitted", "label": "Interno: envio intentado", "value": false, "secret": false }
+    ],
+    "flow": {
+      "nodes": [
+        {
+          "id": "facebook_start", "type": "input", "position": { "x": 60, "y": 200 },
+          "data": { "action": "Start", "options": {}, "successNode": "facebook_prepare", "failNode": null },
+          "label": "Start", "sourcePosition": "right", "targetPosition": "left", "deletable": false, "class": ""
+        },
+        {
+          "id": "facebook_prepare", "type": "custom", "position": { "x": 300, "y": 200 },
+          "data": {
+            "icon": "actionEval", "action": "Javascript",
+            "options": {
+              "script": "const v = this.variables;\nconst packageName = 'com.facebook.lite';\nconst domain = 'facebook.com';\nconst deadline = Date.now() + 120000;\nlet stage = 'validacion';\nv.commentPasses = 0; v.typeTextXPath = '//*[false()]'; v.commentSubmitted = false;\nconst literal = s => !s.includes(\"'\") ? \"'\" + s + \"'\" : \"concat('\" + s.split(\"'\").join(\"',\\\"'\\\",'\") + \"')\";\nconst scope = xpath => '(' + xpath + ')[@package=' + literal(packageName) + \" and @enabled='true' and not(@visible-to-user='false') and @bounds and @bounds!='[0,0][0,0]' and not(ancestor::*[@visible-to-user='false'])]\";\nconst call = async fn => {\n  const remaining = Math.min(8000, deadline - Date.now());\n  if (remaining <= 0) throw new Error('Timeout');\n  let timer;\n  try { return await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), remaining); })]); }\n  finally { clearTimeout(timer); }\n};\nconst one = async (xpath, xml) => {\n  if (await call(() => this.clientUiAutomator.xpath('(' + xpath + ')[2]', xml))) throw new Error('Selector ambiguo');\n  return await call(() => this.clientUiAutomator.xpath(xpath, xml));\n};\nlet marker = '';\nconst waitFor = async (xpath, checkTarget = false) => {\n  const until = Math.min(deadline, Date.now() + 12000);\n  do {\n    const { xmlDump } = await call(() => this.clientUiAutomator.dumpWindowHierarchy());\n    if (typeof xmlDump !== 'string' || !xmlDump.includes('</hierarchy>')) throw new Error('Jerarquia invalida');\n    const element = await one(xpath, xmlDump);\n    if (element && (!checkTarget || !marker || await one(marker, xmlDump))) return { element, xml: xmlDump };\n    await new Promise(resolve => setTimeout(resolve, 400));\n  } while (Date.now() < until);\n  throw new Error('Estado no confirmado');\n};\nconst click = async element => { if (await call(() => element.click()) === false) throw new Error('Click rechazado'); };\ntry {\n  if (['like', 'comment', 'share'].some(key => typeof v[key] !== 'boolean')) throw new Error('Booleanos requeridos');\n  if (typeof v.contentUrl !== 'string' || v.contentUrl.length > 2048 || /[\\u0000-\\u0020\\u007f]/.test(v.contentUrl)) throw new Error('URL invalida');\n  const url = new URL(v.contentUrl);\n  if (url.protocol !== 'https:' || url.username || url.password || url.port || !(url.hostname === domain || url.hostname.endsWith('.' + domain) || (domain === 'facebook.com' && url.hostname === 'fb.watch'))) throw new Error('URL invalida');\n  if (typeof v.commentText !== 'string' || (v.comment === true && (!v.commentText.trim() || v.commentText.length > 500 || /[\\u0000-\\u001f\\u007f]/.test(v.commentText)))) throw new Error('Comentario invalido');\n  if (v.targetText === undefined) v.targetText = '';\n  if (typeof v.targetText !== 'string' || v.targetText.length > 500 || (v.targetText !== '' && !v.targetText.trim())) throw new Error('Objetivo invalido');\n  const required = [].concat(v.like === true ? ['likeXPath', 'likedPredicate', 'unlikedPredicate'] : [], v.share === true ? ['shareXPath', 'shareSubmitXPath', 'shareConfirmedXPath'] : [], v.comment === true ? ['commentsXPath', 'editorXPath', 'sendCommentXPath', 'publishedCommentXPath'] : []);\n  if (required.some(key => typeof v[key] !== 'string' || !v[key].trim())) throw new Error('Selector invalido');\n  if (v.targetText) marker = scope(\"//*[not(contains(@class,'EditText')) and not(contains(@class,'AutoCompleteTextView')) and not(ancestor::*[contains(@class,'EditText') or contains(@class,'AutoCompleteTextView')]) and (contains(@text,\" + literal(v.targetText) + ') or contains(@content-desc,' + literal(v.targetText) + '))]');\n  const quote = s => \"'\" + s.replace(/'/g, \"'\\\"'\\\"'\") + \"'\";\n  const open = async () => {\n    const output = await call(() => this.clientAdb.shell('am start -W -a android.intent.action.VIEW -d ' + quote(v.contentUrl) + ' -p ' + quote(packageName)));\n    if (typeof output !== 'string' || !/^Status:\\s*ok\\s*$/m.test(output) || /Error:|Exception|unable to resolve/i.test(output)) throw new Error('Intent no confirmado');\n    await waitFor('(' + scope('//*') + ')[1]', true);\n  };\n  stage = 'apertura y objetivo';\n  await open();\n  if (v.like === true) {\n    stage = 'like';\n    const selector = scope(v.likeXPath);\n    const { element, xml } = await waitFor(selector, true);\n    if (!await one(selector + '[' + v.likedPredicate + ']', xml)) {\n      if (!await one(selector + '[' + v.unlikedPredicate + ']', xml)) throw new Error('Estado de like desconocido');\n      await click(element);\n      await waitFor(selector + '[' + v.likedPredicate + ']', true);\n    }\n  }\n  if (v.share === true) {\n    stage = 'compartir';\n    const button = await waitFor(scope(v.shareXPath), true);\n    const confirmed = scope(v.shareConfirmedXPath);\n    if (!await one(confirmed, button.xml)) {\n      await click(button.element);\n      const submit = await waitFor(scope(v.shareSubmitXPath) + ' | ' + confirmed, true);\n      if (!await one(confirmed, submit.xml)) {\n        await click(submit.element);\n        await waitFor(confirmed);\n      }\n    }\n  }\n  if (v.comment === true) {\n    stage = 'preparar comentario';\n    // Reabrir solo navega al mismo contenido despues del panel de compartir.\n    if (v.share === true) await open();\n    const button = await waitFor(scope(v.commentsXPath), true);\n    await click(button.element);\n    const editor = scope(v.editorXPath);\n    const { xml } = await waitFor(editor, true);\n    if (!await one(editor + \"[@text='']\", xml)) throw new Error('Editor no vacio');\n    if (await one(scope(v.publishedCommentXPath) + '[@text=' + literal(v.commentText) + ']', xml)) throw new Error('Texto ya visible; revisar duplicado');\n    v.typeTextXPath = '(' + editor + \"[@text=''])[count(\" + editor + ')=1]';\n    v.commentPasses = 1;\n  }\n} catch {\n  throw new Error('Fallo en ' + stage + '; resultado no confirmado. Revisar manualmente antes de repetir.');\n}",
+              "disabled": false, "nodeSleep": "0", "nodeTimeout": "150", "timeoutNextNode": "failNode",
+              "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
+            },
+            "successNode": "facebook_comment_loop", "failNode": null
+          },
+          "label": "Abrir, like y compartir opcionales", "sourcePosition": "right", "targetPosition": "left", "class": ""
+        },
+        {
+          "id": "facebook_comment_loop", "type": "loop", "position": { "x": 540, "y": 200 },
+          "data": {
+            "icon": "actionLoop", "action": "Loop",
+            "options": {
+              "loopType": "For", "forFrom": "1", "forTo": "${commentPasses}", "forEachFrom": "", "forEachValue": "", "whileLeftOperand": "", "whileOperator": null, "whileRightperand": "",
+              "disabled": false, "nodeSleep": "0", "nodeTimeout": "120", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
+            },
+            "successNode": "facebook_stop", "failNode": null, "startLoopNode": "facebook_type_comment"
+          },
+          "label": "Comentario: cero o una pasada", "sourcePosition": "right", "targetPosition": "left", "class": ""
+        },
+        {
+          "id": "facebook_type_comment", "type": "custom", "position": { "x": 780, "y": 20 },
+          "data": {
+            "icon": "actionTypeText", "action": "TypeText",
+            "options": {
+              "xpath": "${typeTextXPath}", "text": "${commentText}", "timeout": "10", "typeAsHuman": false, "typeSpeed": 1,
+              "disabled": false, "nodeSleep": "0", "nodeTimeout": "25", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
+            },
+            "successNode": "facebook_confirm_comment", "failNode": null
+          },
+          "label": "Escribir texto como dato", "sourcePosition": "right", "targetPosition": "left", "class": ""
+        },
+        {
+          "id": "facebook_confirm_comment", "type": "custom", "position": { "x": 1020, "y": 20 },
+          "data": {
+            "icon": "actionEval", "action": "Javascript",
+            "options": {
+              "script": "const v = this.variables;\nconst packageName = 'com.facebook.lite';\nconst deadline = Date.now() + 40000;\nconst literal = s => !s.includes(\"'\") ? \"'\" + s + \"'\" : \"concat('\" + s.split(\"'\").join(\"',\\\"'\\\",'\") + \"')\";\nconst scope = xpath => '(' + xpath + ')[@package=' + literal(packageName) + \" and @enabled='true' and not(@visible-to-user='false') and @bounds and @bounds!='[0,0][0,0]' and not(ancestor::*[@visible-to-user='false'])]\";\nconst call = async fn => {\n  const remaining = Math.min(8000, deadline - Date.now());\n  if (remaining <= 0) throw new Error('Timeout');\n  let timer;\n  try { return await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), remaining); })]); }\n  finally { clearTimeout(timer); }\n};\nconst one = async (xpath, xml) => {\n  if (await call(() => this.clientUiAutomator.xpath('(' + xpath + ')[2]', xml))) throw new Error('Selector ambiguo');\n  return await call(() => this.clientUiAutomator.xpath(xpath, xml));\n};\nconst dump = async () => {\n  const { xmlDump } = await call(() => this.clientUiAutomator.dumpWindowHierarchy());\n  if (typeof xmlDump !== 'string' || !xmlDump.includes('</hierarchy>')) throw new Error('Jerarquia invalida');\n  return xmlDump;\n};\ntry {\n  if (v.comment !== true || v.commentPasses !== 1 || v.commentSubmitted !== false || typeof v.commentText !== 'string' || !v.commentText.trim() || v.commentText.length > 500 || /[\\u0000-\\u001f\\u007f]/.test(v.commentText)) throw new Error('Envio no autorizado');\n  const editor = scope(v.editorXPath);\n  const published = scope(v.publishedCommentXPath) + '[@text=' + literal(v.commentText) + ']';\n  const xml = await dump();\n  if (!await one(editor + '[@text=' + literal(v.commentText) + ']', xml) || await one(published, xml)) throw new Error('Editor o duplicado no verificable');\n  if (v.targetText) {\n    const marker = scope(\"//*[not(contains(@class,'EditText')) and not(contains(@class,'AutoCompleteTextView')) and not(ancestor::*[contains(@class,'EditText') or contains(@class,'AutoCompleteTextView')]) and (contains(@text,\" + literal(v.targetText) + ') or contains(@content-desc,' + literal(v.targetText) + '))]');\n    if (!await one(marker, xml)) throw new Error('Objetivo no visible');\n  }\n  const send = await one(scope(v.sendCommentXPath), xml);\n  if (!send) throw new Error('Enviar no disponible');\n  // Marcar antes del unico click; un timeout puede haber entregado el comentario.\n  v.commentSubmitted = true;\n  if (await call(() => send.click()) === false) throw new Error('Click rechazado');\n  const until = Math.min(deadline, Date.now() + 12000);\n  do {\n    const current = await dump();\n    if (await one(editor + \"[@text='']\", current) && await one(published, current)) return;\n    await new Promise(resolve => setTimeout(resolve, 400));\n  } while (Date.now() < until);\n  throw new Error('Publicacion no confirmada');\n} catch {\n  throw new Error('Comentario no confirmado; revisar manualmente antes de repetir. No se reintento el envio.');\n}",
+              "disabled": false, "nodeSleep": "0", "nodeTimeout": "50", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
+            },
+            "successNode": "facebook_comment_loop", "failNode": null
+          },
+          "label": "Enviar una vez y comprobar publicacion", "sourcePosition": "right", "targetPosition": "left", "class": ""
+        },
+        {
+          "id": "facebook_stop", "type": "custom", "position": { "x": 780, "y": 300 },
+          "data": { "icon": "actionStop", "action": "Stop", "options": {}, "successNode": null, "failNode": null },
+          "label": "Stop", "sourcePosition": "right", "targetPosition": "left", "class": ""
+        }
+      ],
+      "edges": [
+        { "id": "edge-facebook-start-prepare", "type": "custom", "source": "facebook_start", "target": "facebook_prepare", "sourceHandle": "facebook_start", "targetHandle": "success", "data": { "sourceHandle": "facebook_start", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_start target-facebook_prepare" },
+        { "id": "edge-facebook-prepare-loop", "type": "custom", "source": "facebook_prepare", "target": "facebook_comment_loop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_prepare target-facebook_comment_loop" },
+        { "id": "edge-facebook-loop-type", "type": "custom", "source": "facebook_comment_loop", "target": "facebook_type_comment", "sourceHandle": "startLoopNode", "targetHandle": "success", "data": { "sourceHandle": "startLoopNode", "targetHandle": "success" }, "label": "", "style": { "stroke": "#f0a020", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_comment_loop target-facebook_type_comment" },
+        { "id": "edge-facebook-type-confirm", "type": "custom", "source": "facebook_type_comment", "target": "facebook_confirm_comment", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_type_comment target-facebook_confirm_comment" },
+        { "id": "edge-facebook-confirm-loop", "type": "custom", "source": "facebook_confirm_comment", "target": "facebook_comment_loop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_confirm_comment target-facebook_comment_loop" },
+        { "id": "edge-facebook-loop-stop", "type": "custom", "source": "facebook_comment_loop", "target": "facebook_stop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-facebook_comment_loop target-facebook_stop" }
+      ]
+    }
+  }
+}
