@@ -10,7 +10,11 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+.next/
+.artifacts/
+.codegraph/
 *.local
+*.tsbuildinfo
 
 # Editor directories and files
 .vscode/*
@@ -26,6 +30,7 @@ dist-ssr
 # Local runtime data; do not commit credentials or SQLite files.
 backend/.env
 backend/.venv/
+data/
 __pycache__/
 *.py[cod]
 backend/data/*.db*

@@ -59,6 +59,6 @@ def submission_dict(row) -> dict:
     return {
         "id": row["id"], "deviceId": row["device_id"], "deviceName": row["device_name"],
         "deviceOrder": row["device_order"], "platform": row["platform"], "kind": row["kind"],
-        "url": row["url"], "scheduledAt": row["scheduled_at"], "status": row["status"],
+        "url": row["url"], "scheduledAt": None if row["scheduled_at"] == row["created_at"] else row["scheduled_at"], "status": row["status"],
         "taskId": row["task_id"], "runId": row["run_id"], "error": row["error"], "createdAt": row["created_at"],
     }

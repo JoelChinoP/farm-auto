@@ -22,6 +22,22 @@ class Settings(BaseSettings):
     # Some older builds start on POST /runs; choose only after checking the installed API.
     genfarmer_explicit_start: bool = True
 
+    @field_validator("app_host")
+    @classmethod
+    def local_host(cls, value: str) -> str:
+        if value not in {"localhost", "127.0.0.1", "::1"}:
+            raise ValueError("APP_HOST debe escuchar solo en loopback")
+        return value
+
+    @field_validator("frontend_url")
+    @classmethod
+    def local_frontend(cls, value: str) -> str:
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in {"localhost", "127.0.0.1", "::1"} or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+            raise ValueError("FRONTEND_URL debe ser un origen local sin credenciales ni ruta")
+        _ = parsed.port
+        return value.rstrip("/")
+
     @field_validator("genfarmer_url")
     @classmethod
     def local_service(cls, value: str) -> str:

@@ -17,7 +17,7 @@ Windows PowerShell:
 
 ```powershell
 backend\.venv\Scripts\python -m pip install -r backend/requirements.txt
-backend\.venv\Scripts\python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
+npm run dev
 ```
 
 Linux:
@@ -27,9 +27,10 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 backend/.venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
-En otra terminal, `npm run dev` abre el panel en `http://127.0.0.1:5173`.
-Vite delega `/api` al backend. `npm run build` y `npm run preview` permiten comprobar
-el bundle de produccion, tambien con el backend encendido.
+`npm run dev` ejecuta juntos `npm run dev:back` y `npm run dev:front`; el panel queda
+en `http://127.0.0.1:5173` y Vite delega `/api` al backend. Para produccion,
+`npm run prod` construye React y sirve el panel y la API desde FastAPI en
+`http://127.0.0.1:8000` con una sola instancia.
 
 ## GenFarmer
 

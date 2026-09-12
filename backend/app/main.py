@@ -4,12 +4,14 @@ import logging
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from . import genfarmer
@@ -111,14 +113,14 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
-origins = list({settings.frontend_url, "http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4173", "http://127.0.0.1:4173", f"http://127.0.0.1:{settings.app_port}"})
+origins = list({settings.frontend_url, "http://localhost:5173", "http://127.0.0.1:5173", "http://[::1]:5173", "http://localhost:4173", "http://127.0.0.1:4173", "http://[::1]:4173", f"http://localhost:{settings.app_port}", f"http://127.0.0.1:{settings.app_port}", f"http://[::1]:{settings.app_port}"})
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_methods=["GET", "POST", "DELETE"], allow_headers=["Content-Type"])
 
 
 @app.middleware("http")
 async def local_mutations(request: Request, call_next):
     if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-        if request.headers.get("origin") and request.headers["origin"] not in origins:
+        if request.headers.get("origin") not in origins:
             return JSONResponse({"detail": "Origen no permitido"}, status_code=403)
         if request.method == "POST" and request.headers.get("content-type", "").split(";")[0] != "application/json":
             return JSONResponse({"detail": "Se requiere application/json"}, status_code=415)
@@ -182,7 +184,6 @@ class SubmissionRequest(BaseModel):
         return values
 
 
-@app.get("/")
 @app.get("/health")
 @app.get("/api/health")
 def health():
@@ -222,7 +223,7 @@ def submit(payload: SubmissionRequest):
         raise HTTPException(422, "Programa una fecha futura dentro de los proximos 30 dias")
     try:
         for publication in payload.publications:
-            validate_url(publication.url, payload.platform)
+            validate_url(publication.url, payload.platform, payload.kind == "actions")
     except ValueError as error:
         raise HTTPException(422, str(error)) from error
     if len({item.url for item in payload.publications}) != len(payload.publications):
@@ -231,6 +232,8 @@ def submit(payload: SubmissionRequest):
         raise HTTPException(422, "Abrir contenido no admite acciones publicas")
     if payload.actions.comment and any(not item.commentText for item in payload.publications):
         raise HTTPException(422, "Escribe un comentario por publicacion")
+    if payload.platform == "tiktok" and any(len(item.commentText) > 150 for item in payload.publications):
+        raise HTTPException(422, "Los comentarios de TikTok admiten hasta 150 caracteres")
     slug = "open-content" if payload.kind == "open" else payload.platform
     app_id = settings.workflows[slug]
     if not app_id:
@@ -303,6 +306,13 @@ def context(payload: ContextRequest):
         return {"url": payload.url, "context": extract_context(payload.url), "source": "metadata"}
     except (ValueError, OSError) as error:
         raise HTTPException(422, "No se pudo extraer contexto publico. Pega una frase visible de la publicacion.") from error
+
+
+dist = Path(__file__).resolve().parents[2] / "dist"
+if dist.is_dir():
+    app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+else:
+    app.add_api_route("/", health, methods=["GET"], include_in_schema=False)
 
 
 if __name__ == "__main__":

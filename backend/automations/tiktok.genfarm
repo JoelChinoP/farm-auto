@@ -1,150 +1,812 @@
 {
-  "id": "farm-tiktok", "userId": 0, "name": "Farm - TikTok",
-  "description": "Acciones independientes; todos false solo abre. Share significa Repost, no abrir el panel ni enviar a contactos. Selectores XPath editables en script.variables, ES/EN conservadores. Texto de comentario de una linea, hasta 500 caracteres. Pendiente de validacion en Windows: importador, Loop 1..0, respuesta ADB string y selectores. Confirmacion solo por UI, no por servidor; no repetir automaticamente un resultado incierto.",
-  "logo": null, "version": "1.0.0",
+  "id": "",
+  "userId": 0,
+  "name": "TikTok - Abrir + Like + Comentar + Republicar",
+  "description": "Abre un video de TikTok y ejecuta Me gusta, comentario y Repost con verificacion.",
+  "logo": null,
+  "version": "1.1.1",
   "input": [
     {
-      "id": "input-content-url", "type": "input", "name": "Enlace de contenido",
+      "id": "field_contentUrl",
+      "name": "Enlace de contenido",
+      "type": "input",
       "options": {
-        "variable": { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
-        "hideLabel": false, "value": "", "placeholder": "https://www.tiktok.com/@usuario/video/...", "width": null, "height": null, "labelWidth": 190,
-        "maxLength": 2048, "minLength": 1, "disabled": false, "showCount": false
+        "variable": {
+          "id": "contentUrl",
+          "name": "contentUrl",
+          "label": "Enlace de contenido",
+          "value": "",
+          "secret": false
+        },
+        "label": "Enlace de contenido",
+        "hideLabel": false,
+        "value": "",
+        "disabled": false,
+        "labelWidth": 190,
+        "placeholder": "https://www.tiktok.com/@usuario/video/...",
+        "width": null,
+        "height": null,
+        "maxLength": 2048,
+        "minLength": 20,
+        "showCount": false
       }
     },
     {
-      "id": "select-like", "type": "select", "name": "Like",
+      "id": "field_targetText",
+      "name": "Texto visible exacto para verificar el destino",
+      "type": "textarea",
       "options": {
-        "variable": { "id": "like", "name": "like", "label": "Like", "value": false, "secret": false },
-        "hideLabel": false, "value": false, "options": [ { "label": "No", "value": false }, { "label": "Si", "value": true } ],
-        "isMultiple": false, "placeholder": "Like", "width": null, "height": null, "labelWidth": 190
+        "variable": {
+          "id": "targetText",
+          "name": "targetText",
+          "label": "Texto visible exacto para verificar el destino",
+          "value": "",
+          "secret": false
+        },
+        "label": "Texto visible exacto para verificar el destino",
+        "hideLabel": false,
+        "value": "",
+        "disabled": false,
+        "labelWidth": 190,
+        "maxLength": 500,
+        "placeholder": "Fragmento exacto visible (opcional)",
+        "height": 90,
+        "showCount": true
       }
     },
     {
-      "id": "select-comment", "type": "select", "name": "Comentar",
+      "id": "field_do_like",
+      "name": "Dar Me gusta",
+      "type": "switch",
       "options": {
-        "variable": { "id": "comment", "name": "comment", "label": "Comentar", "value": false, "secret": false },
-        "hideLabel": false, "value": false, "options": [ { "label": "No", "value": false }, { "label": "Si", "value": true } ],
-        "isMultiple": false, "placeholder": "Comentar", "width": null, "height": null, "labelWidth": 190
+        "variable": {
+          "id": "like",
+          "name": "like",
+          "label": "Dar Me gusta",
+          "value": false,
+          "secret": false
+        },
+        "label": "Dar Me gusta",
+        "hideLabel": false,
+        "value": false,
+        "disabled": false,
+        "labelWidth": 190
       }
     },
     {
-      "id": "select-share", "type": "select", "name": "Compartir (Repost)",
+      "id": "field_do_comment",
+      "name": "Comentar",
+      "type": "switch",
       "options": {
-        "variable": { "id": "share", "name": "share", "label": "Compartir", "value": false, "secret": false },
-        "hideLabel": false, "value": false, "options": [ { "label": "No", "value": false }, { "label": "Si", "value": true } ],
-        "isMultiple": false, "placeholder": "Repost", "width": null, "height": null, "labelWidth": 190
+        "variable": {
+          "id": "comment",
+          "name": "comment",
+          "label": "Comentar",
+          "value": false,
+          "secret": false
+        },
+        "label": "Comentar",
+        "hideLabel": false,
+        "value": false,
+        "disabled": false,
+        "labelWidth": 190
       }
     },
     {
-      "id": "textarea-comment-text", "type": "textarea", "name": "Comentario aprobado",
+      "id": "field_comment_text",
+      "name": "Comentario",
+      "type": "textarea",
       "options": {
-        "variable": { "id": "comment_text", "name": "commentText", "label": "Comentario aprobado", "value": "", "secret": true },
-        "hideLabel": false, "value": "", "placeholder": "Obligatorio solo si comment=true; una linea", "width": null, "height": 100, "labelWidth": 190,
-        "maxLength": 500, "minLength": null, "disabled": false, "showCount": false
+        "variable": {
+          "id": "commentText",
+          "name": "commentText",
+          "label": "Comentario",
+          "value": "",
+          "secret": false
+        },
+        "label": "Comentario",
+        "hideLabel": false,
+        "value": "",
+        "disabled": false,
+        "labelWidth": 190,
+        "placeholder": "hola / hola mundo / buenos dias",
+        "maxLength": 150,
+        "height": 90,
+        "showCount": true
       }
     },
     {
-      "id": "input-target-text", "type": "input", "name": "Texto visible objetivo (opcional)",
+      "id": "field_do_share",
+      "name": "Republicar en TikTok",
+      "type": "switch",
       "options": {
-        "variable": { "id": "target_text", "name": "targetText", "label": "Texto visible objetivo", "value": "", "secret": false },
-        "hideLabel": false, "value": "", "placeholder": "Fragmento exacto visible antes de cada efecto", "width": null, "height": null, "labelWidth": 190,
-        "maxLength": 500, "minLength": null, "disabled": false, "showCount": false
+        "variable": {
+          "id": "share",
+          "name": "share",
+          "label": "Republicar en TikTok",
+          "value": false,
+          "secret": false
+        },
+        "label": "Republicar en TikTok",
+        "hideLabel": false,
+        "value": false,
+        "disabled": false,
+        "labelWidth": 190
       }
     }
   ],
   "script": {
-    "id": "farm-tiktok", "name": "Farm - TikTok", "description": "Start, preparar acciones, comentario cero o una vez, Stop. Fallos sin ruta de exito.", "version": "1.0.0",
+    "id": "tiktok-open-actions",
+    "name": "TikTok - Abrir + Like + Comentar + Republicar",
+    "description": "Abre un video de TikTok y ejecuta Me gusta, comentario y Repost con verificacion.",
+    "version": "1.1.1",
     "variables": [
-      { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
-      { "id": "like", "name": "like", "label": "Like", "value": false, "secret": false },
-      { "id": "comment", "name": "comment", "label": "Comentar", "value": false, "secret": false },
-      { "id": "share", "name": "share", "label": "Compartir", "value": false, "secret": false },
-      { "id": "comment_text", "name": "commentText", "label": "Comentario aprobado", "value": "", "secret": true },
-      { "id": "target_text", "name": "targetText", "label": "Texto visible objetivo", "value": "", "secret": false },
-      { "id": "like_xpath", "name": "likeXPath", "label": "Like: control principal unico", "value": "//*[@clickable='true' and (@text='Like' or @content-desc='Like' or @text='Me gusta' or @content-desc='Me gusta' or @text='Unlike' or @content-desc='Unlike' or @text='Remove like' or @content-desc='Remove like' or @text='Ya no me gusta' or @content-desc='Ya no me gusta')]", "secret": false },
-      { "id": "liked_predicate", "name": "likedPredicate", "label": "Like: predicado de estado activo", "value": "@selected='true' or @checked='true' or @text='Unlike' or @content-desc='Unlike' or @text='Remove like' or @content-desc='Remove like' or @text='Ya no me gusta' or @content-desc='Ya no me gusta'", "secret": false },
-      { "id": "unliked_predicate", "name": "unlikedPredicate", "label": "Like: predicado de estado inactivo", "value": "not(@selected='true') and not(@checked='true') and (@text='Like' or @content-desc='Like' or @text='Me gusta' or @content-desc='Me gusta')", "secret": false },
-      { "id": "comments_xpath", "name": "commentsXPath", "label": "Abrir comentarios", "value": "//*[@clickable='true' and (@text='Comments' or @content-desc='Comments' or @text='Comment' or @content-desc='Comment' or @text='Comentarios' or @content-desc='Comentarios')]", "secret": false },
-      { "id": "editor_xpath", "name": "editorXPath", "label": "Editor de comentario unico", "value": "//*[@class='android.widget.EditText' and @focusable='true' and (contains(@hint,'comment') or contains(@hint,'Comment') or contains(@hint,'comentario') or contains(@hint,'Comentario') or contains(@content-desc,'comment') or contains(@content-desc,'Comment') or contains(@content-desc,'comentario') or contains(@content-desc,'Comentario'))]", "secret": false },
-      { "id": "send_comment_xpath", "name": "sendCommentXPath", "label": "Enviar comentario una vez", "value": "//*[@clickable='true' and (@content-desc='Post comment' or @content-desc='Publicar comentario' or @content-desc='Enviar comentario' or @text='Post' or @text='Publicar' or @text='Enviar')]", "secret": false },
-      { "id": "published_comment_xpath", "name": "publishedCommentXPath", "label": "Texto publicado fuera de editores; afinar al hilo", "value": "//*[@class='android.widget.TextView' and not(@editable='true') and not(ancestor::*[contains(@class,'EditText') or contains(@class,'AutoCompleteTextView')])]", "secret": false },
-      { "id": "share_xpath", "name": "shareXPath", "label": "Abrir compartir", "value": "//*[@clickable='true' and (@text='Share' or @content-desc='Share' or @text='Compartir' or @content-desc='Compartir')]", "secret": false },
-      { "id": "share_submit_xpath", "name": "shareSubmitXPath", "label": "Repost publico", "value": "//*[@clickable='true' and (@text='Repost' or @content-desc='Repost' or @text='Volver a publicar' or @content-desc='Volver a publicar')]", "secret": false },
-      { "id": "share_confirmed_xpath", "name": "shareConfirmedXPath", "label": "Repost activo; nunca quitarlo", "value": "//*[@text='You reposted' or @content-desc='You reposted' or @text='Remove repost' or @content-desc='Remove repost' or @text='Has vuelto a publicar' or @content-desc='Has vuelto a publicar' or @text='Eliminar republicaci\u00f3n' or @content-desc='Eliminar republicaci\u00f3n']", "secret": false },
-      { "id": "comment_passes", "name": "commentPasses", "label": "Interno: 0 o 1", "value": 0, "secret": false },
-      { "id": "type_text_xpath", "name": "typeTextXPath", "label": "Interno: editor unico y vacio", "value": "//*[false()]", "secret": false },
-      { "id": "comment_submitted", "name": "commentSubmitted", "label": "Interno: envio intentado", "value": false, "secret": false }
+      {
+        "id": "contentUrl",
+        "name": "contentUrl",
+        "label": "Enlace de contenido",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "targetText",
+        "name": "targetText",
+        "label": "Texto visible exacto para verificar el destino",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "like",
+        "name": "like",
+        "label": "Dar Me gusta",
+        "value": false,
+        "secret": false
+      },
+      {
+        "id": "comment",
+        "name": "comment",
+        "label": "Comentar",
+        "value": false,
+        "secret": false
+      },
+      {
+        "id": "commentText",
+        "name": "commentText",
+        "label": "Comentario",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "share",
+        "name": "share",
+        "label": "Republicar en TikTok",
+        "value": false,
+        "secret": false
+      },
+      {
+        "id": "toolbarLikePattern",
+        "name": "toolbarLikePattern",
+        "label": "Selector: Like activo/inactivo",
+        "value": "^(dar me gusta a un video|quitar me gusta|like (?:a |this )?video|remove like|unlike)",
+        "secret": false
+      },
+      {
+        "id": "toolbarCommentPattern",
+        "name": "toolbarCommentPattern",
+        "label": "Selector: abrir comentarios",
+        "value": "^(leer o agregar comentarios|read or add comments)",
+        "secret": false
+      },
+      {
+        "id": "toolbarSharePattern",
+        "name": "toolbarSharePattern",
+        "label": "Selector: abrir hoja de compartir",
+        "value": "^(compartir un video|share (?:a |this )?video)",
+        "secret": false
+      },
+      {
+        "id": "commentEditorIdPattern",
+        "name": "commentEditorIdPattern",
+        "label": "Selector: ID del editor",
+        "value": ":id/de5$",
+        "secret": false
+      },
+      {
+        "id": "shareSheetHeadingPattern",
+        "name": "shareSheetHeadingPattern",
+        "label": "Selector: encabezado Enviar a",
+        "value": "^(enviar a|send to)$",
+        "secret": false
+      },
+      {
+        "id": "copyLinkPattern",
+        "name": "copyLinkPattern",
+        "label": "Selector: Copiar enlace",
+        "value": "^(copiar enlace|copy link)$",
+        "secret": false
+      },
+      {
+        "id": "repostActionPattern",
+        "name": "repostActionPattern",
+        "label": "Selector: Republicar activo/inactivo",
+        "value": "^(republicar|repost|quitar republicacion|eliminar republicacion|remove repost|undo repost)$",
+        "secret": false
+      },
+      {
+        "id": "repostActivePattern",
+        "name": "repostActivePattern",
+        "label": "Selector: Repost activo",
+        "value": "^(quitar republicacion|eliminar republicacion|remove repost|undo repost)$",
+        "secret": false
+      },
+      {
+        "id": "diagnostic_only",
+        "name": "diagnostic_only",
+        "label": "Diagnostico sin publicar",
+        "value": false,
+        "secret": false
+      },
+      {
+        "id": "tiktok_error",
+        "name": "tiktok_error",
+        "label": "tiktok_error",
+        "value": "Fallo en un nodo nativo; consulta el registro.",
+        "secret": false
+      },
+      {
+        "id": "tiktok_summary",
+        "name": "tiktok_summary",
+        "label": "tiktok_summary",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "contentId",
+        "name": "contentId",
+        "label": "contentId",
+        "value": "",
+        "secret": false
+      }
     ],
     "flow": {
       "nodes": [
         {
-          "id": "tiktok_start", "type": "input", "position": { "x": 60, "y": 200 },
-          "data": { "action": "Start", "options": {}, "successNode": "tiktok_prepare", "failNode": null },
-          "label": "Start", "sourcePosition": "right", "targetPosition": "left", "deletable": false, "class": ""
-        },
-        {
-          "id": "tiktok_prepare", "type": "custom", "position": { "x": 300, "y": 200 },
-          "data": {
-            "icon": "actionEval", "action": "Javascript",
-            "options": {
-              "script": "const v = this.variables;\nconst packageName = 'com.zhiliaoapp.musically';\nconst domain = 'tiktok.com';\nconst deadline = Date.now() + 120000;\nlet stage = 'validacion';\nv.commentPasses = 0; v.typeTextXPath = '//*[false()]'; v.commentSubmitted = false;\nconst literal = s => !s.includes(\"'\") ? \"'\" + s + \"'\" : \"concat('\" + s.split(\"'\").join(\"',\\\"'\\\",'\") + \"')\";\nconst scope = xpath => '(' + xpath + ')[@package=' + literal(packageName) + \" and @enabled='true' and not(@visible-to-user='false') and @bounds and @bounds!='[0,0][0,0]' and not(ancestor::*[@visible-to-user='false'])]\";\nconst call = async fn => {\n  const remaining = Math.min(8000, deadline - Date.now());\n  if (remaining <= 0) throw new Error('Timeout');\n  let timer;\n  try { return await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), remaining); })]); }\n  finally { clearTimeout(timer); }\n};\nconst one = async (xpath, xml) => {\n  if (await call(() => this.clientUiAutomator.xpath('(' + xpath + ')[2]', xml))) throw new Error('Selector ambiguo');\n  return await call(() => this.clientUiAutomator.xpath(xpath, xml));\n};\nlet marker = '';\nconst waitFor = async (xpath, checkTarget = false) => {\n  const until = Math.min(deadline, Date.now() + 12000);\n  do {\n    const { xmlDump } = await call(() => this.clientUiAutomator.dumpWindowHierarchy());\n    if (typeof xmlDump !== 'string' || !xmlDump.includes('</hierarchy>')) throw new Error('Jerarquia invalida');\n    const element = await one(xpath, xmlDump);\n    if (element && (!checkTarget || !marker || await one(marker, xmlDump))) return { element, xml: xmlDump };\n    await new Promise(resolve => setTimeout(resolve, 400));\n  } while (Date.now() < until);\n  throw new Error('Estado no confirmado');\n};\nconst click = async element => { if (await call(() => element.click()) === false) throw new Error('Click rechazado'); };\ntry {\n  if (['like', 'comment', 'share'].some(key => typeof v[key] !== 'boolean')) throw new Error('Booleanos requeridos');\n  if (typeof v.contentUrl !== 'string' || v.contentUrl.length > 2048 || /[\\u0000-\\u0020\\u007f]/.test(v.contentUrl)) throw new Error('URL invalida');\n  const url = new URL(v.contentUrl);\n  if (url.protocol !== 'https:' || url.username || url.password || url.port || !(url.hostname === domain || url.hostname.endsWith('.' + domain) || (domain === 'facebook.com' && url.hostname === 'fb.watch'))) throw new Error('URL invalida');\n  if (typeof v.commentText !== 'string' || (v.comment === true && (!v.commentText.trim() || v.commentText.length > 500 || /[\\u0000-\\u001f\\u007f]/.test(v.commentText)))) throw new Error('Comentario invalido');\n  if (v.targetText === undefined) v.targetText = '';\n  if (typeof v.targetText !== 'string' || v.targetText.length > 500 || (v.targetText !== '' && !v.targetText.trim())) throw new Error('Objetivo invalido');\n  const required = [].concat(v.like === true ? ['likeXPath', 'likedPredicate', 'unlikedPredicate'] : [], v.share === true ? ['shareXPath', 'shareSubmitXPath', 'shareConfirmedXPath'] : [], v.comment === true ? ['commentsXPath', 'editorXPath', 'sendCommentXPath', 'publishedCommentXPath'] : []);\n  if (required.some(key => typeof v[key] !== 'string' || !v[key].trim())) throw new Error('Selector invalido');\n  if (v.targetText) marker = scope(\"//*[not(contains(@class,'EditText')) and not(contains(@class,'AutoCompleteTextView')) and not(ancestor::*[contains(@class,'EditText') or contains(@class,'AutoCompleteTextView')]) and (contains(@text,\" + literal(v.targetText) + ') or contains(@content-desc,' + literal(v.targetText) + '))]');\n  const quote = s => \"'\" + s.replace(/'/g, \"'\\\"'\\\"'\") + \"'\";\n  const open = async () => {\n    const output = await call(() => this.clientAdb.shell('am start -W -a android.intent.action.VIEW -d ' + quote(v.contentUrl) + ' -p ' + quote(packageName)));\n    if (typeof output !== 'string' || !/^Status:\\s*ok\\s*$/m.test(output) || /Error:|Exception|unable to resolve/i.test(output)) throw new Error('Intent no confirmado');\n    await waitFor('(' + scope('//*') + ')[1]', true);\n  };\n  stage = 'apertura y objetivo';\n  await open();\n  if (v.like === true) {\n    stage = 'like';\n    const selector = scope(v.likeXPath);\n    const { element, xml } = await waitFor(selector, true);\n    if (!await one(selector + '[' + v.likedPredicate + ']', xml)) {\n      if (!await one(selector + '[' + v.unlikedPredicate + ']', xml)) throw new Error('Estado de like desconocido');\n      await click(element);\n      await waitFor(selector + '[' + v.likedPredicate + ']', true);\n    }\n  }\n  if (v.share === true) {\n    stage = 'compartir';\n    const button = await waitFor(scope(v.shareXPath), true);\n    const confirmed = scope(v.shareConfirmedXPath);\n    if (!await one(confirmed, button.xml)) {\n      await click(button.element);\n      const submit = await waitFor(scope(v.shareSubmitXPath) + ' | ' + confirmed, true);\n      if (!await one(confirmed, submit.xml)) {\n        await click(submit.element);\n        await waitFor(confirmed);\n      }\n    }\n  }\n  if (v.comment === true) {\n    stage = 'preparar comentario';\n    // Reabrir solo navega al mismo contenido despues del panel de compartir.\n    if (v.share === true) await open();\n    const button = await waitFor(scope(v.commentsXPath), true);\n    await click(button.element);\n    const editor = scope(v.editorXPath);\n    const { xml } = await waitFor(editor, true);\n    if (!await one(editor + \"[@text='']\", xml)) throw new Error('Editor no vacio');\n    if (await one(scope(v.publishedCommentXPath) + '[@text=' + literal(v.commentText) + ']', xml)) throw new Error('Texto ya visible; revisar duplicado');\n    v.typeTextXPath = '(' + editor + \"[@text=''])[count(\" + editor + ')=1]';\n    v.commentPasses = 1;\n  }\n} catch {\n  throw new Error('Fallo en ' + stage + '; resultado no confirmado. Revisar manualmente antes de repetir.');\n}",
-              "disabled": false, "nodeSleep": "0", "nodeTimeout": "150", "timeoutNextNode": "failNode",
-              "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
-            },
-            "successNode": "tiktok_comment_loop", "failNode": null
+          "id": "tiktok_start",
+          "type": "input",
+          "position": {
+            "x": 60,
+            "y": 180
           },
-          "label": "Abrir, like y repost opcionales", "sourcePosition": "right", "targetPosition": "left", "class": ""
-        },
-        {
-          "id": "tiktok_comment_loop", "type": "loop", "position": { "x": 540, "y": 200 },
           "data": {
-            "icon": "actionLoop", "action": "Loop",
-            "options": {
-              "loopType": "For", "forFrom": "1", "forTo": "${commentPasses}", "forEachFrom": "", "forEachValue": "", "whileLeftOperand": "", "whileOperator": null, "whileRightperand": "",
-              "disabled": false, "nodeSleep": "0", "nodeTimeout": "120", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
-            },
-            "successNode": "tiktok_stop", "failNode": null, "startLoopNode": "tiktok_type_comment"
+            "icon": "play",
+            "action": "Start",
+            "options": {},
+            "successNode": "tiktok_wake",
+            "failNode": null
           },
-          "label": "Comentario: cero o una pasada", "sourcePosition": "right", "targetPosition": "left", "class": ""
+          "label": "Start",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
         },
         {
-          "id": "tiktok_type_comment", "type": "custom", "position": { "x": 780, "y": 20 },
+          "id": "tiktok_wake",
+          "type": "custom",
+          "position": {
+            "x": 300,
+            "y": 180
+          },
           "data": {
-            "icon": "actionTypeText", "action": "TypeText",
+            "icon": "terminal",
+            "action": "Adb",
             "options": {
-              "xpath": "${typeTextXPath}", "text": "${commentText}", "timeout": "10", "typeAsHuman": false, "typeSpeed": 1,
-              "disabled": false, "nodeSleep": "0", "nodeTimeout": "25", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "command": "input keyevent KEYCODE_WAKEUP",
+              "outputVariable": null
             },
-            "successNode": "tiktok_confirm_comment", "failNode": null
+            "successNode": "tiktok_validate",
+            "failNode": "tiktok_open_error"
           },
-          "label": "Escribir texto como dato", "sourcePosition": "right", "targetPosition": "left", "class": ""
+          "label": "Preparar pantalla · Encender",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
         },
         {
-          "id": "tiktok_confirm_comment", "type": "custom", "position": { "x": 1020, "y": 20 },
+          "id": "tiktok_validate",
+          "type": "custom",
+          "position": {
+            "x": 540,
+            "y": 180
+          },
           "data": {
-            "icon": "actionEval", "action": "Javascript",
+            "icon": "code",
+            "action": "Javascript",
             "options": {
-              "script": "const v = this.variables;\nconst packageName = 'com.zhiliaoapp.musically';\nconst deadline = Date.now() + 40000;\nconst literal = s => !s.includes(\"'\") ? \"'\" + s + \"'\" : \"concat('\" + s.split(\"'\").join(\"',\\\"'\\\",'\") + \"')\";\nconst scope = xpath => '(' + xpath + ')[@package=' + literal(packageName) + \" and @enabled='true' and not(@visible-to-user='false') and @bounds and @bounds!='[0,0][0,0]' and not(ancestor::*[@visible-to-user='false'])]\";\nconst call = async fn => {\n  const remaining = Math.min(8000, deadline - Date.now());\n  if (remaining <= 0) throw new Error('Timeout');\n  let timer;\n  try { return await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), remaining); })]); }\n  finally { clearTimeout(timer); }\n};\nconst one = async (xpath, xml) => {\n  if (await call(() => this.clientUiAutomator.xpath('(' + xpath + ')[2]', xml))) throw new Error('Selector ambiguo');\n  return await call(() => this.clientUiAutomator.xpath(xpath, xml));\n};\nconst dump = async () => {\n  const { xmlDump } = await call(() => this.clientUiAutomator.dumpWindowHierarchy());\n  if (typeof xmlDump !== 'string' || !xmlDump.includes('</hierarchy>')) throw new Error('Jerarquia invalida');\n  return xmlDump;\n};\ntry {\n  if (v.comment !== true || v.commentPasses !== 1 || v.commentSubmitted !== false || typeof v.commentText !== 'string' || !v.commentText.trim() || v.commentText.length > 500 || /[\\u0000-\\u001f\\u007f]/.test(v.commentText)) throw new Error('Envio no autorizado');\n  const editor = scope(v.editorXPath);\n  const published = scope(v.publishedCommentXPath) + '[@text=' + literal(v.commentText) + ']';\n  const xml = await dump();\n  if (!await one(editor + '[@text=' + literal(v.commentText) + ']', xml) || await one(published, xml)) throw new Error('Editor o duplicado no verificable');\n  if (v.targetText) {\n    const marker = scope(\"//*[not(contains(@class,'EditText')) and not(contains(@class,'AutoCompleteTextView')) and not(ancestor::*[contains(@class,'EditText') or contains(@class,'AutoCompleteTextView')]) and (contains(@text,\" + literal(v.targetText) + ') or contains(@content-desc,' + literal(v.targetText) + '))]');\n    if (!await one(marker, xml)) throw new Error('Objetivo no visible');\n  }\n  const send = await one(scope(v.sendCommentXPath), xml);\n  if (!send) throw new Error('Enviar no disponible');\n  // Marcar antes del unico click; un timeout puede haber entregado el comentario.\n  v.commentSubmitted = true;\n  if (await call(() => send.click()) === false) throw new Error('Click rechazado');\n  const until = Math.min(deadline, Date.now() + 12000);\n  do {\n    const current = await dump();\n    if (await one(editor + \"[@text='']\", current) && await one(published, current)) return;\n    await new Promise(resolve => setTimeout(resolve, 400));\n  } while (Date.now() < until);\n  throw new Error('Publicacion no confirmada');\n} catch {\n  throw new Error('Comentario no confirmado; revisar manualmente antes de repetir. No se reintento el envio.');\n}",
-              "disabled": false, "nodeSleep": "0", "nodeTimeout": "50", "timeoutNextNode": "failNode", "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "script": "const v = this.variables;\nconst enabled = value => value === true || value === 1 || /^(true|1)$/i.test(String(value));\nconst raw = String(v.contentUrl || '').trim();\nlet parsed;\ntry { parsed = new URL(raw); } catch (_) { parsed = null; }\nconst host = parsed ? parsed.hostname.toLowerCase() : '';\nconst valid = parsed && parsed.protocol === 'https:' && (host === 'tiktok.com' || host.endsWith('.tiktok.com')) &&\n  /^\\/@[^/]+\\/video\\/\\d+\\/?$/.test(parsed.pathname) && !/['\"\\s]/.test(raw);\nif (!valid) { v.tiktok_error = 'Introduce un enlace https de video de TikTok valido.'; throw new Error('TIKTOK_INPUT_ERROR'); }\nv.contentId = parsed.pathname.split('/').filter(Boolean).pop();\nif (enabled(v.comment)) {\n  const text = String(v.commentText || '').trim();\n  if (!text || text.length > 150) { v.tiktok_error = 'El comentario debe tener entre 1 y 150 caracteres.'; throw new Error('TIKTOK_INPUT_ERROR'); }\n}\n"
             },
-            "successNode": "tiktok_comment_loop", "failNode": null
+            "successNode": "tiktok_force_stop",
+            "failNode": "tiktok_action_error"
           },
-          "label": "Enviar una vez y comprobar publicacion", "sourcePosition": "right", "targetPosition": "left", "class": ""
+          "label": "Validar formulario",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
         },
         {
-          "id": "tiktok_stop", "type": "custom", "position": { "x": 780, "y": 300 },
-          "data": { "icon": "actionStop", "action": "Stop", "options": {}, "successNode": null, "failNode": null },
-          "label": "Stop", "sourcePosition": "right", "targetPosition": "left", "class": ""
+          "id": "tiktok_force_stop",
+          "type": "custom",
+          "position": {
+            "x": 780,
+            "y": 180
+          },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "command": "am force-stop com.zhiliaoapp.musically",
+              "outputVariable": null
+            },
+            "successNode": "tiktok_content",
+            "failNode": "tiktok_open_error"
+          },
+          "label": "TikTok · Cerrar aplicacion",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_content",
+          "type": "custom",
+          "position": {
+            "x": 1020,
+            "y": 180
+          },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "8",
+              "nodeTimeout": "60",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "command": "am start -W -a android.intent.action.VIEW -d 'snssdk1233://aweme/detail/${contentId}' -p com.zhiliaoapp.musically",
+              "outputVariable": null
+            },
+            "successNode": "tiktok_actions",
+            "failNode": "tiktok_open_error"
+          },
+          "label": "TikTok · Abrir video",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_actions",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": 180
+          },
+          "data": {
+            "icon": "code",
+            "action": "Javascript",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "300",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "script": "'use strict';\n\nlet tiktokSelectors;\n\nasync function tiktokActionsUI(ctx) {\n  const fs = require('fs');\n  const path = require('path');\n  const os = require('os');\n  const v = ctx.variables;\n  const ui = ctx.clientUiAutomator;\n  const pkg = 'com.zhiliaoapp.musically';\n  const enabled = value => value === true || value === 1 || /^(true|1)$/i.test(String(value));\n  const actions = { like: enabled(v.like), comment: enabled(v.comment), share: enabled(v.share) };\n  const diagnostic = enabled(v.diagnostic_only);\n  const commentText = String(v.commentText || '').trim();\n  const expectedTarget = normalizeTikTokText(v.targetText);\n  const selector = (name, fallback) => {\n    try { return new RegExp(String(v[name] || fallback)); }\n    catch (_) { throw new Error('Selector invalido: ' + name + '.'); }\n  };\n  tiktokSelectors = {\n    toolbarLike: selector('toolbarLikePattern', '^(dar me gusta a un video|quitar me gusta|like (?:a |this )?video|remove like|unlike)'),\n    toolbarComment: selector('toolbarCommentPattern', '^(leer o agregar comentarios|read or add comments)'),\n    toolbarShare: selector('toolbarSharePattern', '^(compartir un video|share (?:a |this )?video)'),\n    commentEditorId: selector('commentEditorIdPattern', ':id/de5$'),\n    shareSheetHeading: selector('shareSheetHeadingPattern', '^(enviar a|send to)$'),\n    copyLink: selector('copyLinkPattern', '^(copiar enlace|copy link)$'),\n    repostAction: selector('repostActionPattern', '^(republicar|repost|quitar republicacion|eliminar republicacion|remove repost|undo repost)$'),\n    repostActive: selector('repostActivePattern', '^(quitar republicacion|eliminar republicacion|remove repost|undo repost)$')\n  };\n  const folder = path.join(os.tmpdir(), 'opencode', 'GenFarmer-TiktokActions',\n    String(ctx.runId || Date.now()).replace(/[^\\w-]/g, '_'), String(ctx.deviceId));\n  fs.mkdirSync(folder, { recursive: true });\n  const result = {\n    serial: ctx.deviceId,\n    url: String(v.contentUrl || ''),\n    status: 'running',\n    mode: diagnostic ? 'diagnostic' : 'publish',\n    actions: {},\n    evidence: folder\n  };\n  const deadline = Date.now() + 270000;\n  let sequence = 0;\n  let toastEnabled = false;\n\n  v.tiktok_error = '';\n  v.tiktok_summary = '';\n\n  function check() {\n    if (ctx.actionProcessed || Date.now() > deadline) throw new Error('Ejecucion interrumpida o plazo UI agotado.');\n  }\n  async function wait(ms) {\n    const end = Date.now() + ms;\n    while (Date.now() < end) {\n      check();\n      await new Promise(resolve => setTimeout(resolve, Math.min(200, end - Date.now())));\n    }\n  }\n  function save() {\n    fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify(result, null, 2));\n  }\n  function report(message) {\n    save();\n    if (ctx.logCallback) {\n      ctx.logCallback({ logType: 'Info', logText: message, action: { id: 'tiktok_actions', label: 'UI TikTok' } });\n    }\n  }\n  async function rpc(method, params) {\n    check();\n    // attempt=5 disables RPC replay. A lost reply must never duplicate a publication.\n    const response = await ui.callRpc(method, params, 10000, 5);\n    check();\n    if (!response || response.error || response.result === false) throw new Error('Operacion UI no confirmada: ' + method);\n    return response.result;\n  }\n  async function clickOnce(node, purpose) {\n    if (!node || !node.bounds || node.bounds[2] <= node.bounds[0] || node.bounds[3] - node.bounds[1] < 20) {\n      throw new Error('Control ausente, ambiguo u oculto: ' + purpose + '.');\n    }\n    try {\n      await rpc('click', [Math.round((node.bounds[0] + node.bounds[2]) / 2), Math.round((node.bounds[1] + node.bounds[3]) / 2)]);\n    } catch (error) {\n      // The state is always checked after the tap. Retrying here could duplicate a send.\n      result.uncertainClicks = result.uncertainClicks || [];\n      result.uncertainClicks.push({ purpose, error: String(error && error.message || error) });\n      save();\n    }\n  }\n  async function pressBack(purpose) {\n    try {\n      await rpc('pressKey', ['back']);\n    } catch (error) {\n      // Some Android builds return false after Back already changed the screen.\n      result.uncertainNavigation = result.uncertainNavigation || [];\n      result.uncertainNavigation.push({ purpose, error: String(error && error.message || error) });\n      save();\n    }\n  }\n  async function screen(label) {\n    let lastError;\n    for (let attempt = 0; attempt < 10; attempt++) {\n      check();\n      try {\n        const xml = await ctx.getXml();\n        check();\n        fs.writeFileSync(path.join(folder, (++sequence) + '-' + label + '.xml'), xml);\n        const allNodes = parseTikTokXml(xml).filter(n => n.enabled !== 'false' && n.visible !== 'false');\n        const denyPermission = tiktokPermissionDenial(allNodes);\n        if (denyPermission) {\n          lastError = new Error('Permiso Android superpuesto a TikTok.');\n          await clickOnce(denyPermission, 'rechazar permiso Android');\n          await wait(700);\n          continue;\n        }\n        const nodes = allNodes.filter(n => n.package === pkg);\n        if (!nodes.length) throw new Error('TikTok no esta en primer plano.');\n        if (tiktokSessionBlocked(nodes)) {\n          const blocked = new Error('La sesion de TikTok no permite comentar o el video no esta disponible.');\n          blocked.tiktokTerminal = true;\n          throw blocked;\n        }\n        return nodes;\n      } catch (error) {\n        if (error && error.tiktokTerminal) throw error;\n        lastError = error;\n        if (attempt < 9) await wait(800);\n      }\n    }\n    throw lastError;\n  }\n  async function photo(label) {\n    check();\n    const image = await ui.screenShotToBuffer();\n    check();\n    if (!image || !image.length) throw new Error('Captura de pantalla vacia.');\n    fs.writeFileSync(path.join(folder, (++sequence) + '-' + label + '.png'), image);\n  }\n  async function resetToast() {\n    if (toastEnabled) await rpc('clearLastToast', []);\n  }\n  async function lastToast() {\n    if (!toastEnabled) return '';\n    try { return normalizeTikTokText(await rpc('getLastToast', [15000])); }\n    catch (_) { return ''; }\n  }\n  async function locateVideo(expectedIdentity, seconds, stable, target) {\n    const end = Date.now() + seconds * 1000;\n    let candidate = null;\n    while (Date.now() < end) {\n      let nodes;\n      try {\n        nodes = await screen('video');\n      } catch (error) {\n        if (error && error.tiktokTerminal) throw error;\n        if (Date.now() >= end) throw error;\n        await wait(1000);\n        continue;\n      }\n      const bar = tiktokToolbar(nodes);\n      const identity = tiktokVideoIdentity(nodes);\n      const surface = nodes.some(n => /:id\\/(long_press_layout|player_view)$/.test(n['resource-id'] || '') || n.label === 'video');\n      if (bar && identity && surface) {\n        if (expectedIdentity && identity.key !== expectedIdentity.key) {\n          throw new Error('El video cambio durante la ejecucion.');\n        }\n        if (!expectedIdentity && target && !tiktokIdentityMatches(identity, target)) {\n          candidate = null;\n          await wait(900);\n          continue;\n        }\n        if (stable && (!candidate || candidate.identity.key !== identity.key)) {\n          candidate = { nodes, bar, identity };\n          await wait(900);\n          continue;\n        }\n        return { nodes, bar, identity };\n      }\n      await wait(700);\n    }\n    throw new Error('No se identifico el video y su columna de acciones en TikTok.');\n  }\n  async function ensurePaused(post, identity) {\n    if (tiktokPaused(post.nodes)) return post;\n    const surface = post.nodes.find(n => /:id\\/long_press_layout$/.test(n['resource-id'] || '') && n.clickable === 'true');\n    if (!surface) throw new Error('No se encontro la superficie para pausar el video.');\n    await clickOnce(surface, 'pausar video');\n    for (let attempt = 0; attempt < 10; attempt++) {\n      await wait(350);\n      const nodes = await screen('pause-check');\n      const current = tiktokVideoIdentity(nodes);\n      const bar = tiktokToolbar(nodes);\n      if (current && current.key !== identity.key) throw new Error('El video cambio antes de poder pausarlo.');\n      if (current && bar && tiktokPaused(nodes)) return { nodes, bar, identity: current };\n    }\n    throw new Error('No se confirmo la pausa del video. No se repetira el toque.');\n  }\n  async function closeToVideo(identity) {\n    for (let attempt = 0; attempt < 3; attempt++) {\n      const nodes = await screen('close-overlay-check');\n      const bar = tiktokToolbar(nodes);\n      const current = tiktokVideoIdentity(nodes);\n      if (bar && current) {\n        if (current.key !== identity.key) throw new Error('El video cambio al cerrar un panel.');\n        return { nodes, bar, identity: current };\n      }\n      await pressBack('cerrar panel');\n      await wait(500);\n    }\n    return locateVideo(identity, 15);\n  }\n  async function openComments(post) {\n    await clickOnce(post.bar.comment, 'abrir comentarios');\n    for (let attempt = 0; attempt < 16; attempt++) {\n      await wait(500);\n      const nodes = await screen('comments-open');\n      if (tiktokCommentsOpen(nodes)) return nodes;\n    }\n    throw new Error('No se abrio el panel de comentarios.');\n  }\n  async function openShare(post) {\n    await clickOnce(post.bar.share, 'abrir compartir');\n    for (let attempt = 0; attempt < 16; attempt++) {\n      await wait(500);\n      const nodes = await screen('share-open');\n      if (tiktokShareSheet(nodes)) return nodes;\n    }\n    throw new Error('No se abrio la hoja de compartir.');\n  }\n  async function setCommentDraft(nodes, text) {\n    let lastError;\n    let edit = tiktokCommentEditor(nodes);\n    if (!edit) throw new Error('Editor de comentarios ausente.');\n    await clickOnce(edit, text ? 'enfocar comentario' : 'enfocar comentario para limpiarlo');\n    await wait(400);\n    nodes = await screen('comment-editor-focused');\n    if (!tiktokCommentsOpen(nodes)) throw new Error('El editor de comentarios desaparecio antes de escribir.');\n    for (let attempt = 0; attempt < 4; attempt++) {\n      edit = tiktokCommentEditor(nodes);\n      if (!edit) throw new Error('Editor de comentarios ausente.');\n      const matches = text ? edit.text === text : (!edit.text || tiktokCommentPlaceholder(edit.text));\n      if (matches) return nodes;\n      try {\n        await rpc('setText', [{ mask: 2097152, childOrSibling: [], childOrSiblingSelector: [],\n          resourceId: edit['resource-id'] }, text]);\n      } catch (error) {\n        lastError = error;\n      }\n      await wait(500);\n      nodes = await screen('comment-editor-check');\n      if (!tiktokCommentsOpen(nodes)) throw lastError || new Error('El editor desaparecio al escribir.');\n      edit = tiktokCommentEditor(nodes);\n      const confirmed = edit && (text ? edit.text === text : (!edit.text || tiktokCommentPlaceholder(edit.text)));\n      if (confirmed) return nodes;\n      if (attempt < 3) await wait(800);\n    }\n    throw lastError || new Error('No se confirmo el texto en el editor de comentarios.');\n  }\n\n  try {\n    if (!validTikTokUrl(v.contentUrl)) throw new Error('Introduce un enlace https de video de TikTok valido.');\n    if (actions.comment && (!commentText || commentText.length > 150)) {\n      throw new Error('El comentario debe tener entre 1 y 150 caracteres.');\n    }\n    try { await rpc('setToastListener', [true]); toastEnabled = true; } catch (_) { /* Visual verification remains available. */ }\n\n    let post = await locateVideo(null, 90, true, expectedTarget);\n    const identity = post.identity;\n    post = await ensurePaused(post, identity);\n    result.identity = identity;\n    report('Video identificado en TikTok: ' + identity.author + ' | ' + (identity.caption || identity.sound));\n\n    if (actions.like) {\n      const before = tiktokLikedState(post.bar.like);\n      if (before === null) throw new Error('No se pudo determinar el estado de Me gusta.');\n      if (diagnostic) {\n        result.actions.like = 'diagnostico: control localizado; ' + (before ? 'ya activo' : 'inactivo') + '; sin tocar';\n      } else if (before) {\n        result.actions.like = 'ya activo; conservado';\n      } else {\n        result.actions.like = 'pending'; save();\n        await clickOnce(post.bar.like, 'dar Me gusta');\n        let confirmed = false;\n        for (let attempt = 0; attempt < 12; attempt++) {\n          await wait(600);\n          post = await locateVideo(identity, 8);\n          if (tiktokLikedState(post.bar.like) === true) { confirmed = true; break; }\n        }\n        if (!confirmed) throw new Error('No se confirmo el estado Me gusta. No se repetira el toque.');\n        result.actions.like = 'activado y verificado';\n      }\n      report('Me gusta: ' + result.actions.like);\n    }\n\n    if (actions.comment) {\n      post = await ensurePaused(await locateVideo(identity, 20), identity);\n      const beforeCount = tiktokActionCount(post.bar.comment);\n      let nodes = await openComments(post);\n      const existingDraft = nodes.map(n => n.class === 'android.widget.EditText' ? n : null).filter(Boolean)\n        .find(n => n.text && !tiktokCommentPlaceholder(n.text));\n      if (existingDraft) throw new Error('Existe un borrador previo; se conserva sin reemplazarlo.');\n      const beforeKeys = tiktokCommentKeys(nodes, commentText);\n      nodes = await setCommentDraft(nodes, commentText);\n      await wait(400);\n      await pressBack('ocultar teclado del comentario');\n      await wait(500);\n      nodes = await screen('comment-draft');\n      const edit = tiktokCommentEditor(nodes, commentText);\n      if (!edit || edit.text !== commentText) throw new Error('El texto escrito no coincide con el comentario.');\n      const send = tiktokSendButton(nodes, edit);\n      if (!send) throw new Error('Boton de envio de comentario ausente o ambiguo.');\n      result.commentText = commentText;\n      if (diagnostic) {\n        await photo('comment-diagnostic-ready');\n        nodes = await setCommentDraft(nodes, '');\n        await wait(300);\n        await pressBack('ocultar teclado tras limpiar el borrador');\n        await wait(500);\n        nodes = await screen('comment-diagnostic-cleared');\n        const cleared = tiktokCommentEditor(nodes);\n        if (!cleared || (cleared.text && !tiktokCommentPlaceholder(cleared.text)) ||\n            nodes.some(n => n.class === 'android.widget.EditText' && n.text === commentText)) {\n          throw new Error('No se confirmo la limpieza del borrador de diagnostico.');\n        }\n        post = await ensurePaused(await closeToVideo(identity), identity);\n        result.actions.comment = 'diagnostico: texto y boton de envio verificados; borrador retirado sin publicar';\n      } else {\n        await resetToast();\n        result.actions.comment = 'pending'; save();\n        await clickOnce(send, 'enviar comentario');\n        let confirmed = false;\n        for (let attempt = 0; attempt < 16; attempt++) {\n          await wait(650);\n          nodes = await screen('comment-confirmation');\n          const currentEdit = tiktokCommentEditor(nodes);\n          const clear = !currentEdit || !currentEdit.text || tiktokCommentPlaceholder(currentEdit.text);\n          const keys = tiktokCommentKeys(nodes, commentText);\n          const added = keys.some(key => !beforeKeys.includes(key));\n          const toast = await lastToast();\n          if (clear && (added || /comentario.*(publicado|enviado)|comment.*(posted|sent)/.test(toast))) {\n            confirmed = true;\n            result.commentConfirmation = added ? 'comentario visible' : toast;\n            break;\n          }\n        }\n        post = await ensurePaused(await closeToVideo(identity), identity);\n        const afterCount = tiktokActionCount(post.bar.comment);\n        if (!confirmed && beforeCount !== null && afterCount !== null && afterCount > beforeCount) {\n          confirmed = true;\n          result.commentConfirmation = 'contador ' + beforeCount + ' -> ' + afterCount;\n        }\n        if (!confirmed) throw new Error('Envio pendiente de confirmar: comentario. Revisar el video antes de repetir.');\n        result.actions.comment = 'publicado y verificado: ' + result.commentConfirmation;\n      }\n      report('Comentario: ' + result.actions.comment);\n    }\n\n    if (actions.share) {\n      post = await ensurePaused(await locateVideo(identity, 20), identity);\n\n      let nodes = await openShare(post);\n      let share = tiktokShareControl(nodes);\n      if (!share) throw new Error('No se encontro el control Repost de TikTok.');\n      result.shareLabelBefore = share.label;\n      if (diagnostic) {\n        await photo('share-diagnostic-ready');\n        post = await ensurePaused(await closeToVideo(identity), identity);\n        result.actions.share = 'diagnostico: hoja y control ' + share.label + ' verificados; cerrada sin publicar';\n      } else if (share.active) {\n        post = await ensurePaused(await closeToVideo(identity), identity);\n        result.actions.share = 'ya republicado; conservado';\n      } else {\n        await resetToast();\n        result.actions.share = 'pending'; save();\n        await clickOnce(share.node, 'republicar');\n        await wait(900);\n        post = await ensurePaused(await closeToVideo(identity), identity);\n        nodes = await openShare(post);\n        share = tiktokShareControl(nodes);\n        const stateConfirmed = Boolean(share && share.active);\n        result.shareLabelAfter = share ? share.label : '';\n        post = await ensurePaused(await closeToVideo(identity), identity);\n        if (!stateConfirmed) {\n          throw new Error('Envio pendiente de confirmar: Repost. Revisar el video antes de repetir.');\n        }\n        result.shareConfirmation = 'estado republicado visible';\n        result.actions.share = 'republicado y verificado: ' + result.shareConfirmation;\n      }\n      report('Compartir: ' + result.actions.share);\n    }\n\n    await ensurePaused(await locateVideo(identity, 20), identity);\n    await photo('final-video');\n    result.status = 'success';\n    v.tiktok_summary = Object.keys(result.actions).length ?\n      Object.entries(result.actions).map(entry => entry[0] + ': ' + entry[1]).join('; ') :\n      'video abierto y verificado; acciones desactivadas';\n    save();\n  } catch (error) {\n    result.status = 'failed';\n    result.error = String(error && error.message || error);\n    v.tiktok_error = result.error;\n    save();\n    try { await photo('error'); } catch (_) { /* Preserve the original failure. */ }\n    throw new Error('TIKTOK_ACTION_ERROR: consultar tiktok_error y result.json.');\n  } finally {\n    if (toastEnabled && !ctx.actionProcessed) {\n      try { await ui.callRpc('setToastListener', [false], 4000, 5); } catch (_) { /* No more UI actions. */ }\n    }\n  }\n}\n\nfunction normalizeTikTokText(value) {\n  return String(value || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '')\n    .replace(/[\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();\n}\n\nfunction parseTikTokXml(xml) {\n  if (typeof xml !== 'string' || !xml.includes('<hierarchy') || !xml.includes('</hierarchy>') ||\n      xml.length > 3000000 || xml.includes('\\0')) throw new Error('Jerarquia XML vacia o corrupta.');\n  const decode = value => value.replace(/&(#x[0-9a-f]+|#\\d+|amp|lt|gt|quot|apos);/gi, (all, entity) => {\n    if (entity[0] === '#') return String.fromCodePoint(entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1)));\n    return { amp: '&', lt: '<', gt: '>', quot: '\"', apos: \"'\" }[entity];\n  });\n  const nodes = [];\n  for (const tag of xml.match(/<node\\b[^>]*>/g) || []) {\n    const node = {};\n    for (const attr of tag.matchAll(/([\\w-]+)\\s*=\\s*([\"'])(.*?)\\2/g)) node[attr[1]] = decode(attr[3]);\n    const bounds = String(node.bounds || '').match(/^\\[(-?\\d+),(-?\\d+)\\]\\[(-?\\d+),(-?\\d+)\\]$/);\n    if (!bounds) continue;\n    node.bounds = bounds.slice(1).map(Number);\n    node.label = normalizeTikTokText(node['content-desc'] || node.text);\n    node.visible = node['visible-to-user'];\n    nodes.push(node);\n  }\n  return nodes;\n}\n\nfunction oneTikTokNode(nodes, pattern) {\n  const matches = nodes.filter(n => n.clickable === 'true' && n.enabled !== 'false' && pattern.test(n.label));\n  return matches.length === 1 ? matches[0] : null;\n}\n\nfunction tiktokToolbar(nodes) {\n  const like = oneTikTokNode(nodes, tiktokSelectors.toolbarLike);\n  const comment = oneTikTokNode(nodes, tiktokSelectors.toolbarComment);\n  const share = oneTikTokNode(nodes, tiktokSelectors.toolbarShare);\n  return like && comment && share ? { like, comment, share } : null;\n}\n\nfunction tiktokVideoIdentity(nodes) {\n  const authorNode = nodes.find(n => /:id\\/title$/.test(n['resource-id'] || '') && n.text) ||\n    nodes.find(n => /^(perfil de |profile of )/.test(n.label));\n  const captionNode = nodes.find(n => /:id\\/desc$/.test(n['resource-id'] || '') && n.text);\n  const soundNode = nodes.find(n => /^(sonido:|sound:)/.test(n.label));\n  const author = authorNode ? normalizeTikTokText(authorNode.text || authorNode.label.replace(/^(perfil de |profile of )/, '')) : '';\n  const caption = captionNode ? normalizeTikTokText(captionNode.text) : '';\n  const sound = soundNode ? soundNode.label : '';\n  if (!author || (!caption && !sound)) return null;\n  return { author, caption, sound, key: author + '|' + caption + '|' + sound };\n}\n\nfunction tiktokIdentityMatches(identity, expected) {\n  return Boolean(identity && expected && normalizeTikTokText([identity.author, identity.caption, identity.sound].join(' ')).includes(expected));\n}\n\nfunction tiktokSessionBlocked(nodes) {\n  return nodes.some(n => /^(registrate en tiktok|crear cuenta|iniciar sesion|log in|sign up|video no disponible|video unavailable)$/.test(n.label) ||\n    n.label.includes('diviertete con tiktok') ||\n    /^.*ya tienes una cuenta.*iniciar sesion/.test(n.label));\n}\n\nfunction tiktokPermissionDenial(nodes) {\n  const matches = nodes.filter(n => /(?:permissioncontroller|packageinstaller)$/.test(n.package || '') &&\n    n.clickable === 'true' && (/:id\\/permission_deny(?:_and_dont_ask_again)?_button$/.test(n['resource-id'] || '') ||\n      /^(rechazar|no permitir|don't allow|deny)$/.test(n.label)));\n  return matches.length === 1 ? matches[0] : null;\n}\n\nfunction tiktokPaused(nodes) {\n  return nodes.some(n => /:id\\/nwi$/.test(n['resource-id'] || '') && n.bounds[0] > 0 && n.bounds[2] > n.bounds[0]);\n}\n\nfunction tiktokLikedState(node) {\n  if (!node) return null;\n  if (node.selected === 'true' || node.checked === 'true' || /^(quitar me gusta|remove like|unlike)/.test(node.label)) return true;\n  if (/^(dar me gusta a un video|like (?:a |this )?video)/.test(node.label)) return false;\n  return null;\n}\n\nfunction tiktokActionCount(node) {\n  if (!node) return null;\n  const match = normalizeTikTokText(node['content-desc'] || node.text).match(/(\\d+(?:[.,]\\d+)?)(?:\\s*([kmb])\\b)?/);\n  if (!match) return null;\n  const factor = { k: 1000, m: 1000000, b: 1000000000 }[match[2]] || 1;\n  return Number(match[1].replace(',', '.')) * factor;\n}\n\nfunction tiktokCommentPlaceholder(text) {\n  return /^(agregar comentario|add comment|escribe un comentario|write a comment)/.test(normalizeTikTokText(text));\n}\n\nfunction tiktokCommentsOpen(nodes) {\n  return nodes.some(n => /^(?:\\d+(?:[.,]\\d+)?\\s+)?(?:comentarios|comments)$/.test(n.label)) &&\n    Boolean(tiktokCommentEditor(nodes));\n}\n\nfunction tiktokCommentEditor(nodes, expected) {\n  let editors = nodes.filter(n => n.class === 'android.widget.EditText' && tiktokSelectors.commentEditorId.test(n['resource-id'] || ''));\n  if (expected !== undefined) editors = editors.filter(n => n.text === expected);\n  return editors.sort((a, b) => b.bounds[1] - a.bounds[1])[0] || null;\n}\n\nfunction tiktokSendButton(nodes, edit) {\n  if (!edit) return null;\n  const width = Math.max(...nodes.map(n => n.bounds[2]));\n  const matches = nodes.filter(n => n.clickable === 'true' && n.enabled !== 'false' &&\n    n.bounds[0] >= edit.bounds[2] - 12 && n.bounds[2] - n.bounds[0] < width * .2 &&\n    n.bounds[1] < edit.bounds[3] && n.bounds[3] > edit.bounds[1]);\n  return matches.length === 1 ? matches[0] : null;\n}\n\nfunction tiktokCommentKeys(nodes, text) {\n  const normalized = normalizeTikTokText(text);\n  return nodes.filter(n => n.class !== 'android.widget.EditText' && normalizeTikTokText(n.text) === normalized)\n    .map(n => (n['resource-id'] || n.class || '') + '|' + n.bounds.join(',') + '|' + normalized);\n}\n\nfunction tiktokShareSheet(nodes) {\n  return nodes.some(n => tiktokSelectors.shareSheetHeading.test(n.label)) &&\n    nodes.some(n => tiktokSelectors.copyLink.test(n.label));\n}\n\nfunction tiktokShareControl(nodes) {\n  const matches = nodes.filter(n => n.clickable === 'true' && /Button$/.test(n.class || '') &&\n    tiktokSelectors.repostAction.test(n.label));\n  if (matches.length !== 1) return null;\n  const node = matches[0];\n  return { node, label: node.label, active: tiktokSelectors.repostActive.test(node.label) };\n}\n\nfunction validTikTokUrl(value) {\n  const raw = String(value || '').trim();\n  if (/['\"\\s]/.test(raw)) return false;\n  try {\n    const url = new URL(raw);\n    const host = url.hostname.toLowerCase();\n    return url.protocol === 'https:' && (host === 'tiktok.com' || host.endsWith('.tiktok.com')) &&\n      /^\\/@[^/]+\\/video\\/\\d+\\/?$/.test(url.pathname);\n  } catch (_) {\n    return false;\n  }\n}\n\n\nawait tiktokActionsUI(this);"
+            },
+            "successNode": "tiktok_action_success",
+            "failNode": "tiktok_action_error"
+          },
+          "label": "TikTok · Like / Comentar / Compartir",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_action_success",
+          "type": "custom",
+          "position": {
+            "x": 1500,
+            "y": 60
+          },
+          "data": {
+            "icon": "log",
+            "action": "Log",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "log": "TikTok: ${tiktok_summary}"
+            },
+            "successNode": "tiktok_stop",
+            "failNode": null
+          },
+          "label": "Acciones verificadas",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_action_error",
+          "type": "custom",
+          "position": {
+            "x": 1500,
+            "y": 300
+          },
+          "data": {
+            "icon": "log",
+            "action": "Log",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "log": "TikTok: ${tiktok_error}"
+            },
+            "successNode": "tiktok_stop",
+            "failNode": null
+          },
+          "label": "Error de interaccion",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_open_error",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": 500
+          },
+          "data": {
+            "icon": "log",
+            "action": "Log",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "log": "No se pudo abrir TikTok o el enlace indicado."
+            },
+            "successNode": "tiktok_stop",
+            "failNode": null
+          },
+          "label": "Error de apertura",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_stop",
+          "type": "custom",
+          "position": {
+            "x": 1740,
+            "y": 180
+          },
+          "data": {
+            "icon": "stop",
+            "action": "Stop",
+            "options": {},
+            "successNode": null,
+            "failNode": null
+          },
+          "label": "Stop",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
         }
       ],
       "edges": [
-        { "id": "edge-tiktok-start-prepare", "type": "custom", "source": "tiktok_start", "target": "tiktok_prepare", "sourceHandle": "tiktok_start", "targetHandle": "success", "data": { "sourceHandle": "tiktok_start", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-tiktok_start target-tiktok_prepare" },
-        { "id": "edge-tiktok-prepare-loop", "type": "custom", "source": "tiktok_prepare", "target": "tiktok_comment_loop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-tiktok_prepare target-tiktok_comment_loop" },
-        { "id": "edge-tiktok-loop-type", "type": "custom", "source": "tiktok_comment_loop", "target": "tiktok_type_comment", "sourceHandle": "startLoopNode", "targetHandle": "success", "data": { "sourceHandle": "startLoopNode", "targetHandle": "success" }, "label": "", "style": { "stroke": "#f0a020", "strokeWidth": 2 }, "animated": true, "class": "source-tiktok_comment_loop target-tiktok_type_comment" },
-        { "id": "edge-tiktok-type-confirm", "type": "custom", "source": "tiktok_type_comment", "target": "tiktok_confirm_comment", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-tiktok_type_comment target-tiktok_confirm_comment" },
-        { "id": "edge-tiktok-confirm-loop", "type": "custom", "source": "tiktok_confirm_comment", "target": "tiktok_comment_loop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-tiktok_confirm_comment target-tiktok_comment_loop" },
-        { "id": "edge-tiktok-loop-stop", "type": "custom", "source": "tiktok_comment_loop", "target": "tiktok_stop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-tiktok_comment_loop target-tiktok_stop" }
+        {
+          "id": "edge-tiktok_start-success",
+          "type": "custom",
+          "source": "tiktok_start",
+          "target": "tiktok_wake",
+          "sourceHandle": "tiktok_start",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "tiktok_start",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_start target-tiktok_wake"
+        },
+        {
+          "id": "edge-tiktok_wake-success",
+          "type": "custom",
+          "source": "tiktok_wake",
+          "target": "tiktok_validate",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_wake target-tiktok_validate"
+        },
+        {
+          "id": "edge-tiktok_wake-fail",
+          "type": "custom",
+          "source": "tiktok_wake",
+          "target": "tiktok_open_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#d03050"
+          },
+          "animated": true,
+          "class": "source-tiktok_wake target-tiktok_open_error"
+        },
+        {
+          "id": "edge-tiktok_validate-success",
+          "type": "custom",
+          "source": "tiktok_validate",
+          "target": "tiktok_force_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_validate target-tiktok_force_stop"
+        },
+        {
+          "id": "edge-tiktok_validate-fail",
+          "type": "custom",
+          "source": "tiktok_validate",
+          "target": "tiktok_action_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#d03050"
+          },
+          "animated": true,
+          "class": "source-tiktok_validate target-tiktok_action_error"
+        },
+        {
+          "id": "edge-tiktok_force_stop-success",
+          "type": "custom",
+          "source": "tiktok_force_stop",
+          "target": "tiktok_content",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_force_stop target-tiktok_content"
+        },
+        {
+          "id": "edge-tiktok_force_stop-fail",
+          "type": "custom",
+          "source": "tiktok_force_stop",
+          "target": "tiktok_open_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#d03050"
+          },
+          "animated": true,
+          "class": "source-tiktok_force_stop target-tiktok_open_error"
+        },
+        {
+          "id": "edge-tiktok_content-success",
+          "type": "custom",
+          "source": "tiktok_content",
+          "target": "tiktok_actions",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_content target-tiktok_actions"
+        },
+        {
+          "id": "edge-tiktok_content-fail",
+          "type": "custom",
+          "source": "tiktok_content",
+          "target": "tiktok_open_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#d03050"
+          },
+          "animated": true,
+          "class": "source-tiktok_content target-tiktok_open_error"
+        },
+        {
+          "id": "edge-tiktok_actions-success",
+          "type": "custom",
+          "source": "tiktok_actions",
+          "target": "tiktok_action_success",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_actions target-tiktok_action_success"
+        },
+        {
+          "id": "edge-tiktok_actions-fail",
+          "type": "custom",
+          "source": "tiktok_actions",
+          "target": "tiktok_action_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#d03050"
+          },
+          "animated": true,
+          "class": "source-tiktok_actions target-tiktok_action_error"
+        },
+        {
+          "id": "edge-tiktok_action_success-success",
+          "type": "custom",
+          "source": "tiktok_action_success",
+          "target": "tiktok_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_action_success target-tiktok_stop"
+        },
+        {
+          "id": "edge-tiktok_action_error-success",
+          "type": "custom",
+          "source": "tiktok_action_error",
+          "target": "tiktok_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_action_error target-tiktok_stop"
+        },
+        {
+          "id": "edge-tiktok_open_error-success",
+          "type": "custom",
+          "source": "tiktok_open_error",
+          "target": "tiktok_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_open_error target-tiktok_stop"
+        }
       ]
     }
-  }
+  },
+  "type": "LOCAL",
+  "enableInput": true,
+  "enableContextMenu": false
 }

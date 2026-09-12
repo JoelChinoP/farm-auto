@@ -1,65 +1,1122 @@
 {
-  "id": "farm-open-content",
+  "id": "",
   "userId": 0,
-  "name": "Farm - Abrir contenido",
-  "description": "Abre HTTPS en Facebook Lite o TikTok, sin interacciones. Esquema historico; pendiente de importar y validar en GenFarmer Windows. No requiere peticiones al servicio desde el script.",
+  "name": "📱 Facebook/TikTok · Abrir contenido",
+  "description": "Reinicia la aplicación seleccionada y abre el contenido indicado.",
   "logo": null,
-  "version": "1.0.0",
+  "version": "2.1.1",
   "input": [
     {
-      "id": "input-content-url", "type": "input", "name": "Enlace de contenido",
+      "id": "input-content-url",
+      "type": "input",
+      "name": "Enlace de contenido",
       "options": {
-        "variable": { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
-        "hideLabel": false, "value": "", "placeholder": "https://...", "width": null, "height": null, "labelWidth": 190,
-        "maxLength": 2048, "minLength": 1, "disabled": false, "showCount": false
+        "variable": {
+          "id": "content_url",
+          "name": "contentUrl",
+          "label": "Enlace de contenido",
+          "value": "",
+          "secret": false
+        },
+        "hideLabel": false,
+        "value": "",
+        "placeholder": "https://www.facebook.com/... o https://www.tiktok.com/...",
+        "width": null,
+        "height": null,
+        "labelWidth": 160,
+        "maxLength": 2048,
+        "minLength": 10,
+        "disabled": false,
+        "showCount": false
       }
     },
     {
-      "id": "select-package-name", "type": "select", "name": "Aplicacion",
+      "id": "select-package-name",
+      "type": "select",
+      "name": "Plataforma",
       "options": {
-        "variable": { "id": "package_name", "name": "packageName", "label": "Paquete Android", "value": "com.facebook.lite", "secret": false },
-        "hideLabel": false, "value": "com.facebook.lite",
-        "options": [ { "label": "Facebook Lite", "value": "com.facebook.lite" }, { "label": "TikTok", "value": "com.zhiliaoapp.musically" } ],
-        "isMultiple": false, "placeholder": "Aplicacion", "width": null, "height": null, "labelWidth": 190
+        "variable": {
+          "id": "package_name",
+          "name": "packageName",
+          "label": "Plataforma",
+          "value": "",
+          "secret": false
+        },
+        "hideLabel": false,
+        "value": null,
+        "options": [
+          {
+            "label": "Facebook Lite",
+            "value": "com.facebook.lite"
+          },
+          {
+            "label": "TikTok",
+            "value": "com.zhiliaoapp.musically"
+          }
+        ],
+        "isMultiple": false,
+        "placeholder": "Seleccione una plataforma",
+        "width": null,
+        "height": null,
+        "labelWidth": 160
       }
     }
   ],
   "script": {
-    "id": "farm-open-content", "name": "Farm - Abrir contenido",
-    "description": "Solo abrir. Error o timeout sin ruta de exito; no reintenta el intent.", "version": "1.0.0",
+    "id": "control-panel-open-social-content",
+    "name": "Control Panel - Abrir contenido social",
+    "description": "Cierra la aplicación, la inicia nuevamente y abre el contenido solicitado.",
+    "version": "2.1.1",
     "variables": [
-      { "id": "content_url", "name": "contentUrl", "label": "Enlace de contenido", "value": "", "secret": false },
-      { "id": "package_name", "name": "packageName", "label": "Paquete Android", "value": "com.facebook.lite", "secret": false }
+      {
+        "id": "content_url",
+        "name": "contentUrl",
+        "label": "Enlace de contenido",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "package_name",
+        "name": "packageName",
+        "label": "Plataforma",
+        "value": "",
+        "secret": false
+      }
     ],
     "flow": {
       "nodes": [
         {
-          "id": "open_start", "type": "input", "position": { "x": 60, "y": 180 },
-          "data": { "action": "Start", "options": {}, "successNode": "open_run", "failNode": null },
-          "label": "Start", "sourcePosition": "right", "targetPosition": "left", "deletable": false, "class": ""
-        },
-        {
-          "id": "open_run", "type": "custom", "position": { "x": 300, "y": 180 },
-          "data": {
-            "icon": "actionEval", "action": "Javascript",
-            "options": {
-              "script": "const v = this.variables;\nconst deadline = Date.now() + 40000;\nconst call = async fn => {\n  const remaining = Math.min(8000, deadline - Date.now());\n  if (remaining <= 0) throw new Error('Timeout');\n  let timer;\n  try { return await Promise.race([fn(), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Timeout')), remaining); })]); }\n  finally { clearTimeout(timer); }\n};\ntry {\n  const packages = ['com.facebook.lite', 'com.zhiliaoapp.musically'];\n  if (!packages.includes(v.packageName) || typeof v.contentUrl !== 'string' || v.contentUrl.length > 2048 || /[\\u0000-\\u0020\\u007f]/.test(v.contentUrl)) throw new Error('Entrada invalida');\n  const url = new URL(v.contentUrl);\n  const domain = v.packageName === 'com.facebook.lite' ? 'facebook.com' : 'tiktok.com';\n  const hostOK = url.hostname === domain || url.hostname.endsWith('.' + domain) || (v.packageName === 'com.facebook.lite' && url.hostname === 'fb.watch');\n  if (url.protocol !== 'https:' || url.username || url.password || url.port || !hostOK) throw new Error('URL invalida');\n  const quote = s => \"'\" + s.replace(/'/g, \"'\\\"'\\\"'\") + \"'\";\n  const output = await call(() => this.clientAdb.shell('am start -W -a android.intent.action.VIEW -d ' + quote(v.contentUrl) + ' -p ' + quote(v.packageName)));\n  if (typeof output !== 'string' || !/^Status:\\s*ok\\s*$/m.test(output) || /Error:|Exception|unable to resolve/i.test(output)) throw new Error('Intent no confirmado');\n  const until = Date.now() + 12000;\n  do {\n    const { xmlDump } = await call(() => this.clientUiAutomator.dumpWindowHierarchy());\n    if (typeof xmlDump !== 'string' || !xmlDump.includes('</hierarchy>')) throw new Error('Jerarquia invalida');\n    const selector = \"(//*[@package='\" + v.packageName + \"' and @enabled='true' and not(@visible-to-user='false') and @bounds and @bounds!='[0,0][0,0]' and not(ancestor::*[@visible-to-user='false'])])[1]\";\n    if (await call(() => this.clientUiAutomator.xpath(selector, xmlDump))) return;\n    await new Promise(resolve => setTimeout(resolve, 400));\n  } while (Date.now() < until);\n  throw new Error('Aplicacion no visible');\n} catch {\n  throw new Error('No se confirmo la apertura. Revisar entrada, respuesta ADB e interfaz; no se reintento.');\n}",
-              "disabled": false, "nodeSleep": "0", "nodeTimeout": "50", "timeoutNextNode": "failNode",
-              "breakpoint": false, "timeoutAdbReconnect": "0", "nodeLog": ""
-            },
-            "successNode": "open_stop", "failNode": null
+          "id": "social_start",
+          "type": "input",
+          "position": {
+            "x": 80,
+            "y": 180
           },
-          "label": "Validar y abrir", "sourcePosition": "right", "targetPosition": "left", "class": ""
+          "data": {
+            "action": "Start",
+            "options": {},
+            "successNode": "social_platform_facebook",
+            "failNode": null
+          },
+          "label": "Start",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "deletable": false,
+          "class": ""
         },
         {
-          "id": "open_stop", "type": "custom", "position": { "x": 540, "y": 180 },
-          "data": { "icon": "actionStop", "action": "Stop", "options": {}, "successNode": null, "failNode": null },
-          "label": "Stop", "sourcePosition": "right", "targetPosition": "left", "class": ""
+          "id": "social_platform_facebook",
+          "type": "custom",
+          "position": {
+            "x": 300,
+            "y": 180
+          },
+          "data": {
+            "icon": "if",
+            "action": "If",
+            "options": {
+              "leftOperand": "packageName",
+              "operator": "=",
+              "rightOperand": "com.facebook.lite",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_force_stop",
+            "failNode": "social_platform_tiktok"
+          },
+          "label": "¿Facebook Lite?",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_platform_tiktok",
+          "type": "custom",
+          "position": {
+            "x": 540,
+            "y": 420
+          },
+          "data": {
+            "icon": "if",
+            "action": "If",
+            "options": {
+              "leftOperand": "packageName",
+              "operator": "=",
+              "rightOperand": "com.zhiliaoapp.musically",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "tiktok_force_stop",
+            "failNode": "social_error"
+          },
+          "label": "¿TikTok?",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_force_stop",
+          "type": "custom",
+          "position": {
+            "x": 540,
+            "y": 40
+          },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "command": "am force-stop com.facebook.lite",
+              "outputVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_open_app",
+            "failNode": "social_error"
+          },
+          "label": "Facebook Lite · Cerrar aplicación",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_open_app",
+          "type": "custom",
+          "position": {
+            "x": 780,
+            "y": 40
+          },
+          "data": {
+            "icon": "play",
+            "action": "StartApp",
+            "options": {
+              "packageName": "com.facebook.lite",
+              "timeout": "45",
+              "disabled": false,
+              "nodeSleep": "3",
+              "nodeTimeout": "60",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_content",
+            "failNode": "social_error"
+          },
+          "label": "Facebook Lite · Abrir aplicación",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_content",
+          "type": "custom",
+          "position": {
+            "x": 1020,
+            "y": 40
+          },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "command": "am start -W -a android.intent.action.VIEW -d '${contentUrl}' -p com.facebook.lite",
+              "outputVariable": null,
+              "disabled": false,
+              "nodeSleep": "4",
+              "nodeTimeout": "60",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_live_ready",
+            "failNode": "social_error"
+          },
+          "label": "Facebook Lite · Abrir contenido",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_live_ready",
+          "type": "custom",
+          "position": {
+            "x": 1020,
+            "y": -280
+          },
+          "data": {
+            "icon": "element-exists",
+            "action": "ElementExists",
+            "options": {
+              "xpath": "//*[@package='com.facebook.lite' and (@class='androidx.recyclerview.widget.RecyclerView' or @resource-id='com.facebook.lite:id/video_view')]",
+              "timeout": "45",
+              "disabled": false,
+              "nodeSleep": "2",
+              "nodeTimeout": "55",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_live_detect",
+            "failNode": "social_live_detect"
+          },
+          "label": "Facebook Lite · Esperar interfaz",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_live_detect",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": -80
+          },
+          "data": {
+            "icon": "image",
+            "action": "Image",
+            "options": {
+              "inputBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAUQAAABqBAMAAAA2FTUHAAAAGFBMVEX////+///u9v7d7f7c7f5xqugBZNEAZNGcUFU9AAAEhUlEQVR42u2ba5qbIBSGO+kGMtMNZJINJKLpAojJAhRdwETdwIjbL1dFQSWXVuiT82OeDIq8Auc7XOTHj5e97GX/vb1/bLfgn9p2+/l+A+BqBxaxYGMJ+LYFi9l2bUP4ARa1T+cJLRgXJ5xlXAEHbOOiK9/g2E4QEkbHm3myqd92riAGY/L4Czhjh5FKBA7Z2mVfmfCYFXDKNq5XorEa34BjtnbZncecGjhnjjuLyWF27iEGzlfisBo9QNy5iBg4LYq6NK7cRNy4rNu6eu/cRAxmumJ4cqkzDrtiiMqqoYZLBG9/MEL35JrujD/7FyLOx62+vbS8aRIAsjJ5GHE/4i1h3qhW9/FLacU0YjTM+Zi/9L0l6hE2ODFfHK9eiYif6C+7YQk9u/41xAih1BKxn14NEOt7EWcbev4es+YM2plXRgh1xDl3aZLHEddGzdEQGwjCqu6u4hO3GUQwLwXziBuj5hw1xEQWKhDtRMfC5hH3Rs0xIJ7Jny8dMTydIIj7Oh0TB2CIIatn+idGCQsHCHU3sTynmCCeoEhJp1Snj/hbQ0SVGfFYlte4bLCikOeqwSl3F6acWVlGJc0bZuRKwV8mK5uG6joLYeVVpqTWiJfGaCbEpikq3hPUfoyrzqMJbcZkK+/068ydEArp+G67fzKOuLsfEctSBpKqIFY0r4AgXMT1pNy2iNWoRgSTiOkpm0fsS2RYGRAZTd6FgagVLYkYdbluQqwHcUZBlCGaIhYo45Uj27lAuYb4RdmLOJNJdUrfHkp3ISXiFHVl2CImA+f+GqhmzS6T+guZcspqJQlRHxGjOInYa4SsBbgkqREoZ7V7NrX0JCIcqLgZ8ZsHTNhm/e4HQF66vJP8BzknBZL3iHeMTDE1MIboSxv1WOZRRKgULDpRxn/1ERP+zC9xQdTcsbtHdG9a2GiQfhpibkKEPCUlKq4gMtlvEWvQaw0d8caGxjJE34QonVYNen1EU9y8011U0VkUcUJ0XEG0k257RDHjeSqiVQC0R0wMA7B5dwkshxGlLWI2hnjpIocAItMWRReF6OC7B2NpZYl4brV8gHgUFRVzEsigU4lbjUv3wXZIGzXGUbeGyOPcIABK9UroGkIyHgBzUwA8WE8MMpVC9PwCmhDJMKLSEekwAiNU0qQz/cmGEex+Mtq+sIuVaRixt59eZYVhkqohAtNgDKodHKuDMR696u6ZcHR6tZqfpBrn0ToiH1DrfbHNdu1EMhGv1A7ZTEPazYNTfR2RjWmx7tHKbEA+opaptUzBcGJ76M4FEx0RxGQSlVwMiLQ7y+UhcpNwXvpKtUjBif2aTqR5yw0WjS4tkukrbNcv5c9QTHFD85JkMLbUPbV4t9Ri92AJNH5wCfR5tp9YSCZTdDaPKtCShMpCsqM7Q729Ifc3NXzYGvJgg82DbUoPNntfu/pPQfTg8w0fPoJxrxoDHz/I8uCzNteq8eDnJ5YefKjqVjVufP1o2iWnXvv7Ab8PxyB8OEziwZEcHw42+XA8zIdDdj4cVVzw+FBgC+jFsdmXvexlntof0LyXfdVAwrkAAAAASUVORK5CYII=",
+              "action": "exists",
+              "timeout": "8",
+              "indexImage": "0",
+              "clickDelay": "0",
+              "threshold": "0.99",
+              "rgb": "true",
+              "matchingMethod": "tpl",
+              "outputPositionsVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "20",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_live_open",
+            "failNode": "social_live_detect_variant"
+          },
+          "label": "Facebook Lite · Detectar LIVE",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_live_detect_variant",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": -280
+          },
+          "data": {
+            "icon": "image",
+            "action": "Image",
+            "options": {
+              "inputBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAVUAAAB4BAMAAACwZ3xBAAAAGFBMVEX////+///u9v7d7f7c7f5xqugBZNEAZNGcUFU9AAAEkklEQVR42u2ca3aqMBCAu4RW7waw3UBbN1BMdAOJbEBlAwW2f4E8yBOCWp05h/xpD4bkY5hHMiR5eUNTXl8W1oV1YX0o66YtW/LgsvvebLIrWB8OqstXNot19U6eWHabGayrLXlu+Upm3ZCnlzxLY30nAMouS2EFgRqC9VlXBEjJJ1nBoPqwLuvTPcCIN3BZPwikko2xrkGhkt0I64oAK3mc9QMaq6UFFis4sdqCtVjhidUSrMkKUKyWYE1WiGI1BWuwghSrKViDFaZYDcEarEBRyY/PuobKuvNZoarAoASadQUWVVuXZl3DZd25rHBVQCuBZgWMqjyBYl1BZs1tVsgqoJRAsW5Bs36arKBVQCmBZF3DZt2ZrLDVVSosQlbgqMLDCtagafFL2XSlvnAYxiVYA6ZFBago1TXtc87va1yCNaCuRdPcCNu2wAg5Xti9FDbGum/s4nRIL6qcx1nplS8lzrqdEGvTnBzWBIkr1vpekUuw+r+VDmv1h6yU80k9+ckkq+8GqIPqdjiHdVIHUurkM1ibTtbVfFZybNhdWf9NmlbXbWFYWMqrLZomzQUk2d8s1r1pYc9j9V3WwWPl5SgrtR0/5cxlpcKAjAih7hlYR6xsDqvtuUzWVuCnTn/P9mthhm0VTd3GwZP0hbLisTNZplzOr7wSexd3Yz2XVi+95dWlydoU/d3F0Mxe+RfNSoNhJ5mViWedYq21aOxAYrCW3d3UcIClalKzlmOe5XOKtXIiWIzV6aQMsPZ3F0M7VN+kWGkknutR4Tgrc1yCxaqGA12FMz8O9L3y8iLA2mKd6VFdqtixd9zStg6d+nI/ntus2xirGxZOXiyohA60l2R18XSVqGKw1pwyqmrWyqOZsU1o9D6iBFOsQlAJrL/ixQ83/9oxVmComkVXU7R+MFjFw9JHsA7uVP5nszLRqvRbTCLtpcVVgwkM7yfISm7VgQRW5wdTfJq1Itb7CfoBcpVtGX4gnVWZepw1EponWVN9FgTW1FjwANZskjUxxqazylna9azbBNbLfVhZYByYZFtzxi6svJ31MLQgyfpBoPav0mfV81gDY23aROYFHutBBweHVcUkSkKxoByNBbNYOytLYxVB14mxyiuzLqXD4jG2mM0anBsez9bvKpfhsYqxS+mzdqKreftLJUYqXI9dmlYV+ivRsctbOuvInNtjDY4JLTOozTGhiOLV0CYZY93clMvwWYUG+fqqbzsNzpbJzvTIMawC+QjrjByRz9p3Xvt+wJi4qCYqdbVSV2oyypqRSSVgs1jbiWDNDgFWPSGUWdNKP1slr9QsmiyO5d5uzGlSPpK8GjK0bMjV2n9Hcm8ff5ErvvsHgyhrl4O/XPpp1fn5OXiDFfjnLSsHv4LOmuP8ZrR8N/wjVkzfjjF9k8e01gHVGhJMa3MwrXlCtZYM0xo9TGsfMa0pRbVWF9MaaFRryzGt2ce0FwLVHhNMe3dQ7YnCtNcM1R4+THsjUe05RbWXF9MeaVR7z1Ht6Ud1VgKqMyhQne2B6swUVGfRyGN+3r8fD7qJHvOznPO0sC6sC+vrf5/khrlE/8y4AAAAAElFTkSuQmCC",
+              "action": "exists",
+              "timeout": "5",
+              "indexImage": "0",
+              "clickDelay": "0",
+              "threshold": "0.99",
+              "rgb": "true",
+              "matchingMethod": "tpl",
+              "outputPositionsVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "20",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_live_open",
+            "failNode": "social_live_detect_vivo"
+          },
+          "label": "Facebook Lite · Detectar LIVE (variante)",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_live_detect_vivo",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": -480
+          },
+          "data": {
+            "icon": "image",
+            "action": "Image",
+            "options": {
+              "inputBase64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAREAAABsBAMAAAC/cZsWAAAAGFBMVEX////+///x+P/e7f7d7f6ly/I2hdwAZNFJvZBrAAAEN0lEQVR42s2b62GjMAyASbqA27sBKGWAtmGAa2LoAqRZIIQFCqx/+InxA0xakPUjiSDAhyTLYMtRtHs0JOnlgFeQwyFJnlHkL+tgCDm9x54c+xe8spwSL5CnDK8v74aLTJ8lW4D0KPEcyQveSE7xNMlmIAaKRvKEN5QjcpM8ZVuSjMN2RLLfFqRHcZGkeGuJ7SR/NgfBJ2Qj2dw3Y/8gSN+M/DOQ7EFA8NEkgTHJYBQEbJLBKAjaJNIoCNok0igI3CTCKJxklwGSvKkkD4Ag+KSSQDqHuwdBx6uMWQTV9xn9IArAOcw9CLzliNaDAggTFigoBOdQ91CSDJzklZGAO4e6B0EnWJlmURBhQgIlKJJdFgDJGyGxBWz+VXdMbtVGIYusAZsLDiJtuUnIImuYqCBd19x59rxeYM/YSlJ0Y9GMkt+kTJ78Yhw5Q5LZTjGSb41kcNzkyXvLXv2zLIp25lYNRL/gKiQfsaXp5DpJdx/JIu8cbSSFQVL20dcuJsln9uskD14k6v31JO2Zyi+271Mc/TU2fhok169O8XneLblZ/3yfepBUnYskJ4bJb+eR3ktvMPJ7pNMEUJU/IumcJAU3WDPorfhL79GrqmP8RW9rNZJK3ZuzllYQNkKi6iIAS28Skdgqdg9zJOMuoaZX+iTpkJCouuhEGscDpJOk0TqgaZJ2lEQohPgQeuHoPWZJSq1BqyQd7XUq9ofqfBmyH70ms8SAI/X2PGqFqvxzdzt6ur0ama0VEZoPN1oIPwyGEDrL/heHe9wkrS9JI6OD72y4/yiJojNcVzb6BZJvnaRll5ckrYpDgexx8mPvjEn6ny3fKkKE64Kktofsa4RdJNeJiFXbjkbSH00a7VWQSJ078g4S31ZskpRK0x30+0l8M5tGQvI/bSqcROozJLElThZme42k3/td0z8wEqlvTtK3jYZdk5FIfSZiPZ8K6gUkvQHYRk4i9JlW7EdCOndvkosw4EV+CeNMZbbY43XH9vQ4QfIpOi1OIvXpbO9LgpX3OfWJ2kJSiLR4UXKSQKycPSCyzJovecuwkOSiq+AkudF1lPaxnORHb14WEiwehjiJ1CeflI5WkgVvozaSmh8hSIQuDiwdJM948Rv6DIkg0L/ZiR2DIB9RhLK1Ri1sr4Xn88Q4aBrCSA4dG06to1s3BtNuNLpFSQIYjmXzXmgfAgmdQwhkFJSMUocxMhwWSRgzCIQkjFkVOpsBH7KvnCQNIkxccwjbOyeIeZWhxiENwTmUJITZ/CBmR9WqnDQA5zCSACphQqhxeBvVkaXwzoGvytHrDVNwkwgS8GpD+Nq62CCBrkoFr8G0VVIDVy+rtbqwFd3AldSxYxUCaOX/uOIecjWEtgoBcIWIvkYEbtWMsW4GbCWRuZYIanWVZX0V0IqzoFfhBbQykchjkrwcslUwkiR5NheIRtF/3rEheerHploAAAAASUVORK5CYII=",
+              "action": "exists",
+              "timeout": "5",
+              "indexImage": "0",
+              "clickDelay": "0",
+              "threshold": "0.99",
+              "rgb": "true",
+              "matchingMethod": "tpl",
+              "outputPositionsVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "20",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_live_open",
+            "failNode": "social_success"
+          },
+          "label": "Facebook Lite · Detectar LIVE (En vivo)",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_live_open",
+          "type": "custom",
+          "position": {
+            "x": 1500,
+            "y": -80
+          },
+          "data": {
+            "icon": "touch",
+            "action": "Javascript",
+            "options": {
+              "script": "const video = \"//*[@package='com.facebook.lite' and @resource-id='com.facebook.lite:id/video_view']\";\nconst inFeed = video + \"[ancestor::*[@class='androidx.recyclerview.widget.RecyclerView']]\";\nconst preview = \"//*[@package='com.facebook.lite' and @class='androidx.recyclerview.widget.RecyclerView']/*/*[@clickable='true']/*[@class='android.view.ViewGroup' and @clickable='false']/*[@class='android.view.View' and @clickable='true']\";\nconst player = video + \"[not(ancestor::*[@class='androidx.recyclerview.widget.RecyclerView'])]\";\nlet clicked = false;\nlet stable = 0;\nlet lastError = '';\nfor (let check = 0; check < 15; check++) {\n  try {\n    const xml = await this.getXml();\n    if (await this.queryXpath(player, xml)) {\n      if (++stable >= 2) return;\n    } else {\n      stable = 0;\n      if (!clicked) {\n        const element = (await this.queryXpath('(' + inFeed + ')[1]', xml)) ||\n          (await this.queryXpath('(' + preview + ')[1]', xml));\n        if (element) {\n          clicked = true;\n          await element.click();\n        }\n      }\n    }\n    lastError = '';\n  } catch (error) {\n    stable = 0;\n    lastError = String(error && error.message || error);\n    if (!/HTTP 50[234]|status code 50[234]|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|timed out/i.test(lastError)) throw error;\n  }\n  await genfarmerSleep(1);\n}\nthrow new Error('No se pudo confirmar el reproductor LIVE tras la espera.' + (lastError ? ' ' + lastError : ''));",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_success",
+            "failNode": "social_error"
+          },
+          "label": "Facebook Lite · Abrir video LIVE",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_force_stop",
+          "type": "custom",
+          "position": {
+            "x": 780,
+            "y": 420
+          },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "command": "am force-stop com.zhiliaoapp.musically",
+              "outputVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "45",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "tiktok_open_app",
+            "failNode": "social_error"
+          },
+          "label": "TikTok · Cerrar aplicación",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_open_app",
+          "type": "custom",
+          "position": {
+            "x": 1020,
+            "y": 420
+          },
+          "data": {
+            "icon": "play",
+            "action": "StartApp",
+            "options": {
+              "packageName": "com.zhiliaoapp.musically",
+              "timeout": "45",
+              "disabled": false,
+              "nodeSleep": "3",
+              "nodeTimeout": "60",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "tiktok_content",
+            "failNode": "social_error"
+          },
+          "label": "TikTok · Abrir aplicación",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_content",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": 420
+          },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "command": "am start -W -a android.intent.action.VIEW -d '${contentUrl}' -p com.zhiliaoapp.musically",
+              "outputVariable": null,
+              "disabled": false,
+              "nodeSleep": "4",
+              "nodeTimeout": "60",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_success",
+            "failNode": "social_error"
+          },
+          "label": "TikTok · Abrir contenido",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_success",
+          "type": "custom",
+          "position": {
+            "x": 1740,
+            "y": 180
+          },
+          "data": {
+            "icon": "log",
+            "action": "Log",
+            "options": {
+              "log": "Contenido abierto correctamente.",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_stop",
+            "failNode": null
+          },
+          "label": "Contenido abierto",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_error",
+          "type": "custom",
+          "position": {
+            "x": 1500,
+            "y": 600
+          },
+          "data": {
+            "icon": "log",
+            "action": "Log",
+            "options": {
+              "log": "No se pudo abrir el contenido en el dispositivo.",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "successNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_stop",
+            "failNode": null
+          },
+          "label": "Registrar error",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_stop",
+          "type": "custom",
+          "position": {
+            "x": 1980,
+            "y": 180
+          },
+          "data": {
+            "icon": "stop",
+            "action": "Stop",
+            "options": {},
+            "successNode": null,
+            "failNode": null
+          },
+          "label": "Stop",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
         }
       ],
       "edges": [
-        { "id": "edge-open-start-run", "type": "custom", "source": "open_start", "target": "open_run", "sourceHandle": "open_start", "targetHandle": "success", "data": { "sourceHandle": "open_start", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-open_start target-open_run" },
-        { "id": "edge-open-run-stop", "type": "custom", "source": "open_run", "target": "open_stop", "sourceHandle": "success", "targetHandle": "success", "data": { "sourceHandle": "success", "targetHandle": "success" }, "label": "", "style": { "stroke": "#62fcaf", "strokeWidth": 2 }, "animated": true, "class": "source-open_run target-open_stop" }
+        {
+          "id": "edge-start-platform-facebook",
+          "type": "custom",
+          "source": "social_start",
+          "target": "social_platform_facebook",
+          "sourceHandle": "social_start",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "social_start",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_start target-social_platform_facebook"
+        },
+        {
+          "id": "edge-platform-facebook-yes",
+          "type": "custom",
+          "source": "social_platform_facebook",
+          "target": "social_force_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_platform_facebook target-social_force_stop"
+        },
+        {
+          "id": "edge-platform-facebook-no",
+          "type": "custom",
+          "source": "social_platform_facebook",
+          "target": "social_platform_tiktok",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_platform_facebook target-social_platform_tiktok"
+        },
+        {
+          "id": "edge-platform-tiktok-yes",
+          "type": "custom",
+          "source": "social_platform_tiktok",
+          "target": "tiktok_force_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_platform_tiktok target-tiktok_force_stop"
+        },
+        {
+          "id": "edge-platform-tiktok-no",
+          "type": "custom",
+          "source": "social_platform_tiktok",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_platform_tiktok target-social_error"
+        },
+        {
+          "id": "edge-facebook-force-stop-open",
+          "type": "custom",
+          "source": "social_force_stop",
+          "target": "social_open_app",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_force_stop target-social_open_app"
+        },
+        {
+          "id": "edge-facebook-open-content",
+          "type": "custom",
+          "source": "social_open_app",
+          "target": "social_content",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_open_app target-social_content"
+        },
+        {
+          "id": "edge-facebook-content-live-ready",
+          "type": "custom",
+          "source": "social_content",
+          "target": "social_live_ready",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_content target-social_live_ready"
+        },
+        {
+          "id": "edge-facebook-live-ready-detect",
+          "type": "custom",
+          "source": "social_live_ready",
+          "target": "social_live_detect",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_live_ready target-social_live_detect"
+        },
+        {
+          "id": "edge-facebook-live-ready-fallback",
+          "type": "custom",
+          "source": "social_live_ready",
+          "target": "social_live_detect",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_live_ready target-social_live_detect"
+        },
+        {
+          "id": "edge-facebook-live-detect-open",
+          "type": "custom",
+          "source": "social_live_detect",
+          "target": "social_live_open",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_live_detect target-social_live_open"
+        },
+        {
+          "id": "edge-facebook-live-detect-variant",
+          "type": "custom",
+          "source": "social_live_detect",
+          "target": "social_live_detect_variant",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_live_detect target-social_live_detect_variant"
+        },
+        {
+          "id": "edge-facebook-live-variant-open",
+          "type": "custom",
+          "source": "social_live_detect_variant",
+          "target": "social_live_open",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_live_detect_variant target-social_live_open"
+        },
+        {
+          "id": "edge-facebook-live-variant-vivo",
+          "type": "custom",
+          "source": "social_live_detect_variant",
+          "target": "social_live_detect_vivo",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_live_detect_variant target-social_live_detect_vivo"
+        },
+        {
+          "id": "edge-facebook-live-vivo-open",
+          "type": "custom",
+          "source": "social_live_detect_vivo",
+          "target": "social_live_open",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_live_detect_vivo target-social_live_open"
+        },
+        {
+          "id": "edge-facebook-live-vivo-skip",
+          "type": "custom",
+          "source": "social_live_detect_vivo",
+          "target": "social_success",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_live_detect_vivo target-social_success"
+        },
+        {
+          "id": "edge-facebook-live-open-success",
+          "type": "custom",
+          "source": "social_live_open",
+          "target": "social_success",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_live_open target-social_success"
+        },
+        {
+          "id": "edge-facebook-live-open-error",
+          "type": "custom",
+          "source": "social_live_open",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_live_open target-social_error"
+        },
+        {
+          "id": "edge-tiktok-force-stop-open",
+          "type": "custom",
+          "source": "tiktok_force_stop",
+          "target": "tiktok_open_app",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_force_stop target-tiktok_open_app"
+        },
+        {
+          "id": "edge-tiktok-open-content",
+          "type": "custom",
+          "source": "tiktok_open_app",
+          "target": "tiktok_content",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_open_app target-tiktok_content"
+        },
+        {
+          "id": "edge-tiktok-content-success",
+          "type": "custom",
+          "source": "tiktok_content",
+          "target": "social_success",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_content target-social_success"
+        },
+        {
+          "id": "edge-facebook-force-stop-error",
+          "type": "custom",
+          "source": "social_force_stop",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_force_stop target-social_error"
+        },
+        {
+          "id": "edge-facebook-open-error",
+          "type": "custom",
+          "source": "social_open_app",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_open_app target-social_error"
+        },
+        {
+          "id": "edge-facebook-content-error",
+          "type": "custom",
+          "source": "social_content",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_content target-social_error"
+        },
+        {
+          "id": "edge-tiktok-force-stop-error",
+          "type": "custom",
+          "source": "tiktok_force_stop",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-tiktok_force_stop target-social_error"
+        },
+        {
+          "id": "edge-tiktok-open-error",
+          "type": "custom",
+          "source": "tiktok_open_app",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-tiktok_open_app target-social_error"
+        },
+        {
+          "id": "edge-tiktok-content-error",
+          "type": "custom",
+          "source": "tiktok_content",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-tiktok_content target-social_error"
+        },
+        {
+          "id": "edge-success-stop",
+          "type": "custom",
+          "source": "social_success",
+          "target": "social_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_success target-social_stop"
+        },
+        {
+          "id": "edge-error-stop",
+          "type": "custom",
+          "source": "social_error",
+          "target": "social_stop",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_error target-social_stop"
+        }
       ]
     }
   }

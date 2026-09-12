@@ -27,9 +27,13 @@ def request(path: str, method: str = "GET", data=None):
         raise GenFarmerError(f"GenFarmer respondio HTTP {error.code}", mutation and error.code >= 500) from error
     except (URLError, OSError, ValueError) as error:
         raise GenFarmerError("GenFarmer no responde o devolvio una respuesta invalida", mutation) from error
-    # The installed API uses an envelope; do not accept a 200 with an error or HTML.
-    if not isinstance(payload, dict) or payload.get("success") is not True:
+    # Explicit success:false is a rejection; a missing envelope cannot confirm a mutation receipt.
+    if not isinstance(payload, dict):
         raise GenFarmerError("GenFarmer no confirmo la solicitud; revisar su API local", mutation)
+    if payload.get("success") is not True:
+        rejected = payload.get("success") is False
+        message = "GenFarmer rechazo la solicitud" if rejected else "GenFarmer no confirmo la solicitud"
+        raise GenFarmerError(f"{message}; revisar su API local", mutation and not rejected)
     return payload.get("data", {})
 
 
@@ -40,18 +44,30 @@ def devices() -> list[dict]:
     result = []
     seen = set()
     for position, row in enumerate(rows, 1):
-        if not isinstance(row, dict) or not isinstance(row.get("serialNo"), str) or not row["serialNo"] or row["serialNo"] in seen:
+        if not isinstance(row, dict) or not isinstance(row.get("serialNo"), str):
             raise GenFarmerError("GenFarmer devolvio un serial ausente o repetido")
-        seen.add(row["serialNo"])
+        serial = row["serialNo"].strip()
+        if not serial or serial in seen:
+            raise GenFarmerError("GenFarmer devolvio un serial ausente o repetido")
+        seen.add(serial)
         connection_id = row.get("currentDeviceId") or ""
         if not isinstance(connection_id, str):
             raise GenFarmerError("Identificador de conexion invalido")
+        connection_id = connection_id.strip()
+        connected = row.get("connected")
+        if connected is not None and type(connected) is not bool:
+            raise GenFarmerError("Estado de conexion invalido")
         index = row.get("index")
+        if index is not None and (type(index) is not int or index < 0):
+            raise GenFarmerError("Orden de dispositivo invalido")
+        name = row.get("name")
+        if name is not None and not isinstance(name, str):
+            raise GenFarmerError("Nombre de dispositivo invalido")
         result.append({
-            "id": row["serialNo"], "serial": row["serialNo"], "connectionId": connection_id,
-            "name": str(row.get("name") or row["serialNo"]),
-            "order": index if type(index) is int else position,
-            "connected": bool(connection_id) and row.get("connected") is not False,
+            "id": serial, "serial": serial, "connectionId": connection_id,
+            "name": name.strip() if name and name.strip() else serial,
+            "order": index if index is not None else position,
+            "connected": bool(connection_id) and connected is not False,
         })
     # Stable sort retains the returned order when GenFarmer has no index/ties.
     return sorted(result, key=lambda row: row["order"])
@@ -76,6 +92,8 @@ def task_payload(app: dict, values: dict, device: dict, user: int, name: str) ->
         if item["name"] in values:
             item["value"] = values[item["name"]]
 
+    bound = set()
+
     def bind(value):
         if isinstance(value, list):
             return [bind(item) for item in value]
@@ -85,9 +103,12 @@ def task_payload(app: dict, values: dict, device: dict, user: int, name: str) ->
         variable = result.get("variable")
         if isinstance(variable, dict) and variable.get("name") in values:
             result["value"] = variable["value"] = values[variable["name"]]
+            bound.add(variable["name"])
         return result
 
     inputs = bind(app.get("input", []))
+    if set(values) - bound:
+        raise GenFarmerError("El workflow no expone todas sus variables como entradas; revisar .genfarm")
     return {
         "userId": user, "appId": app["id"], "name": name,
         "input": inputs, "variables": variables, "enableInput": bool(inputs),

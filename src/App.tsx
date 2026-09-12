@@ -86,16 +86,16 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : 'No se pudo completar la solicitud.'
 }
 
-function urlProblem(urls: string[], platform: Platform) {
+function urlProblem(urls: string[], platform: Platform, requireVideo = false) {
   if (!urls.length) return 'Añade al menos una URL.'
   if (urls.length > 10) return `Hay ${urls.length} URLs. El máximo es 10; elimina las sobrantes para continuar.`
   const domains = platform === 'facebook' ? ['facebook.com'] : ['tiktok.com']
   const invalid = urls.findIndex((value) => {
     try {
       const url = new URL(value)
-      return url.protocol !== 'https:' || !!url.username || !!url.password || !!url.port || value.length > 2048 || /\s/u.test(value) || value.includes(String.fromCharCode(0)) ||
+      return url.protocol !== 'https:' || !!url.username || !!url.password || !!url.port || value.length > 2048 || /\s/u.test(value) || value.includes("'") || value.includes(String.fromCharCode(0)) ||
         (!(platform === 'facebook' && url.hostname === 'fb.watch') && !domains.some((domain) => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) ||
-        (platform === 'tiktok' && /^\/@[^/]+\/live\/?$/i.test(url.pathname))
+        (platform === 'tiktok' && (/^\/@[^/]+\/live\/?$/i.test(url.pathname) || (requireVideo && !/^\/@[^/]+\/video\/\d+\/?$/.test(url.pathname))))
     } catch { return true }
   })
   if (invalid !== -1) return `Revisa la URL de la línea ${invalid + 1}: debe ser un enlace de ${views[platform].title}.`
@@ -108,7 +108,7 @@ function formatDate(value: number) {
 }
 
 function actionLabel(actions: Actions, platform: Platform) {
-  return [actions.like && 'Like', actions.comment && 'Comentar', actions.share && (platform === 'tiktok' ? 'Repost' : 'Compartir')].filter(Boolean).join(' · ') || 'Solo abrir contenido'
+  return [actions.like && 'Like', actions.comment && 'Comentar', actions.share && (platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)')].filter(Boolean).join(' · ') || 'Solo abrir contenido'
 }
 
 function App() {
@@ -257,14 +257,15 @@ function App() {
     if (!request) {
       if (!campaign.prepared || !campaign.reviewed || campaign.publications.some((publication) => publication.extracting)) return
       const urls = campaign.urls.split('\n').map((url) => url.trim()).filter(Boolean)
-      const problem = urlProblem(urls, platform)
+      const problem = urlProblem(urls, platform, hasActions)
       const deviceIds = devices.devices.filter((device) => device.connected && campaign.deviceIds.includes(device.id)).map((device) => device.id)
       if (problem || !deviceIds.length || deviceIds.length !== campaign.deviceIds.length) {
         setNotice({ text: problem || 'Selecciona de nuevo los dispositivos conectados.', error: true })
         return
       }
-      if (campaign.publications.some((publication) => publication.context.length > 500 || publication.commentText.length > 500 || /[\r\n]/.test(publication.commentText) || (campaign.actions.comment && !publication.commentText.trim()))) {
-        setNotice({ text: 'Revisa el contexto y los comentarios: máximo 500 caracteres y comentario en una sola línea.', error: true })
+      const commentLimit = platform === 'tiktok' ? 150 : 500
+      if (campaign.publications.some((publication) => publication.context.length > 500 || publication.commentText.length > commentLimit || /[\r\n]/.test(publication.commentText) || (campaign.actions.comment && !publication.commentText.trim()))) {
+        setNotice({ text: `Revisa el contexto y los comentarios: máximo ${commentLimit} caracteres y comentario en una sola línea.`, error: true })
         return
       }
       const scheduledAt = campaign.schedule ? new Date(campaign.schedule).getTime() : null
@@ -333,9 +334,9 @@ function App() {
   const campaign = platform ? campaigns[platform] : null
   const attempt = platform ? attempts[platform] : null
   const urls = campaign?.urls.split('\n').map((url) => url.trim()).filter(Boolean) ?? []
-  const problem = platform ? urlProblem(urls, platform) : ''
   const connected = devices?.devices.filter((device) => device.connected) ?? []
   const hasActions = campaign ? Object.values(campaign.actions).some(Boolean) : false
+  const problem = platform ? urlProblem(urls, platform, hasActions) : ''
   const workflow = hasActions && platform ? platform : 'open-content'
   const missingWorkflow = settings && !settings.workflows[workflow]
   const locked = attempt?.state === 'sending' || attempt?.state === 'accepted' || attempt?.state === 'uncertain'
@@ -412,18 +413,18 @@ function App() {
                 <section className="work-section review-section">
                   <div className="section-heading"><h2><span className="step-number">2</span>Revisa</h2></div>
                   <fieldset className="action-picker"><legend>Acciones</legend>
-                    {(['like', 'comment', 'share'] as const).map((action) => <label key={action}><input type="checkbox" checked={campaign.actions[action]} onChange={(event) => updateCampaign(platform, { actions: { ...campaign.actions, [action]: event.target.checked } })} />{action === 'like' ? 'Like' : action === 'comment' ? 'Comentar' : platform === 'tiktok' ? 'Repost' : 'Compartir'}</label>)}
+                    {(['like', 'comment', 'share'] as const).map((action) => <label key={action}><input type="checkbox" checked={campaign.actions[action]} onChange={(event) => updateCampaign(platform, { actions: { ...campaign.actions, [action]: event.target.checked } })} />{action === 'like' ? 'Like' : action === 'comment' ? 'Comentar' : platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)'}</label>)}
                   </fieldset>
                   <p className="field-help">{hasActions ? 'Se enviará una sola solicitud con las acciones elegidas.' : 'Sin acciones seleccionadas, solo se abre el contenido.'}</p>
                   <p className="context-note">{platform === 'facebook' ? 'Contexto de metadatos públicos, sin IA. Puedes pegarlo o editarlo si la extracción falla.' : 'Contexto y comentarios manuales. No se genera texto con IA.'}</p>
                   <ol className="publication-list">{campaign.publications.map((publication, index) => <li key={publication.url}>
                     <div className="publication-heading"><span className="device-order">{String(index + 1).padStart(2, '0')}</span><a href={publication.url} target="_blank" rel="noreferrer">{publication.url}<span className="sr-only"> (abre otra pestaña)</span></a></div>
-                    <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>Contexto <span className="field-help">opcional · {publication.context.length}/500</span></label>
+                    <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>Texto visible exacto para verificar el destino <span className="field-help">opcional · {publication.context.length}/500</span></label>
                       {platform === 'facebook' && <button className="text-button" disabled={publication.extracting || !!publication.context.trim()} onClick={() => void extractContext(publication.url)}>{publication.extracting ? 'Extrayendo…' : 'Extraer contexto'}</button>}
                     </div>
-                    <textarea id={`${platform}-context-${index}`} rows={3} maxLength={500} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder="Pega o escribe el contexto de esta publicación" />
+                    <textarea id={`${platform}-context-${index}`} rows={3} maxLength={500} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder="Pega un fragmento exacto visible en esta publicación" />
                     {publication.error && <p className="field-error" role="alert" id={`${platform}-context-error-${index}`}>{publication.error}</p>}
-                    {campaign.actions.comment && <div className="comment-field"><label htmlFor={`${platform}-comment-${index}`}>Comentario <span className="field-help">{publication.commentText.length}/500 · una línea</span></label><input id={`${platform}-comment-${index}`} type="text" maxLength={500} required value={publication.commentText} onChange={(event) => updatePublication(platform, publication.url, { commentText: event.target.value.replace(/[\r\n]+/g, ' ') })} placeholder="Escribe el comentario que se publicará" /></div>}
+                    {campaign.actions.comment && <div className="comment-field"><label htmlFor={`${platform}-comment-${index}`}>Comentario <span className="field-help">{publication.commentText.length}/{platform === 'tiktok' ? 150 : 500} · una línea</span></label><input id={`${platform}-comment-${index}`} type="text" maxLength={platform === 'tiktok' ? 150 : 500} required value={publication.commentText} onChange={(event) => updatePublication(platform, publication.url, { commentText: event.target.value.replace(/[\r\n]+/g, ' ') })} placeholder="Escribe el comentario que se publicará" /></div>}
                   </li>)}</ol>
                 </section>
                 <section className="work-section send-section">

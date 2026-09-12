@@ -7,8 +7,8 @@ from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
-def validate_url(value: str, platform: str) -> str:
-    if len(value) > 2048 or re.search(r"[\x00-\x20\x7f]", value):
+def validate_url(value: str, platform: str, require_video: bool = False) -> str:
+    if len(value) > 2048 or "'" in value or re.search(r"[\x00-\x20\x7f]", value):
         raise ValueError("URL invalida")
     parsed = urlsplit(value)
     host = (parsed.hostname or "").lower()
@@ -18,6 +18,8 @@ def validate_url(value: str, platform: str) -> str:
         raise ValueError("Usa una URL HTTPS de la plataforma, sin credenciales ni puertos alternativos")
     if platform == "tiktok" and re.fullmatch(r"/@[^/]+/live/?", parsed.path, re.I):
         raise ValueError("TikTok Live no esta incluido")
+    if platform == "tiktok" and require_video and not re.fullmatch(r"/@[^/]+/video/\d+/?", parsed.path):
+        raise ValueError("Las acciones de TikTok requieren la URL completa /@usuario/video/id")
     return value
 
 

@@ -8,7 +8,7 @@
   "mcp": {
     "codegraph": {
       "type": "local",
-      "command": ["codegraph", "serve", "--mcp"],
+      "command": ["codegraph", "mcp", "serve", "--root", ".", "--stdio"],
       "enabled": true
     },
     "engram": {
