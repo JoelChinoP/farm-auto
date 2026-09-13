@@ -1,8 +1,10 @@
 import hashlib
 import json
 import logging
+import queue
 import sqlite3
 import threading
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -14,7 +16,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
-from . import genfarmer
+from . import comments, genfarmer
 from .config import settings
 from .context import extract_context, validate_url
 from .database import connect, init_database, now_ms, submission_dict
@@ -23,6 +25,8 @@ from .database import connect, init_database, now_ms, submission_dict
 timers: dict[str, threading.Timer] = {}
 timer_lock = threading.Lock()
 stopping = threading.Event()
+dispatch_queue: queue.Queue[str | None] = queue.Queue()
+worker_thread: threading.Thread | None = None
 log = logging.getLogger(__name__)
 
 
@@ -57,8 +61,6 @@ def dispatch(submission_id: str):
             }), "run")
             with connect() as db:
                 db.execute("UPDATE submissions SET run_id=? WHERE id=?", (run_id, submission_id))
-            if settings.genfarmer_explicit_start:
-                genfarmer.request(f"/automation/runs/{genfarmer.path_id(run_id)}/run", "PUT", {"deviceIds": [device["connectionId"]]})
             status = "sent"
         except genfarmer.GenFarmerError as caught:
             status = "unknown" if caught.ambiguous or run_requested else "failed"
@@ -77,11 +79,39 @@ def dispatch(submission_id: str):
             timers.pop(submission_id, None)
 
 
+def chunk_delay(index: int, chunk_size: int, gap_seconds: float) -> float:
+    # Stagger big batches: one window of chunk_size tasks, then wait gap_seconds.
+    if chunk_size <= 0 or index < chunk_size:
+        return 0
+    return (index // chunk_size) * gap_seconds
+
+
+def enqueue(submission_id: str):
+    dispatch_queue.put(submission_id)
+
+
+def dispatch_worker():
+    # ponytail: un solo hilo con pausa fija; GenFarmer local se satura con la rafaga completa.
+    while not stopping.is_set():
+        try:
+            submission_id = dispatch_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        if submission_id is None or stopping.is_set():
+            return
+        try:
+            dispatch(submission_id)
+        finally:
+            dispatch_queue.task_done()
+        if settings.genfarmer_dispatch_gap > 0:
+            time.sleep(settings.genfarmer_dispatch_gap)
+
+
 def schedule(submission_id: str, when: int):
     with timer_lock:
         if stopping.is_set() or submission_id in timers:
             return
-        timer = threading.Timer(max(0, (when - now_ms()) / 1000), dispatch, (submission_id,))
+        timer = threading.Timer(max(0, (when - now_ms()) / 1000), enqueue, (submission_id,))
         timer.name = f"send-{submission_id}"
         timer.daemon = True
         timers[submission_id] = timer
@@ -94,8 +124,11 @@ def schedule(submission_id: str, when: int):
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global worker_thread
     init_database()
     stopping.clear()
+    worker_thread = threading.Thread(target=dispatch_worker, name="genfarmer-dispatch", daemon=True)
+    worker_thread.start()
     with connect() as db:
         pending = db.execute("SELECT id, scheduled_at FROM submissions WHERE status='scheduled' ORDER BY scheduled_at, device_order, position").fetchall()
     for row in pending:
@@ -106,9 +139,13 @@ async def lifespan(_: FastAPI):
         active = list(timers.values())
         for timer in active:
             timer.cancel()
+    dispatch_queue.put(None)
     # Let in-flight handoffs persist their IDs/result. New schedules stay in SQLite.
     for timer in active:
         timer.join()
+    if worker_thread:
+        worker_thread.join(timeout=15)
+    worker_thread = None
     timers.clear()
 
 
@@ -151,19 +188,45 @@ class Publication(BaseModel):
     model_config = ConfigDict(extra="forbid")
     url: str = Field(min_length=1, max_length=2048)
     context: str = Field(default="", max_length=500)
-    commentText: str = Field(default="", max_length=500)
+    comments: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("context")
     @classmethod
     def normalize_context(cls, value: str) -> str:
         return " ".join(value.split())
 
-    @field_validator("commentText")
+    @field_validator("comments")
     @classmethod
-    def safe_text(cls, value: str) -> str:
-        if any(ord(char) < 32 or ord(char) == 127 for char in value):
-            raise ValueError("Usa texto en una sola linea, sin caracteres de control")
-        return value.strip()
+    def safe_comments(cls, value: dict[str, str]) -> dict[str, str]:
+        result = {}
+        for device_id, text in value.items():
+            if not device_id or len(device_id) > 200:
+                raise ValueError("Identificador de dispositivo invalido")
+            if len(text) > 500 or any(ord(char) < 32 or ord(char) == 127 for char in text):
+                raise ValueError("Usa comentarios en una sola linea, sin caracteres de control")
+            result[device_id] = text.strip()
+        return result
+
+
+class CommentProfile(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    deviceId: str = Field(min_length=1, max_length=200)
+    intention: str = Field(min_length=1, max_length=300)
+    tone: Literal["Cercano", "Entusiasta", "Informativo", "Breve"]
+
+
+class CommentsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    platform: Literal["facebook", "tiktok"]
+    context: str = Field(min_length=1, max_length=1000)
+    profiles: list[CommentProfile] = Field(min_length=1, max_length=100)
+
+    @field_validator("profiles")
+    @classmethod
+    def unique_profiles(cls, values: list[CommentProfile]) -> list[CommentProfile]:
+        if len({value.deviceId for value in values}) != len(values):
+            raise ValueError("Dispositivos repetidos")
+        return values
 
 
 class SubmissionRequest(BaseModel):
@@ -230,10 +293,13 @@ def submit(payload: SubmissionRequest):
         raise HTTPException(422, "No repitas URLs")
     if payload.kind == "open" and any(payload.actions.model_dump().values()):
         raise HTTPException(422, "Abrir contenido no admite acciones publicas")
-    if payload.actions.comment and any(not item.commentText for item in payload.publications):
-        raise HTTPException(422, "Escribe un comentario por publicacion")
-    if payload.platform == "tiktok" and any(len(item.commentText) > 150 for item in payload.publications):
-        raise HTTPException(422, "Los comentarios de TikTok admiten hasta 150 caracteres")
+    if payload.actions.comment:
+        for publication in payload.publications:
+            texts = [publication.comments.get(device_id, "") for device_id in payload.deviceIds]
+            if any(not text for text in texts):
+                raise HTTPException(422, "Escribe un comentario por dispositivo y publicacion")
+            if payload.platform == "tiktok" and any(len(text) > 150 for text in texts):
+                raise HTTPException(422, "Los comentarios de TikTok admiten hasta 150 caracteres")
     slug = "open-content" if payload.kind == "open" else payload.platform
     app_id = settings.workflows[slug]
     if not app_id:
@@ -247,16 +313,18 @@ def submit(payload: SubmissionRequest):
         raise genfarmer.GenFarmerError("El workflow configurado no existe en GenFarmer")
     user = genfarmer.user_id()
     entries = []
-    for device in chosen:
-        for publication in payload.publications:
+    # Publication-major order: a window of chunk_size tasks covers each device once.
+    for publication in payload.publications:
+        for device in chosen:
             identifier = str(uuid4())
             values = {"contentUrl": publication.url}
             if payload.kind == "open":
                 values["packageName"] = "com.facebook.lite" if payload.platform == "facebook" else "com.zhiliaoapp.musically"
             else:
-                values.update(payload.actions.model_dump(), commentText=publication.commentText, targetText=publication.context)
+                values.update(payload.actions.model_dump(), commentText=publication.comments.get(device["id"], ""), targetText=publication.context)
             task = genfarmer.task_payload(app_data, values, device, user, f"Farm {identifier}")
-            entries.append((identifier, request_id, fingerprint, len(entries), device["id"], device["name"], device["order"], payload.platform, payload.kind, publication.url, json.dumps(task, ensure_ascii=False), when, "scheduled", timestamp))
+            delay = chunk_delay(len(entries), settings.genfarmer_chunk_size, settings.genfarmer_chunk_gap)
+            entries.append((identifier, request_id, fingerprint, len(entries), device["id"], device["name"], device["order"], payload.platform, payload.kind, publication.url, json.dumps(task, ensure_ascii=False), int(when + delay * 1000), "scheduled", timestamp))
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         existing = db.execute("SELECT * FROM submissions WHERE request_id=? ORDER BY position", (request_id,)).fetchall()
@@ -272,7 +340,7 @@ def submit(payload: SubmissionRequest):
             (id,request_id,request_hash,position,device_id,device_name,device_order,platform,kind,url,payload,scheduled_at,status,created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", entries)
     for entry in entries:
-        schedule(entry[0], when)
+        schedule(entry[0], entry[11])
     with connect() as db:
         rows = db.execute("SELECT * FROM submissions WHERE request_id=? ORDER BY position", (request_id,)).fetchall()
     return JSONResponse({"submissions": [submission_dict(row) for row in rows]}, status_code=201)
@@ -306,6 +374,15 @@ def context(payload: ContextRequest):
         return {"url": payload.url, "context": extract_context(payload.url), "source": "metadata"}
     except (ValueError, OSError) as error:
         raise HTTPException(422, "No se pudo extraer contexto publico. Pega una frase visible de la publicacion.") from error
+
+
+@app.post("/api/comments")
+def generate_comments(payload: CommentsRequest):
+    profiles = [profile.model_dump() for profile in payload.profiles]
+    try:
+        return {"comments": comments.generate(payload.platform, payload.context, profiles)}
+    except comments.CommentError as error:
+        raise HTTPException(error.status, str(error)) from error
 
 
 dist = Path(__file__).resolve().parents[2] / "dist"

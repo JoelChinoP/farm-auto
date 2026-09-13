@@ -1,3 +1,4 @@
+import json
 import re
 import threading
 import time
@@ -45,6 +46,30 @@ class Metadata(HTMLParser):
 _cache = OrderedDict()
 _lock = threading.Lock()
 
+_MESSAGE_MARKERS = ('"story":{"message":{"text":', '"message":{"text":')
+_MESSAGE_WINDOW = 20_000
+
+
+def full_message(html: str, metadata: str) -> str:
+    """ogs:description is truncated with "..."; the same message is complete in the page JSON."""
+    decoder = json.JSONDecoder()
+    needle = metadata[:30]
+    best = ""
+    for marker in _MESSAGE_MARKERS:
+        for match in re.finditer(re.escape(marker), html):
+            try:
+                value, _ = decoder.raw_decode(html[match.end():match.end() + _MESSAGE_WINDOW])
+            except ValueError:
+                continue
+            if not isinstance(value, str):
+                continue
+            text = " ".join(value.split())
+            if needle and text.startswith(needle):
+                return text
+            if len(text) > len(best):
+                best = text
+    return best if needle and best.startswith(needle) else metadata
+
 
 def extract_context(url: str) -> str:
     validate_url(url, "facebook")
@@ -60,12 +85,13 @@ def extract_context(url: str) -> str:
         content = response.read(1_048_577)
         if len(content) > 1_048_576:
             raise ValueError("Pagina demasiado grande; pega el contexto manualmente")
-        parser = Metadata()
-        parser.feed(content.decode(response.headers.get_content_charset() or "utf-8", errors="replace"))
+        html = content.decode(response.headers.get_content_charset() or "utf-8", errors="replace")
+    parser = Metadata()
+    parser.feed(html)
     text = parser.values.get("og:description") or parser.values.get("description") or parser.values.get("og:title") or ""
     if len(text) < 5 or text.casefold() in {"facebook", "log into facebook", "inicia sesion en facebook"} or re.search(r"log in to facebook|log into facebook|inicia sesi[oó]n|iniciar sesi[oó]n|create an account", text, re.I):
         raise ValueError("Facebook no expone contexto publico; pegalo manualmente")
-    text = text[:500]
+    text = full_message(html, text)[:1000]
     with _lock:
         _cache[url] = (time.monotonic() + 300, text)
         _cache.move_to_end(url)

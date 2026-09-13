@@ -59,18 +59,22 @@ reintentos de clicks. La validacion visual y cualquier fallo pertenecen a GenFar
    flags y una fecha opcional en milisegundos Unix.
 2. Python valida la seleccion contra GenFarmer, consulta una vez la app y el usuario
    para el lote y persiste una fila por dispositivo/publicacion en `submissions`.
-3. Se arma un `threading.Timer` por fila. Es el unico programador local: sin polling
-   de pendientes, sin cron, colas o servicios adicionales. El backend debe seguir
-   abierto; cerrar el navegador no detiene la programacion.
+3. Un `threading.Timer` por fila encola el envio. Un unico hilo trabajador hace los
+   handoffs con `GENFARMER_DISPATCH_GAP` segundos de pausa (ritmo inicial: 1) para
+   no saturar GenFarmer. Ademas, los lotes se escalonan en ventanas de
+   `GENFARMER_CHUNK_SIZE` filas por publicacion: la ventana siguiente recien se
+   programa `GENFARMER_CHUNK_GAP` segundos despues de la anterior (ritmo inicial:
+   33/420; 0 desactiva). Es el unico programador local: sin polling de pendientes,
+   sin cron ni servicios adicionales. El backend debe seguir abierto; cerrar el
+   navegador no detiene la programacion.
 4. Al vencer se reclama atomicamente la fila y se vuelve a consultar la conexion.
    Cada tarea tiene exactamente un dispositivo. GenFarmer administra su ejecucion;
    Farm no espera a que termine ni garantiza orden de finalizacion entre tareas.
 5. Se crea la tarea (`POST /automation/tasks`), se fijan inputs/variables
    (`PUT /automation/tasks/:id`) y se crea el run (`POST /automation/runs`, `status: 0`).
-6. Con `GENFARMER_EXPLICIT_START=true` se llama una sola vez a
-   `PUT /automation/runs/:id/run` con el dispositivo explicito, como indica la
-   documentacion. Usar `false` exclusivamente si la API instalada inicia al crear
-   el run. Comprobar esta diferencia antes de habilitar acciones publicas.
+6. La API instalada de GenFarmer 2.6.1 inicia el run 200 ms despues de crearlo.
+   Farm no llama tambien a `PUT /automation/runs/:id/run`: el doble inicio deja
+   el dispositivo en su cola interna y puede bloquear el proceso principal.
 
 Limite inicial: 200 filas programadas/enviandose y 30 dias de anticipacion para
 acotar el numero de hilos. Una sola instancia Uvicorn, sin `--reload` ni varios
@@ -97,20 +101,41 @@ consulta las filas locales, no los resultados de acciones.
 
 ## Contexto y consultas
 
-Facebook permite solicitar metadatos publicos por URL. Una cache en memoria de
-cinco minutos y hasta 128 URLs evita repetir consultas; el navegador conserva la
-extraccion mientras se edita el borrador. No se envian cookies, credenciales ni
-contenido a una IA. Los redirects se restringen a dominios Facebook HTTPS y las
-respuestas a 1 MiB. Si hay login, contenido privado o metadatos ausentes, se informa
-el error y se permite pegar el texto. No se garantiza que los metadatos sean el
-texto visible exacto; el operador debe revisarlo antes de usarlo como `targetText`.
+Facebook permite solicitar metadatos publicos por URL. `og:description` suele venir
+truncado con `...`; si el JSON publico de la pagina trae el mensaje completo y su
+inicio coincide con esos metadatos, se usa ese texto (hasta 1000 caracteres). El
+campo `context`, que viaja como `targetText`, se recorta a 500 para la verificacion
+visible; la generacion con IA usa el texto completo (hasta 1000). Una cache en
+memoria de cinco minutos y hasta 128
+URLs evita repetir consultas; el navegador conserva la extraccion mientras se edita
+el borrador. No se envian cookies ni credenciales.
+Los redirects se restringen a dominios Facebook HTTPS y las respuestas a 1 MiB.
+Si hay login, contenido privado o metadatos ausentes, se informa el error y se
+permite pegar el texto. No se garantiza que los metadatos sean el texto visible
+exacto; el operador debe revisarlo antes de usarlo como `targetText`.
+
+## Comentarios con IA
+
+Solo el endpoint `POST /api/comments` envia contexto e intencion a DeepSeek, y
+unicamente cuando el operador pulsa **Generar con IA**. Usa `API_DEEPSEEK` del
+`.env` de la raiz o `backend/.env` (este tiene prioridad); sin clave responde 503.
+Una llamada cubre todos los dispositivos de una publicacion y debe devolver
+exactamente un comentario por `deviceId` en JSON (`{"comments":[...]}`), con
+`COMMENT_MIN_WORDS`..`COMMENT_MAX_WORDS` palabras, 2..500 caracteres (150 en
+TikTok), una linea y sin caracteres de control; cualquier otra forma falla cerrado
+con 502. Los tonos son `Cercano`, `Entusiasta`, `Informativo` y `Breve`; la
+intencion es texto libre. Las intenciones se agrupan en filas (intencion, tono,
+cantidad); los equipos se asignan en orden a cada fila y la suma debe coincidir
+con los dispositivos seleccionados. El comentario final viaja por dispositivo en
+`publications[].comments` y puede editarse a mano. No hay generacion automatica:
+la IA nunca se invoca al extraer contexto ni al programar envios.
 
 ## Validacion en Windows
 
 - Verificar puerto, sesion, envoltorio `success/data`, `serialNo`, `currentDeviceId`
   e `index` contra el servicio local; una forma inesperada falla cerrado.
 - Importar los tres paquetes y probar **solo abrir** en un dispositivo controlado.
-- Confirmar si crear un run ya lo inicia antes de elegir `GENFARMER_EXPLICIT_START`.
+- La API instalada inicia el run al crearlo; no agregar un segundo inicio explicito.
 - Verificar inputs booleanos, `Loop 1..0`, `TypeText`, selectores ES/EN y respuesta
   de `clientAdb.shell`; estan basados en paquetes historicos, no probados aqui.
 - Probar cada combinacion de flags con contenido de prueba y revisar sus logs.

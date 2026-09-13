@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
@@ -13,15 +14,25 @@ os.environ.update({
     "GENFARMER_OPEN_APP_ID": "open-app",
     "GENFARMER_FACEBOOK_APP_ID": "facebook-app",
     "GENFARMER_TIKTOK_APP_ID": "tiktok-app",
+    "GENFARMER_DISPATCH_GAP": "0",
+    "GENFARMER_CHUNK_SIZE": "0",
 })
 
 from fastapi.testclient import TestClient  # noqa: E402
 
 from app import main  # noqa: E402
+from app import comments  # noqa: E402
 from app import genfarmer  # noqa: E402
 from app.config import Settings  # noqa: E402
-from app.context import validate_url  # noqa: E402
+from app.context import full_message, validate_url  # noqa: E402
 from app.database import connect, init_database  # noqa: E402
+
+
+assert main.chunk_delay(0, 33, 240) == 0
+assert main.chunk_delay(32, 33, 240) == 0
+assert main.chunk_delay(33, 33, 240) == 240
+assert main.chunk_delay(66, 33, 240) == 480
+assert main.chunk_delay(0, 0, 240) == 0
 
 
 for invalid_settings in ({"app_host": "0.0.0.0"}, {"frontend_url": "https://farm.example"}):
@@ -75,12 +86,23 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
     if path.stem == "facebook":
         assert "publicAudiencePattern" in scripts and "amigos|friends" not in scripts
         assert "composer) { send = composer; audienceConfirmed = true" not in scripts
-        assert next(item["value"] for item in package["script"]["variables"] if item["name"] == "publicAudiencePattern") == "^(publico|public)$"
+        audience_pattern = next(item["value"] for item in package["script"]["variables"] if item["name"] == "publicAudiencePattern")
+        assert audience_pattern == "^(publico|public)\\b"
+        # Lite expone el boton como "Publico. Toca dos veces para cambiar la audiencia...".
+        assert re.search(audience_pattern, "publico. toca dos veces para cambiar la audiencia de esta publicacion concreta")
+        assert re.search(audience_pattern, "public. double tap to change who can see this post")
+        assert not re.search(audience_pattern, "amigos")
         assert "n.clickable === 'true' && liteSelectors.publicAudience.test(n.label)" in scripts
         assert "visual.lines.some(l => liteSelectors.publicAudience" not in scripts
     if path.stem == "tiktok":
         assert "repostActionPattern" in scripts and "^(compartir|republicar" not in scripts
         assert "/compartido|republicado|shared|reposted/" not in scripts
+
+html_fixture = '<script>{"story":{"message":{"text":"Primera parte \\u00a1Hola!\\n\\nSegunda parte con m\\u00e1s contexto"}}}</script>'
+assert full_message(html_fixture, "Primera parte ¡Hola!") == "Primera parte ¡Hola! Segunda parte con más contexto"
+assert full_message(html_fixture, "Texto de otra publicacion") == "Texto de otra publicacion"
+assert full_message(html_fixture, "") == ""
+assert full_message("<html>sin json</html>", "Primera parte") == "Primera parte"
 
 for url, platform in [
     ("https://www.facebook.com/example/posts/1", "facebook"),
@@ -115,17 +137,18 @@ else:
 calls = []
 reject_run = {"enabled": False}
 real_request = genfarmer.request
-workflow = {
-    "id": "open-app",
-    "input": [
-        {"options": {"variable": {"name": "contentUrl", "value": ""}, "value": ""}},
-        {"options": {"variable": {"name": "packageName", "value": ""}, "value": ""}},
-    ],
-    "script": {"variables": [
-        {"name": "contentUrl", "value": ""},
-        {"name": "packageName", "value": ""},
-    ]},
-}
+
+
+def fake_workflow(app_id, names):
+    return {
+        "id": app_id,
+        "input": [{"options": {"variable": {"name": name, "value": ""}, "value": ""}} for name in names],
+        "script": {"variables": [{"name": name, "value": ""} for name in names]},
+    }
+
+
+open_workflow = fake_workflow("open-app", ["contentUrl", "packageName"])
+facebook_workflow = fake_workflow("facebook-app", ["contentUrl", "like", "comment", "share", "commentText", "targetText"])
 
 
 def fake_request(path, method="GET", data=None):
@@ -136,7 +159,9 @@ def fake_request(path, method="GET", data=None):
             {"serialNo": "serial-first", "currentDeviceId": "usb-1", "name": "Primero", "index": 1},
         ]
     if path == "/automation/apps/open-app":
-        return workflow
+        return open_workflow
+    if path == "/automation/apps/facebook-app":
+        return facebook_workflow
     if path == "/automation/tasks" and method == "POST":
         return {"taskId": "task-1"}
     if path == "/automation/tasks/task-1" and method == "PUT":
@@ -145,8 +170,6 @@ def fake_request(path, method="GET", data=None):
         if reject_run["enabled"]:
             raise genfarmer.GenFarmerError("run rejected")
         return {"runId": "run-1"}
-    if path == "/automation/runs/run-1/run" and method == "PUT":
-        return {}
     raise AssertionError((path, method, data))
 
 
@@ -158,7 +181,7 @@ payload = {
     "platform": "facebook",
     "kind": "open",
     "deviceIds": ["serial-first"],
-    "publications": [{"url": "https://www.facebook.com/example/posts/1", "context": "", "commentText": ""}],
+    "publications": [{"url": "https://www.facebook.com/example/posts/1", "context": "", "comments": {}}],
     "actions": {"like": False, "comment": False, "share": False},
     "scheduledAt": None,
 }
@@ -188,7 +211,7 @@ with TestClient(main.app) as client:
     assert {item["name"]: item["value"] for item in task_call[2]["variables"]} == {
         "contentUrl": payload["publications"][0]["url"], "packageName": "com.facebook.lite",
     }
-    assert [call[2] for call in calls if call[:2] == ("/automation/runs/run-1/run", "PUT")] == [{"deviceIds": ["usb-1"]}]
+    assert not [call for call in calls if call[:2] == ("/automation/runs/run-1/run", "PUT")]
 
     scheduled = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174001", "scheduledAt": int(time.time() * 1000) + 60_000}
     response = client.post("/api/submissions", json=scheduled, headers=origin)
@@ -199,8 +222,29 @@ with TestClient(main.app) as client:
     assert client.post("/api/context", json={"url": "https://www.tiktok.com/@example/video/1"}, headers=origin).status_code == 422
     too_long = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174002", "platform": "tiktok",
                 "kind": "actions", "actions": {"like": False, "comment": True, "share": False},
-                "publications": [{"url": "https://www.tiktok.com/@example/video/1", "context": "", "commentText": "x" * 151}]}
+                "publications": [{"url": "https://www.tiktok.com/@example/video/1", "context": "",
+                                  "comments": {"serial-first": "x" * 151}}]}
     assert client.post("/api/submissions", json=too_long, headers=origin).status_code == 422
+    commented = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174004",
+                 "kind": "actions", "deviceIds": ["serial-first", "serial-second"],
+                 "actions": {"like": True, "comment": True, "share": False},
+                 "publications": [{"url": "https://www.facebook.com/example/posts/1", "context": "texto visible",
+                                   "comments": {"serial-first": "Comentario del primero", "serial-second": "Comentario del segundo"}}]}
+    response = client.post("/api/submissions", json=commented, headers=origin)
+    assert response.status_code == 201, response.text
+    commented_ids = {item["id"] for item in response.json()["submissions"]}
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        current = [item["status"] for item in client.get("/api/submissions").json()["submissions"] if item["id"] in commented_ids]
+        if len(current) == 2 and all(status == "sent" for status in current):
+            break
+        time.sleep(0.02)
+    per_device = {}
+    for call in calls:
+        if call[:2] == ("/automation/tasks", "POST") and call[2]["appId"] == "facebook-app":
+            values = {item["name"]: item["value"] for item in call[2]["variables"]}
+            per_device[call[2]["devices"]["list"][0]["serialNo"]] = values["commentText"]
+    assert per_device == {"serial-first": "Comentario del primero", "serial-second": "Comentario del segundo"}, per_device
     reject_run["enabled"] = True
     rejected_run = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174003"}
     response = client.post("/api/submissions", json=rejected_run, headers=origin)
@@ -234,6 +278,52 @@ class FakeResponse:
 
     def read(self):
         return self.body
+
+
+class FakeDeepSeek:
+    def __init__(self, body):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def read(self):
+        return self.body
+
+
+unique_key = comments.settings.api_deepseek
+comments.settings.api_deepseek = "test-key"
+try:
+    with TestClient(main.app) as client:
+        origin = {"Origin": "http://localhost:5173"}
+        request = {"platform": "facebook", "context": "Un texto visible de prueba",
+                   "profiles": [
+                       {"deviceId": "serial-first", "intention": "Apoyo", "tone": "Cercano"},
+                       {"deviceId": "serial-second", "intention": "Pregunta", "tone": "Informativo"},
+                   ]}
+        content = json.dumps({"comments": [
+            {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
+            {"deviceId": "serial-second", "text": "Comentario generado de prueba dos"},
+        ]})
+        body = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+        with patch.object(comments, "urlopen", return_value=FakeDeepSeek(body)):
+            generated = client.post("/api/comments", json=request, headers=origin)
+        assert generated.status_code == 200, generated.text
+        assert generated.json()["comments"] == [
+            {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
+            {"deviceId": "serial-second", "text": "Comentario generado de prueba dos"},
+        ]
+        short = json.dumps({"choices": [{"message": {"content": json.dumps({"comments": [
+            {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
+        ]})}}]}).encode()
+        with patch.object(comments, "urlopen", return_value=FakeDeepSeek(short)):
+            invalid = client.post("/api/comments", json=request, headers=origin)
+        assert invalid.status_code == 502, invalid.text
+finally:
+    comments.settings.api_deepseek = unique_key
 
 
 for body, ambiguous in [

@@ -84,6 +84,21 @@ fieldset:disabled input, fieldset:disabled textarea { cursor: not-allowed; }
 .context-heading > label { padding-block: 10px; }
 .comment-field { margin-top: 17px; }
 .comment-field > label { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; margin-bottom: 8px; }
+select { width: 100%; min-height: 44px; padding: 11px 12px; border: 1px solid var(--line-dark); border-radius: 3px; background: #fcfaf4; color: var(--ink); font-size: 0.9rem; }
+.comments-details { margin-top: 2px; }
+.comments-details > summary { display: flex; flex-wrap: wrap; gap: 4px 12px; justify-content: space-between; align-items: baseline; padding: 10px 0; cursor: pointer; font-size: 0.86rem; font-weight: 700; }
+.comments-details[open] > summary { border-bottom: 1px solid var(--line); }
+.comments-details .device-comments { max-height: 320px; overflow-y: auto; padding-right: 4px; }
+.device-comments { display: grid; gap: 1px; margin: 0; padding: 0; list-style: none; }
+.device-comment { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 12px; align-items: start; padding: 12px 0; border-top: 1px solid var(--line); }
+.device-comment-body { display: grid; gap: 8px; min-width: 0; }
+.distribution-card { margin-top: 20px; padding: 18px; border: 1px solid var(--line-dark); background: var(--paper); }
+.distribution-head, .distribution-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) 110px 44px; gap: 12px; align-items: center; }
+.distribution-head { padding: 0 4px 6px; color: var(--muted); font-size: 0.76rem; }
+.distribution-row { padding: 6px 0; border-top: 1px solid var(--line); }
+.distribution-row input, .distribution-row select { min-height: 40px; padding: 9px 10px; }
+.distribution-row input[type='number'] { text-align: center; }
+.distribution-actions { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 12px; }
 .schedule-field { max-width: 580px; }
 .schedule-field > label { display: block; margin-bottom: 8px; }
 .schedule-input { display: flex; gap: 12px; align-items: center; }

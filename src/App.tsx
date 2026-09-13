@@ -3,16 +3,20 @@ import './App.css'
 
 type Platform = 'facebook' | 'tiktok'
 type View = 'devices' | Platform | 'submissions'
+type Tone = 'Cercano' | 'Entusiasta' | 'Informativo' | 'Breve'
 type Actions = { like: boolean; comment: boolean; share: boolean }
 type Device = { id: string; serial: string; connectionId: string; name: string; order: number; connected: boolean }
 type Settings = { genfarmerUrl: string; workflows: Record<'open-content' | Platform, boolean> }
-type Publication = { url: string; context: string; commentText: string }
-type DraftPublication = Publication & { extracting: boolean; error: string }
+type Distribution = { id: string; intention: string; tone: Tone; count: number }
+type CommentProfile = { deviceId: string; intention: string; tone: Tone }
+type Publication = { url: string; context: string; aiContext: string; comments: Record<string, string> }
+type DraftPublication = Publication & { extracting: boolean; error: string; generating: boolean; generateError: string }
 type Campaign = {
   deviceIds: string[]
   urls: string
   publications: DraftPublication[]
   actions: Actions
+  distribution: Distribution[]
   prepared: boolean
   reviewed: boolean
   schedule: string
@@ -32,12 +36,13 @@ type Submission = {
   error: string | null
   createdAt: number
 }
+type PublicationPayload = { url: string; context: string; comments: Record<string, string> }
 type SubmissionRequest = {
   requestId: string
   platform: Platform
   kind: 'open' | 'actions'
   deviceIds: string[]
-  publications: Publication[]
+  publications: PublicationPayload[]
   actions: Actions
   scheduledAt: number | null
 }
@@ -53,9 +58,43 @@ const statuses: Record<Submission['status'], string> = {
   sent: 'Enviado', failed: 'No enviado', unknown: 'Por verificar',
   scheduled: 'Programado', sending: 'Enviando', cancelled: 'Cancelado',
 }
+const tones: Tone[] = ['Cercano', 'Entusiasta', 'Informativo', 'Breve']
 const emptyCampaign: Campaign = {
   deviceIds: [], urls: '', publications: [], actions: { like: false, comment: false, share: false },
+  distribution: [{ id: 'intent-1', intention: 'Reacción natural', tone: 'Cercano', count: 0 }],
   prepared: false, reviewed: false, schedule: '',
+}
+
+function distributionTotal(distribution: Distribution[]) {
+  return distribution.reduce((total, row) => total + Math.max(0, Math.floor(row.count) || 0), 0)
+}
+
+// Old panel contract: rows assign devices in order, one comment profile per device.
+function deviceGroups(campaign: Campaign) {
+  const groups = new Map<string, Distribution>()
+  let index = 0
+  for (const row of campaign.distribution) {
+    const count = Math.max(0, Math.floor(row.count) || 0)
+    for (let position = 0; position < count && index < campaign.deviceIds.length; position++) {
+      groups.set(campaign.deviceIds[index++], row)
+    }
+  }
+  return groups
+}
+
+function commentProfiles(campaign: Campaign): CommentProfile[] | null {
+  const groups = deviceGroups(campaign)
+  if (groups.size !== campaign.deviceIds.length) return null
+  return campaign.deviceIds.map((deviceId) => {
+    const row = groups.get(deviceId)!
+    return { deviceId, intention: row.intention.trim() || 'Reacción natural', tone: row.tone }
+  })
+}
+
+function syncComments(comments: Record<string, string>, deviceIds: string[]) {
+  const next: Record<string, string> = {}
+  for (const deviceId of deviceIds) next[deviceId] = comments[deviceId] ?? ''
+  return next
 }
 
 class ApiError extends Error {
@@ -66,13 +105,14 @@ class ApiError extends Error {
   }
 }
 
-async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const timeout = AbortSignal.timeout(20_000)
+async function api<T>(path: string, options: RequestInit & { timeoutMs?: number } = {}): Promise<T> {
+  const { timeoutMs = 20_000, ...init } = options
+  const timeout = AbortSignal.timeout(timeoutMs)
   const response = await fetch(path, {
-    ...options,
+    ...init,
     cache: 'no-store',
-    headers: { Accept: 'application/json', ...(options.body ? { 'Content-Type': 'application/json' } : {}) },
-    signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
+    headers: { Accept: 'application/json', ...(init.body ? { 'Content-Type': 'application/json' } : {}) },
+    signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
   })
   const data = await response.json().catch(() => null)
   if (!response.ok) throw new ApiError(typeof data?.detail === 'string' ? data.detail : `Error HTTP ${response.status}.`, response.status)
@@ -200,9 +240,26 @@ function App() {
       for (const controller of contextRequests.current.values()) controller.abort()
       contextRequests.current.clear()
     }
+    setCampaigns((current) => {
+      const previous = current[platform]
+      const next = { ...previous, reviewed: false, ...patch }
+      if ('urls' in patch) {
+        next.prepared = false
+        next.publications = previous.publications.map((publication) => ({ ...publication, extracting: false }))
+      }
+      if (patch.deviceIds) {
+        next.publications = next.publications.map((publication) => ({ ...publication, comments: syncComments(publication.comments, patch.deviceIds!) }))
+        // Single default group follows the selection, as in the previous panel.
+        if (previous.distribution.length === 1) next.distribution = [{ ...previous.distribution[0], count: patch.deviceIds.length }]
+      }
+      return { ...current, [platform]: next }
+    })
+  }
+
+  function updateDistribution(platform: Platform, id: string, patch: Partial<Distribution>) {
     setCampaigns((current) => ({ ...current, [platform]: {
-      ...current[platform], reviewed: false, ...patch,
-      ...('urls' in patch ? { prepared: false, publications: current[platform].publications.map((publication) => ({ ...publication, extracting: false })) } : {}),
+      ...current[platform], reviewed: false,
+      distribution: current[platform].distribution.map((row) => row.id === id ? { ...row, ...patch } : row),
     } }))
   }
 
@@ -213,12 +270,21 @@ function App() {
     } }))
   }
 
+  function updateComment(platform: Platform, url: string, deviceId: string, text: string) {
+    setCampaigns((current) => ({ ...current, [platform]: {
+      ...current[platform], reviewed: false,
+      publications: current[platform].publications.map((publication) => publication.url === url
+        ? { ...publication, comments: { ...publication.comments, [deviceId]: text } }
+        : publication),
+    } }))
+  }
+
   async function extractContext(url: string) {
     const publication = campaigns.facebook.publications.find((item) => item.url === url)
     if (!publication || publication.context.trim() || contextRequests.current.has(url)) return
     const cached = contextCache.current.get(url)
     if (cached) {
-      updatePublication('facebook', url, { context: cached, error: '' })
+      updatePublication('facebook', url, { context: cached.slice(0, 500).trim(), aiContext: cached, error: '' })
       return
     }
     const controller = new AbortController()
@@ -231,11 +297,13 @@ function App() {
       })
       if (controller.signal.aborted || revision !== contextRevision.current) return
       if (result.url !== url || result.source !== 'metadata' || !result.context.trim()) throw new Error('No se encontraron metadatos públicos.')
-      if (result.context.length > 500) throw new Error('El contexto supera los 500 caracteres. Pega una versión más breve.')
+      if (result.context.length > 1000) throw new Error('El contexto supera los 1000 caracteres. Pega una versión más breve.')
       contextCache.current.set(url, result.context)
       setCampaigns((current) => ({ ...current, facebook: {
         ...current.facebook, reviewed: false,
-        publications: current.facebook.publications.map((item) => item.url === url && !item.context.trim() ? { ...item, context: result.context, error: '' } : item),
+        publications: current.facebook.publications.map((item) => item.url === url && !item.context.trim()
+          ? { ...item, context: result.context.slice(0, 500).trim(), aiContext: result.context, error: '' }
+          : item),
       } }))
     } catch (error) {
       if (!controller.signal.aborted && revision === contextRevision.current) updatePublication('facebook', url, { error: `${errorMessage(error)} Puedes pegar o editar el contexto.` })
@@ -244,6 +312,49 @@ function App() {
         contextRequests.current.delete(url)
         updatePublication('facebook', url, { extracting: false })
       }
+    }
+  }
+
+  async function generateComments(platform: Platform, url: string) {
+    const campaign = campaigns[platform]
+    const publication = campaign.publications.find((item) => item.url === url)
+    if (!publication || publication.generating || locked) return
+    if (!campaign.deviceIds.length) {
+      setNotice({ text: 'Selecciona al menos un dispositivo para generar sus comentarios.', error: true })
+      return
+    }
+    const aiContext = publication.aiContext.trim() || publication.context.trim()
+    if (!aiContext) {
+      setNotice({ text: 'Añade el texto visible de la publicación para que la IA tenga contexto.', error: true })
+      return
+    }
+    const profiles = commentProfiles(campaign)
+    if (!profiles) {
+      setNotice({ text: `La distribución debe cubrir los ${campaign.deviceIds.length} dispositivos seleccionados.`, error: true })
+      return
+    }
+    updatePublication(platform, url, { generating: true, generateError: '' })
+    try {
+      const result = await api<{ comments: { deviceId: string; text: string }[] }>('/api/comments', {
+        method: 'POST', timeoutMs: 90_000,
+        body: JSON.stringify({ platform, context: aiContext, profiles }),
+      })
+      const byDevice = new Map(result.comments.map((comment) => [comment.deviceId, comment.text]))
+      setCampaigns((current) => ({ ...current, [platform]: {
+        ...current[platform], reviewed: false,
+        publications: current[platform].publications.map((item) => {
+          if (item.url !== url) return item
+          const comments = { ...item.comments }
+          for (const deviceId of campaign.deviceIds) {
+            const text = byDevice.get(deviceId)
+            if (text) comments[deviceId] = text
+          }
+          return { ...item, comments, generating: false, generateError: '' }
+        }),
+      } }))
+      setNotice({ text: `${result.comments.length} comentarios generados. Revísalos antes de enviar.`, error: false })
+    } catch (error) {
+      updatePublication(platform, url, { generating: false, generateError: errorMessage(error) })
     }
   }
 
@@ -264,8 +375,16 @@ function App() {
         return
       }
       const commentLimit = platform === 'tiktok' ? 150 : 500
-      if (campaign.publications.some((publication) => publication.context.length > 500 || publication.commentText.length > commentLimit || /[\r\n]/.test(publication.commentText) || (campaign.actions.comment && !publication.commentText.trim()))) {
-        setNotice({ text: `Revisa el contexto y los comentarios: máximo ${commentLimit} caracteres y comentario en una sola línea.`, error: true })
+      if (campaign.actions.comment && !commentProfiles(campaign)) {
+        setNotice({ text: `La distribución debe cubrir los ${campaign.deviceIds.length} dispositivos seleccionados.`, error: true })
+        return
+      }
+      const badComment = campaign.actions.comment && campaign.publications.some((publication) => campaign.deviceIds.some((deviceId) => {
+        const text = publication.comments[deviceId] ?? ''
+        return !text.trim() || text.length > commentLimit
+      }))
+      if (badComment || campaign.publications.some((publication) => publication.context.length > 500)) {
+        setNotice({ text: `Revisa el contexto y los comentarios: un comentario por dispositivo, máximo ${commentLimit} caracteres.`, error: true })
         return
       }
       const scheduledAt = campaign.schedule ? new Date(campaign.schedule).getTime() : null
@@ -275,7 +394,10 @@ function App() {
       }
       const payload = {
         platform, kind: hasActions ? 'actions' as const : 'open' as const, deviceIds,
-        publications: campaign.publications.map(({ url, context, commentText }) => ({ url, context, commentText })),
+        publications: campaign.publications.map(({ url, context, comments }) => ({
+          url, context,
+          comments: campaign.actions.comment ? Object.fromEntries(campaign.deviceIds.map((deviceId) => [deviceId, comments[deviceId] ?? ''])) : {},
+        })),
         actions: { ...campaign.actions }, scheduledAt,
       }
       const signature = JSON.stringify(payload)
@@ -342,9 +464,13 @@ function App() {
   const locked = attempt?.state === 'sending' || attempt?.state === 'accepted' || attempt?.state === 'uncertain'
   const anySending = Object.values(attempts).some((item) => item?.state === 'sending')
   const extracting = campaign?.publications.some((publication) => publication.extracting)
-  const missingComment = campaign?.actions.comment && campaign.publications.some((publication) => !publication.commentText.trim())
+  const profiles = campaign ? commentProfiles(campaign) : null
+  const groups = campaign ? deviceGroups(campaign) : null
+  const distributionReady = !campaign?.actions.comment || (!!profiles && campaign.distribution.every((row) => row.count > 0 && !!row.intention.trim()))
+  const missingComment = campaign?.actions.comment && campaign.publications.some((publication) =>
+    campaign.deviceIds.some((deviceId) => !(publication.comments[deviceId] ?? '').trim()))
   const canSend = !!campaign?.prepared && campaign.reviewed && !!campaign.deviceIds.length && !problem &&
-    !!devices && !!settings?.workflows[workflow] && !refreshing && !anySending && !locked && !extracting && !missingComment
+    !!devices && !!settings?.workflows[workflow] && !refreshing && !anySending && !locked && !extracting && !missingComment && distributionReady
   const genfarmerLink = settings?.genfarmerUrl && /^https?:\/\//i.test(settings.genfarmerUrl) ? settings.genfarmerUrl : null
 
   return (
@@ -403,7 +529,13 @@ function App() {
                     <p id={`${platform}-url-help`} className={urls.length && problem ? 'field-error' : 'field-help'}>{urls.length && problem ? problem : 'Una URL por línea. Máximo 10.'}</p>
                     <button className="primary-button" disabled={!campaign.deviceIds.length || !!problem || !devices || refreshing} onClick={() => updateCampaign(platform, {
                       prepared: true,
-                      publications: urls.map((url) => campaign.publications.find((publication) => publication.url === url) ?? { url, context: '', commentText: '', extracting: false, error: '' }),
+                      publications: urls.map((url) => {
+                        const existing = campaign.publications.find((publication) => publication.url === url)
+                        const comments = syncComments(existing?.comments ?? {}, campaign.deviceIds)
+                        return existing
+                          ? { ...existing, comments, extracting: false, generating: false, generateError: '' }
+                          : { url, context: '', aiContext: '', comments, extracting: false, error: '', generating: false, generateError: '' }
+                      }),
                     })}>{campaign.prepared ? 'Actualizar revisión' : 'Preparar y revisar'}<span aria-hidden="true"> ↓</span></button>
                   </div>
                 </div>
@@ -416,22 +548,63 @@ function App() {
                     {(['like', 'comment', 'share'] as const).map((action) => <label key={action}><input type="checkbox" checked={campaign.actions[action]} onChange={(event) => updateCampaign(platform, { actions: { ...campaign.actions, [action]: event.target.checked } })} />{action === 'like' ? 'Like' : action === 'comment' ? 'Comentar' : platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)'}</label>)}
                   </fieldset>
                   <p className="field-help">{hasActions ? 'Se enviará una sola solicitud con las acciones elegidas.' : 'Sin acciones seleccionadas, solo se abre el contenido.'}</p>
-                  <p className="context-note">{platform === 'facebook' ? 'Contexto de metadatos públicos, sin IA. Puedes pegarlo o editarlo si la extracción falla.' : 'Contexto y comentarios manuales. No se genera texto con IA.'}</p>
+                  {campaign.actions.comment && <section className="distribution-card" aria-label="Distribución de intenciones">
+                    <div className="context-heading">
+                      <strong>Distribución de comentarios</strong>
+                      <span className="field-help">{distributionTotal(campaign.distribution)} de {campaign.deviceIds.length} dispositivos</span>
+                    </div>
+                    <div className="distribution-head" aria-hidden="true"><span>Intención</span><span>Tono</span><span>Cantidad</span><span /></div>
+                    {campaign.distribution.map((row) => <div className="distribution-row" key={row.id}>
+                      <input aria-label="Intención" type="text" maxLength={300} value={row.intention} onChange={(event) => updateDistribution(platform, row.id, { intention: event.target.value })} />
+                      <select aria-label="Tono" value={row.tone} onChange={(event) => updateDistribution(platform, row.id, { tone: event.target.value as Tone })}>{tones.map((tone) => <option key={tone} value={tone}>{tone}</option>)}</select>
+                      <input aria-label="Cantidad" type="number" min={0} max={campaign.deviceIds.length} value={row.count} onChange={(event) => updateDistribution(platform, row.id, { count: Math.max(0, Math.min(campaign.deviceIds.length, Math.floor(Number(event.target.value) || 0))) })} />
+                      <button className="text-button" aria-label="Eliminar intención" disabled={campaign.distribution.length === 1} onClick={() => updateCampaign(platform, { distribution: campaign.distribution.filter((item) => item.id !== row.id) })}>×</button>
+                    </div>)}
+                    <div className="distribution-actions">
+                      <button className="text-button" onClick={() => updateCampaign(platform, { distribution: [...campaign.distribution, { id: crypto.randomUUID(), intention: 'Nueva intención', tone: 'Cercano', count: 0 }] })}>Agregar intención</button>
+                      <button className="text-button" onClick={() => updateCampaign(platform, { distribution: campaign.distribution.map((row, position) => position === 0 ? { ...row, count: campaign.deviceIds.length } : row) })}>Aplicar como predeterminado</button>
+                    </div>
+                    {!distributionReady && <p className="field-error" role="alert">Cada grupo necesita intención y al menos 1 dispositivo; la suma debe coincidir con los {campaign.deviceIds.length} seleccionados.</p>}
+                  </section>}
+                  <p className="context-note">{platform === 'facebook' ? 'El texto visible verifica el destino. "Generar con IA" envía a DeepSeek el texto completo extraído (hasta 1000 caracteres), la intención y el tono.' : 'Pega el texto visible de la publicación; "Generar con IA" usa ese contexto con DeepSeek.'}</p>
                   <ol className="publication-list">{campaign.publications.map((publication, index) => <li key={publication.url}>
                     <div className="publication-heading"><span className="device-order">{String(index + 1).padStart(2, '0')}</span><a href={publication.url} target="_blank" rel="noreferrer">{publication.url}<span className="sr-only"> (abre otra pestaña)</span></a></div>
                     <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>Texto visible exacto para verificar el destino <span className="field-help">opcional · {publication.context.length}/500</span></label>
                       {platform === 'facebook' && <button className="text-button" disabled={publication.extracting || !!publication.context.trim()} onClick={() => void extractContext(publication.url)}>{publication.extracting ? 'Extrayendo…' : 'Extraer contexto'}</button>}
                     </div>
                     <textarea id={`${platform}-context-${index}`} rows={3} maxLength={500} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder="Pega un fragmento exacto visible en esta publicación" />
+                    {publication.aiContext.length > publication.context.length && <p className="field-help">La IA usará el texto completo extraído ({publication.aiContext.length} caracteres).</p>}
                     {publication.error && <p className="field-error" role="alert" id={`${platform}-context-error-${index}`}>{publication.error}</p>}
-                    {campaign.actions.comment && <div className="comment-field"><label htmlFor={`${platform}-comment-${index}`}>Comentario <span className="field-help">{publication.commentText.length}/{platform === 'tiktok' ? 150 : 500} · una línea</span></label><input id={`${platform}-comment-${index}`} type="text" maxLength={platform === 'tiktok' ? 150 : 500} required value={publication.commentText} onChange={(event) => updatePublication(platform, publication.url, { commentText: event.target.value.replace(/[\r\n]+/g, ' ') })} placeholder="Escribe el comentario que se publicará" /></div>}
+                    {campaign.actions.comment && <div className="comment-field">
+                      <div className="context-heading">
+                        <span className="field-help">Un comentario por dispositivo · {platform === 'tiktok' ? 150 : 500} caracteres · una línea</span>
+                        <button className="text-button" disabled={publication.generating || !!locked || !campaign.deviceIds.length} onClick={() => void generateComments(platform, publication.url)}>{publication.generating ? 'Generando…' : 'Generar con IA'}</button>
+                      </div>
+                      {!(publication.aiContext.trim() || publication.context.trim()) && <p className="field-help">Añade el texto visible para que la IA tenga contexto.</p>}
+                      {publication.generateError && <p className="field-error" role="alert">{publication.generateError}</p>}
+                      {!campaign.deviceIds.length ? <p className="field-help">Selecciona dispositivos para preparar sus comentarios.</p> : <details className="comments-details">
+                        <summary>Comentarios por dispositivo <span className="field-help">{campaign.deviceIds.filter((deviceId) => (publication.comments[deviceId] ?? '').trim()).length}/{campaign.deviceIds.length} listos</span></summary>
+                        <ul className="device-comments">{campaign.deviceIds.map((deviceId) => {
+                        const device = devices?.devices.find((item) => item.id === deviceId)
+                        const group = groups?.get(deviceId)
+                        const text = publication.comments[deviceId] ?? ''
+                        const prefix = `${platform}-comment-${index}-${deviceId}`
+                        return <li key={deviceId} className="device-comment">
+                          <span className="device-order">#{device?.order ?? '?'}</span>
+                          <div className="device-comment-body">
+                            <span className="field-help">{group ? `${group.intention.trim() || 'Reacción natural'} · ${group.tone}` : 'Sin grupo asignado'}</span>
+                            <input id={prefix} aria-label={`Comentario para ${device?.name ?? deviceId}`} type="text" maxLength={platform === 'tiktok' ? 150 : 500} value={text} onChange={(event) => updateComment(platform, publication.url, deviceId, event.target.value.replace(/[\r\n]+/g, ' '))} placeholder="Comentario para este dispositivo" />
+                          </div>
+                        </li>
+                      })}</ul></details>}
+                    </div>}
                   </li>)}</ol>
                 </section>
                 <section className="work-section send-section">
                   <div className="section-heading"><h2><span className="step-number">3</span>Envía</h2></div>
                   <div className="schedule-field"><label htmlFor={`${platform}-schedule`}>Programar <span className="field-help">opcional</span></label><div className="schedule-input"><input id={`${platform}-schedule`} type="datetime-local" value={campaign.schedule} onChange={(event) => updateCampaign(platform, { schedule: event.target.value })} />{campaign.schedule && <button className="text-button" onClick={() => updateCampaign(platform, { schedule: '' })}>Quitar fecha</button>}</div><p className="field-help">Hora local. Sin fecha, se envía ahora. La programación queda en el backend.</p></div>
                   <label className="review-check"><input type="checkbox" checked={campaign.reviewed} disabled={extracting} onChange={(event) => updateCampaign(platform, { reviewed: event.target.checked })} />He revisado las URLs, el contexto y los comentarios.</label>
-                  {missingComment && <p className="field-error">Escribe un comentario para cada publicación.</p>}
+                  {missingComment && <p className="field-error">Escribe un comentario para cada dispositivo y publicación.</p>}
                   <div className="send-bar"><div><strong>{campaign.deviceIds.length} equipos <span aria-hidden="true">×</span> {campaign.publications.length} publicaciones</strong><span>{actionLabel(campaign.actions, platform)}</span></div><div className="send-buttons"><button className={hasActions ? 'secondary-button' : 'primary-button'} disabled={!canSend || hasActions} onClick={() => void send(platform)}>Abrir contenido</button><button className={hasActions ? 'primary-button' : 'secondary-button'} disabled={!canSend || !hasActions} onClick={() => void send(platform)}>Enviar acciones</button></div></div>
                 </section>
               </>}
