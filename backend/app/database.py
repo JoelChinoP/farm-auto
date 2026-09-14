@@ -51,6 +51,7 @@ def init_database():
             UNIQUE(request_id, position)
         )""")
         db.execute("CREATE INDEX IF NOT EXISTS submissions_status ON submissions(status, scheduled_at)")
+        db.execute("CREATE INDEX IF NOT EXISTS submissions_device_order ON submissions(device_id, scheduled_at, created_at, request_id, position)")
         # An interrupted handoff may already have reached GenFarmer. Never resend it.
         db.execute("UPDATE submissions SET status='unknown', error='Envio interrumpido; revisar GenFarmer antes de repetir' WHERE status='sending'")
 

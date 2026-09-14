@@ -40,7 +40,8 @@ en `http://127.0.0.1:5173` y Vite delega `/api` al backend. Para produccion,
    `tiktok.genfarm` desde GenFarmer. Configurar sus IDs reales en
    `GENFARMER_OPEN_APP_ID`, `GENFARMER_FACEBOOK_APP_ID` y `GENFARMER_TIKTOK_APP_ID`.
 4. La API instalada de GenFarmer 2.6.1 inicia cada run al crearlo; Farm no envia
-   un segundo inicio explicito. Reiniciar el backend al cambiar configuracion.
+   un segundo inicio explicito. Farm consulta el run antes de entregar otra
+   publicacion al mismo equipo. Reiniciar el backend al cambiar configuracion.
 
 No se importa nada ni se inicia una automatizacion al abrir la web. Sin configurar
 los workflows se pueden consultar dispositivos y extraer contexto, pero no enviar.
@@ -49,7 +50,9 @@ los workflows se pueden consultar dispositivos y extraer contexto, pero no envia
 
 - **Dispositivos:** refleja GenFarmer; no hay altas, bajas ni preparacion local.
 - **Facebook / TikTok:** elegir equipos, URLs, acciones, revisar texto y enviar o
-  programar. Los flags son independientes; sin flags solo se abre el contenido.
+  programar. TikTok admite videos y URLs `/@usuario/live`; Compartir hace Repost en
+  videos y usa Compartir en Live. Los flags son independientes; sin flags solo se
+  abre el contenido.
 - **Comentarios:** las intenciones se reparten en grupos (**Intención / Tono /
   Cantidad**) que deben cubrir los equipos seleccionados; se pueden agregar o quitar
   grupos. Los equipos se asignan en orden a cada grupo. **Generar con IA** pide un
@@ -61,6 +64,10 @@ los workflows se pueden consultar dispositivos y extraer contexto, pero no envia
 
 **Enviado no significa accion completada.** Consultar resultados y errores de
 ejecucion en GenFarmer mediante Task ID / Run ID. No se reintentan envios inciertos.
+En GenFarmer 2.6.1, `SUCCESS` tampoco prueba la accion: revisar el log y el
+`result.json` de evidencia de TikTok.
+Las publicaciones avanzan independientemente por equipo: la siguiente permanece
+programada hasta que GenFarmer confirma terminales tanto el run como el dispositivo.
 Los horarios sobreviven a reinicios; el backend debe estar encendido para enviarlos.
 Usar una sola instancia, sin `--reload` durante envios.
 

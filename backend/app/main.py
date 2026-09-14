@@ -1,10 +1,8 @@
 import hashlib
 import json
 import logging
-import queue
 import sqlite3
 import threading
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Literal
@@ -22,19 +20,16 @@ from .context import extract_context, validate_url
 from .database import connect, init_database, now_ms, submission_dict
 
 
-timers: dict[str, threading.Timer] = {}
-timer_lock = threading.Lock()
 stopping = threading.Event()
-dispatch_queue: queue.Queue[str | None] = queue.Queue()
+dispatch_wakeup = threading.Event()
 worker_thread: threading.Thread | None = None
 log = logging.getLogger(__name__)
 
 
 def dispatch(submission_id: str):
     try:
-        with timer_lock:
-            if stopping.is_set():
-                return
+        if stopping.is_set():
+            return
         with connect() as db:
             claimed = db.execute("UPDATE submissions SET status='sending' WHERE id=? AND status='scheduled'", (submission_id,)).rowcount
             if not claimed:
@@ -74,52 +69,51 @@ def dispatch(submission_id: str):
     except Exception:
         # Leave a claimed row untouched if persistence fails; startup will classify it as unknown.
         log.exception("No se pudo persistir el envio %s", submission_id)
-    finally:
-        with timer_lock:
-            timers.pop(submission_id, None)
 
 
-def chunk_delay(index: int, chunk_size: int, gap_seconds: float) -> float:
-    # Stagger big batches: one window of chunk_size tasks, then wait gap_seconds.
-    if chunk_size <= 0 or index < chunk_size:
-        return 0
-    return (index // chunk_size) * gap_seconds
+def previous_submission(row):
+    with connect() as db:
+        return db.execute("""SELECT status, task_id, run_id FROM submissions
+            WHERE device_id=? AND (scheduled_at, created_at, request_id, position) < (?, ?, ?, ?)
+              AND status NOT IN ('failed', 'cancelled')
+            ORDER BY scheduled_at DESC, created_at DESC, request_id DESC, position DESC LIMIT 1""",
+            (row["device_id"], row["scheduled_at"], row["created_at"], row["request_id"], row["position"])).fetchone()
 
 
-def enqueue(submission_id: str):
-    dispatch_queue.put(submission_id)
+def ready_for_dispatch(row) -> bool:
+    previous = previous_submission(row)
+    if previous is None:
+        return True
+    if previous["status"] not in {"sent", "unknown"} or not previous["task_id"] or not previous["run_id"]:
+        return False
+    return genfarmer.run_finished(previous["run_id"], previous["task_id"])
 
 
 def dispatch_worker():
-    # ponytail: un solo hilo con pausa fija; GenFarmer local se satura con la rafaga completa.
     while not stopping.is_set():
-        try:
-            submission_id = dispatch_queue.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        if submission_id is None or stopping.is_set():
-            return
-        try:
-            dispatch(submission_id)
-        finally:
-            dispatch_queue.task_done()
-        if settings.genfarmer_dispatch_gap > 0:
-            time.sleep(settings.genfarmer_dispatch_gap)
-
-
-def schedule(submission_id: str, when: int):
-    with timer_lock:
-        if stopping.is_set() or submission_id in timers:
-            return
-        timer = threading.Timer(max(0, (when - now_ms()) / 1000), enqueue, (submission_id,))
-        timer.name = f"send-{submission_id}"
-        timer.daemon = True
-        timers[submission_id] = timer
-        try:
-            timer.start()
-        except RuntimeError:
-            timers.pop(submission_id, None)
-            raise
+        with connect() as db:
+            rows = db.execute("""SELECT * FROM submissions WHERE status='scheduled' AND scheduled_at<=?
+                ORDER BY scheduled_at, created_at, request_id, position""", (now_ms(),)).fetchall()
+        seen_devices = set()
+        for row in rows:
+            if stopping.is_set():
+                return
+            if row["device_id"] in seen_devices:
+                continue
+            seen_devices.add(row["device_id"])
+            try:
+                if not ready_for_dispatch(row):
+                    continue
+            except genfarmer.GenFarmerError as error:
+                log.warning("No se pudo confirmar el run anterior de %s: %s", row["device_id"], error)
+                if error.unavailable:
+                    break
+                continue
+            dispatch(row["id"])
+            if stopping.wait(settings.genfarmer_dispatch_gap):
+                return
+        dispatch_wakeup.wait(settings.genfarmer_completion_poll)
+        dispatch_wakeup.clear()
 
 
 @asynccontextmanager
@@ -127,26 +121,16 @@ async def lifespan(_: FastAPI):
     global worker_thread
     init_database()
     stopping.clear()
+    dispatch_wakeup.clear()
     worker_thread = threading.Thread(target=dispatch_worker, name="genfarmer-dispatch", daemon=True)
     worker_thread.start()
-    with connect() as db:
-        pending = db.execute("SELECT id, scheduled_at FROM submissions WHERE status='scheduled' ORDER BY scheduled_at, device_order, position").fetchall()
-    for row in pending:
-        schedule(row["id"], row["scheduled_at"])
     yield
-    with timer_lock:
-        stopping.set()
-        active = list(timers.values())
-        for timer in active:
-            timer.cancel()
-    dispatch_queue.put(None)
-    # Let in-flight handoffs persist their IDs/result. New schedules stay in SQLite.
-    for timer in active:
-        timer.join()
+    stopping.set()
+    dispatch_wakeup.set()
+    # Let an in-flight handoff persist its IDs/result. New schedules stay in SQLite.
     if worker_thread:
         worker_thread.join(timeout=15)
     worker_thread = None
-    timers.clear()
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -313,7 +297,7 @@ def submit(payload: SubmissionRequest):
         raise genfarmer.GenFarmerError("El workflow configurado no existe en GenFarmer")
     user = genfarmer.user_id()
     entries = []
-    # Publication-major order: a window of chunk_size tasks covers each device once.
+    # Publication-major order lets each device finish one publication before its next.
     for publication in payload.publications:
         for device in chosen:
             identifier = str(uuid4())
@@ -323,8 +307,7 @@ def submit(payload: SubmissionRequest):
             else:
                 values.update(payload.actions.model_dump(), commentText=publication.comments.get(device["id"], ""), targetText=publication.context)
             task = genfarmer.task_payload(app_data, values, device, user, f"Farm {identifier}")
-            delay = chunk_delay(len(entries), settings.genfarmer_chunk_size, settings.genfarmer_chunk_gap)
-            entries.append((identifier, request_id, fingerprint, len(entries), device["id"], device["name"], device["order"], payload.platform, payload.kind, publication.url, json.dumps(task, ensure_ascii=False), int(when + delay * 1000), "scheduled", timestamp))
+            entries.append((identifier, request_id, fingerprint, len(entries), device["id"], device["name"], device["order"], payload.platform, payload.kind, publication.url, json.dumps(task, ensure_ascii=False), when, "scheduled", timestamp))
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         existing = db.execute("SELECT * FROM submissions WHERE request_id=? ORDER BY position", (request_id,)).fetchall()
@@ -332,15 +315,13 @@ def submit(payload: SubmissionRequest):
             if existing[0]["request_hash"] != fingerprint:
                 raise HTTPException(409, "La solicitud ya existe con otro contenido")
             return {"submissions": [submission_dict(row) for row in existing]}
-        # ponytail: one Timer/thread per handoff, capped at 200; use GenFarmer scheduling once its API is verified.
         active_count = db.execute("SELECT COUNT(*) FROM submissions WHERE status IN ('scheduled','sending')").fetchone()[0]
         if active_count + len(entries) > 200:
             raise HTTPException(409, "Limite de 200 envios pendientes; divide el lote")
         db.executemany("""INSERT INTO submissions
             (id,request_id,request_hash,position,device_id,device_name,device_order,platform,kind,url,payload,scheduled_at,status,created_at)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", entries)
-    for entry in entries:
-        schedule(entry[0], entry[11])
+    dispatch_wakeup.set()
     with connect() as db:
         rows = db.execute("SELECT * FROM submissions WHERE request_id=? ORDER BY position", (request_id,)).fetchall()
     return JSONResponse({"submissions": [submission_dict(row) for row in rows]}, status_code=201)
@@ -357,10 +338,7 @@ def cancel(submission_id: str):
             raise HTTPException(409, "El envio ya salio; revisalo en GenFarmer")
         db.execute("UPDATE submissions SET status='cancelled' WHERE id=?", (submission_id,))
         result = submission_dict(db.execute("SELECT * FROM submissions WHERE id=?", (submission_id,)).fetchone())
-    with timer_lock:
-        timer = timers.pop(submission_id, None)
-        if timer:
-            timer.cancel()
+    dispatch_wakeup.set()
     return {"submission": result}
 
 

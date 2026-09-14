@@ -19,8 +19,7 @@ class Settings(BaseSettings):
     genfarmer_url: str = "http://127.0.0.1:55554"
     genfarmer_timeout: float = Field(default=10, gt=0, le=60)
     genfarmer_dispatch_gap: float = Field(default=1, ge=0, le=30)
-    genfarmer_chunk_size: int = Field(default=33, ge=0, le=200)
-    genfarmer_chunk_gap: float = Field(default=420, ge=0, le=86400)
+    genfarmer_completion_poll: float = Field(default=5, ge=0.1, le=60)
     genfarmer_open_app_id: str = ""
     genfarmer_facebook_app_id: str = ""
     genfarmer_tiktok_app_id: str = ""

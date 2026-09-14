@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -15,7 +16,7 @@ os.environ.update({
     "GENFARMER_FACEBOOK_APP_ID": "facebook-app",
     "GENFARMER_TIKTOK_APP_ID": "tiktok-app",
     "GENFARMER_DISPATCH_GAP": "0",
-    "GENFARMER_CHUNK_SIZE": "0",
+    "GENFARMER_COMPLETION_POLL": "0.1",
 })
 
 from fastapi.testclient import TestClient  # noqa: E402
@@ -26,13 +27,6 @@ from app import genfarmer  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.context import full_message, validate_url  # noqa: E402
 from app.database import connect, init_database  # noqa: E402
-
-
-assert main.chunk_delay(0, 33, 240) == 0
-assert main.chunk_delay(32, 33, 240) == 0
-assert main.chunk_delay(33, 33, 240) == 240
-assert main.chunk_delay(66, 33, 240) == 480
-assert main.chunk_delay(0, 0, 240) == 0
 
 
 for invalid_settings in ({"app_host": "0.0.0.0"}, {"frontend_url": "https://farm.example"}):
@@ -53,7 +47,9 @@ selector_contracts = {
     "facebook": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorClassPattern",
                  "shareSubmitPattern", "publicAudiencePattern", "commentConfirmedPattern", "shareConfirmedPattern"},
     "tiktok": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorIdPattern",
-               "shareSheetHeadingPattern", "copyLinkPattern", "repostActionPattern", "repostActivePattern"},
+               "shareSheetHeadingPattern", "copyLinkPattern", "repostActionPattern", "repostActivePattern",
+               "liveCommentTriggerIdPattern", "liveCommentEditorIdPattern", "liveCommentSendIdPattern",
+               "liveShareTriggerIdPattern", "liveShareActionPattern", "liveLikeContainerIdPattern"},
 }
 for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
     package = json.loads(path.read_text(encoding="utf-8"))
@@ -83,7 +79,17 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
     if live:
         assert live["data"]["options"]["script"].count("await element.click()") == 1
         assert "attempts < 3" not in live["data"]["options"]["script"]
+        if path.stem == "facebook":
+            assert "com.facebook.katana" in live["data"]["options"]["script"]
+            live_script = live["data"]["options"]["script"]
+            assert "Detalles del video" in live_script
+            assert "]/ancestor::*[@clickable='true'][1]" in live_script
+            assert "ancestor::*[@resource-id='com.facebook.lite:id/videoview'" in live_script
+            assert "not(ancestor::*[@class='androidx.recyclerview.widget.RecyclerView'])" not in live_script
+            assert "clicks < 2 && check - lastClick >= 4" in live_script
     if path.stem == "facebook":
+        assert package["version"] == package["script"]["version"] == "2.5.16"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.5.16")
         assert "publicAudiencePattern" in scripts and "amigos|friends" not in scripts
         assert "composer) { send = composer; audienceConfirmed = true" not in scripts
         audience_pattern = next(item["value"] for item in package["script"]["variables"] if item["name"] == "publicAudiencePattern")
@@ -94,9 +100,47 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
         assert not re.search(audience_pattern, "amigos")
         assert "n.clickable === 'true' && liteSelectors.publicAudience.test(n.label)" in scripts
         assert "visual.lines.some(l => liteSelectors.publicAudience" not in scripts
+        assert "reelExpandedCaption || descriptionCollapsed || liteCaptionOverlapsTime" in scripts
+        assert ".filter(row => row.length === 3 && row.every(n => n.hasChildren))" in scripts
+        assert (scripts.index("    if (actions.like) {") <
+                scripts.index("    if (actions.share) {") <
+                scripts.index("    if (actions.comment) {"))
+        assert "const live = await locateLive(12, true)" in scripts
+        assert "marker || visual.liveBadge" in scripts and "function liteLiveBadge" in scripts
+        assert "liteLiveShareEntry(nodes, visual)" in scripts
+        assert "liteLiveShareComposer(nodes, visual)" in scripts
+        live_helper = scripts[scripts.index("function liteLiveToolbar"):scripts.index("function liteSendButton")]
+        live_nodes = [
+            {"resource-id": "com.facebook.lite:id/main_layout", "bounds": [0, 63, 1080, 1776]},
+            {"resource-id": "com.facebook.lite:id/video_view", "bounds": [0, 420, 1080, 1638]},
+            *[{"class": "android.view.ViewGroup", "clickable": "true", "enabled": "true", "hasChildren": True,
+               "bounds": [left, 1647, left + 360, 1767]} for left in (0, 360, 720)],
+            {"resource-id": "android:id/navigationBarBackground", "bounds": [0, 1776, 1080, 1920]},
+        ]
+        subprocess.run(["node", "-e", live_helper +
+                        f"\nconst row = liteLiveToolbar({json.dumps(live_nodes)});" +
+                        "if (!row || row.like.bounds[0] !== 0 || row.share.bounds[2] !== 1080) throw new Error('live row');"],
+                       check=True, capture_output=True, text=True)
+        helper = scripts[scripts.index("function normalizeLiteText"):scripts.index("function parseLiteXml")]
+        target_cases = [
+            ["reels puquis recibe a pandia eduardo quispe", "¡PUQUIS RECIBE A PANDIA! Eduardo Quispe Pandia llegó a Puquis", True],
+            ["reels igractas provinci de el collao ilave agradecemos de corazon",
+             "¡GRACIAS, PROVINCIA DE EL COLLAO - ILAVE! Agradecemos de corazón el cariño y recibimiento", True],
+            ["reels pandia region puno gobernador regional", "¡GRACIAS, PROVINCIA DE EL COLLAO - ILAVE!", False],
+        ]
+        probe = helper + f"\nfor (const [visible, target, expected] of {json.dumps(target_cases)}) {{\n" \
+            "  if (liteTargetMatches(visible, target) !== expected) throw new Error(target);\n}"
+        subprocess.run(["node", "-e", probe], check=True, capture_output=True, text=True)
     if path.stem == "tiktok":
+        assert package["version"] == package["script"]["version"] == "1.2.0"
         assert "repostActionPattern" in scripts and "^(compartir|republicar" not in scripts
         assert "/compartido|republicado|shared|reposted/" not in scripts
+        variables_by_name = {item["name"]: item["value"] for item in package["script"]["variables"]}
+        assert variables_by_name["diagnostic_only"] is False
+        live_script = next(node["data"]["options"]["script"] for node in package["script"]["flow"]["nodes"]
+                           if node["id"] == "tiktok_live_publish")
+        assert live_script.index("  if (actions.comment) {") < live_script.index("  if (actions.like) {") < live_script.index("  if (actions.share) {")
+        assert "No se repetira" in live_script and "result.json" in live_script
 
 html_fixture = '<script>{"story":{"message":{"text":"Primera parte \\u00a1Hola!\\n\\nSegunda parte con m\\u00e1s contexto"}}}</script>'
 assert full_message(html_fixture, "Primera parte ¡Hola!") == "Primera parte ¡Hola! Segunda parte con más contexto"
@@ -108,15 +152,17 @@ for url, platform in [
     ("https://www.facebook.com/example/posts/1", "facebook"),
     ("https://fb.watch/example", "facebook"),
     ("https://www.tiktok.com/@example/video/1", "tiktok"),
+    ("https://www.tiktok.com/@example/live", "tiktok"),
     ("https://www.facebook.com/share/p/19cmrzLH7p/", "facebook"),
     ("https://www.facebook.com/share/r/1FAw8USyZo/", "facebook"),
     ("https://www.tiktok.com/@joeln_c/video/7651603660060871954", "tiktok"),
 ]:
     assert validate_url(url, platform) == url
+assert validate_url("https://www.tiktok.com/@example/live", "tiktok", True)
 for url, platform in [
     ("http://facebook.com/example", "facebook"),
     ("https://evil.example", "facebook"),
-    ("https://www.tiktok.com/@example/live", "tiktok"),
+    ('https://www.tiktok.com/@example/video/1"', "tiktok"),
     ("https://www.facebook.com/'%3Binput%20keyevent%203%3B'", "facebook"),
 ]:
     try:
@@ -131,11 +177,12 @@ try:
 except ValueError:
     pass
 else:
-    raise AssertionError("TikTok actions must use a canonical video URL")
+    raise AssertionError("TikTok actions must use a canonical video or Live URL")
 
 
 calls = []
 reject_run = {"enabled": False}
+fake_state = {"tasks": 0, "runs": 0, "runStates": {}}
 real_request = genfarmer.request
 
 
@@ -163,14 +210,28 @@ def fake_request(path, method="GET", data=None):
     if path == "/automation/apps/facebook-app":
         return facebook_workflow
     if path == "/automation/tasks" and method == "POST":
-        return {"taskId": "task-1"}
-    if path == "/automation/tasks/task-1" and method == "PUT":
+        fake_state["tasks"] += 1
+        return {"taskId": f"task-{fake_state['tasks']}"}
+    if path.startswith("/automation/tasks/task-") and method == "PUT":
         return {}
     if path == "/automation/runs" and method == "POST":
         if reject_run["enabled"]:
             raise genfarmer.GenFarmerError("run rejected")
-        return {"runId": "run-1"}
+        fake_state["runs"] += 1
+        run_id = f"run-{fake_state['runs']}"
+        fake_state["runStates"][run_id] = {"taskId": data["taskId"], "status": 1, "deviceStatus": 1}
+        return {"runId": run_id}
+    if path.startswith("/automation/runs/run-") and method == "GET":
+        run_id = path.rsplit("/", 1)[-1]
+        state = fake_state["runStates"][run_id]
+        return {"id": run_id, "taskId": state["taskId"], "status": state["status"],
+                "deviceStatuses": [{"runId": run_id, "deviceId": "usb-1", "status": state["deviceStatus"]}]}
     raise AssertionError((path, method, data))
+
+
+def finish_run(run_id):
+    fake_state["runStates"][run_id].update(status=4, deviceStatus=2)
+    main.dispatch_wakeup.set()
 
 
 main.genfarmer.request = fake_request
@@ -212,6 +273,40 @@ with TestClient(main.app) as client:
         "contentUrl": payload["publications"][0]["url"], "packageName": "com.facebook.lite",
     }
     assert not [call for call in calls if call[:2] == ("/automation/runs/run-1/run", "PUT")]
+    finish_run("run-1")
+
+    chained = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174005",
+               "publications": [
+                   {"url": "https://www.facebook.com/example/posts/2", "context": "", "comments": {}},
+                   {"url": "https://www.facebook.com/example/posts/3", "context": "", "comments": {}},
+               ]}
+    response = client.post("/api/submissions", json=chained, headers=origin)
+    assert response.status_code == 201, response.text
+    chained_ids = [item["id"] for item in response.json()["submissions"]]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        current = {item["id"]: item for item in client.get("/api/submissions").json()["submissions"]}
+        if current[chained_ids[0]]["status"] == "sent":
+            break
+        time.sleep(0.02)
+    first_run = current[chained_ids[0]]["runId"]
+    assert first_run and current[chained_ids[1]]["status"] == "scheduled", current
+    runs_before = fake_state["runs"]
+    fake_state["runStates"][first_run]["status"] = 4
+    main.dispatch_wakeup.set()
+    time.sleep(0.2)
+    current = {item["id"]: item for item in client.get("/api/submissions").json()["submissions"]}
+    assert current[chained_ids[1]]["status"] == "scheduled" and fake_state["runs"] == runs_before
+    finish_run(first_run)
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        current = {item["id"]: item for item in client.get("/api/submissions").json()["submissions"]}
+        if current[chained_ids[1]]["status"] == "sent":
+            break
+        time.sleep(0.02)
+    assert current[chained_ids[1]]["status"] == "sent", current
+    assert [call for call in calls if call[:2] == (f"/automation/runs/{first_run}", "GET")]
+    finish_run(current[chained_ids[1]]["runId"])
 
     scheduled = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174001", "scheduledAt": int(time.time() * 1000) + 60_000}
     response = client.post("/api/submissions", json=scheduled, headers=origin)
@@ -235,16 +330,19 @@ with TestClient(main.app) as client:
     commented_ids = {item["id"] for item in response.json()["submissions"]}
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
-        current = [item["status"] for item in client.get("/api/submissions").json()["submissions"] if item["id"] in commented_ids]
-        if len(current) == 2 and all(status == "sent" for status in current):
+        current = [item for item in client.get("/api/submissions").json()["submissions"] if item["id"] in commented_ids]
+        if len(current) == 2 and all(item["status"] == "sent" for item in current):
             break
         time.sleep(0.02)
+    assert len(current) == 2 and all(item["status"] == "sent" for item in current), current
     per_device = {}
     for call in calls:
         if call[:2] == ("/automation/tasks", "POST") and call[2]["appId"] == "facebook-app":
             values = {item["name"]: item["value"] for item in call[2]["variables"]}
             per_device[call[2]["devices"]["list"][0]["serialNo"]] = values["commentText"]
     assert per_device == {"serial-first": "Comentario del primero", "serial-second": "Comentario del segundo"}, per_device
+    for item in current:
+        finish_run(item["runId"])
     reject_run["enabled"] = True
     rejected_run = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174003"}
     response = client.post("/api/submissions", json=rejected_run, headers=origin)
@@ -257,6 +355,15 @@ with TestClient(main.app) as client:
             break
         time.sleep(0.02)
     assert rejected["status"] == "unknown", rejected
+    blocked = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174006"}
+    response = client.post("/api/submissions", json=blocked, headers=origin)
+    assert response.status_code == 201, response.text
+    blocked_id = response.json()["submissions"][0]["id"]
+    main.dispatch_wakeup.set()
+    time.sleep(0.2)
+    blocked_row = next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == blocked_id)
+    assert blocked_row["status"] == "scheduled" and blocked_row["taskId"] is None, blocked_row
+    assert client.delete(f"/api/submissions/{blocked_id}", headers=origin).status_code == 200
     reject_run["enabled"] = False
 
 with connect() as db:

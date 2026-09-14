@@ -1,10 +1,10 @@
 {
   "id": "",
   "userId": 0,
-  "name": "TikTok - Abrir + Like + Comentar + Republicar",
-  "description": "Abre un video de TikTok y ejecuta Me gusta, comentario y Repost con verificacion.",
+  "name": "TikTok - Video/Live + Like + Comentar + Republicar v1.2.0",
+  "description": "Abre un video o Live de TikTok y ejecuta Me gusta, comentario y Repost con verificacion.",
   "logo": null,
-  "version": "1.1.1",
+  "version": "1.2.0",
   "input": [
     {
       "id": "field_contentUrl",
@@ -23,7 +23,7 @@
         "value": "",
         "disabled": false,
         "labelWidth": 190,
-        "placeholder": "https://www.tiktok.com/@usuario/video/...",
+        "placeholder": "https://www.tiktok.com/@usuario/video/... o /live",
         "width": null,
         "height": null,
         "maxLength": 2048,
@@ -137,9 +137,9 @@
   ],
   "script": {
     "id": "tiktok-open-actions",
-    "name": "TikTok - Abrir + Like + Comentar + Republicar",
-    "description": "Abre un video de TikTok y ejecuta Me gusta, comentario y Repost con verificacion.",
-    "version": "1.1.1",
+    "name": "TikTok - Video/Live + Like + Comentar + Republicar v1.2.0",
+    "description": "Abre un video o Live de TikTok y ejecuta Me gusta, comentario y Repost con verificacion.",
+    "version": "1.2.0",
     "variables": [
       {
         "id": "contentUrl",
@@ -240,6 +240,48 @@
         "secret": false
       },
       {
+        "id": "liveCommentTriggerIdPattern",
+        "name": "liveCommentTriggerIdPattern",
+        "label": "Live: ID para abrir comentario",
+        "value": ":id/gjl$",
+        "secret": false
+      },
+      {
+        "id": "liveCommentEditorIdPattern",
+        "name": "liveCommentEditorIdPattern",
+        "label": "Live: ID del editor",
+        "value": ":id/ff5$",
+        "secret": false
+      },
+      {
+        "id": "liveCommentSendIdPattern",
+        "name": "liveCommentSendIdPattern",
+        "label": "Live: ID para enviar comentario",
+        "value": ":id/rbk$",
+        "secret": false
+      },
+      {
+        "id": "liveShareTriggerIdPattern",
+        "name": "liveShareTriggerIdPattern",
+        "label": "Live: ID para abrir Compartir",
+        "value": ":id/u9q$",
+        "secret": false
+      },
+      {
+        "id": "liveShareActionPattern",
+        "name": "liveShareActionPattern",
+        "label": "Live: accion Compartir",
+        "value": "^(compartir|share)$",
+        "secret": false
+      },
+      {
+        "id": "liveLikeContainerIdPattern",
+        "name": "liveLikeContainerIdPattern",
+        "label": "Live: contenedor de Me gusta",
+        "value": ":id/n76$",
+        "secret": false
+      },
+      {
         "id": "diagnostic_only",
         "name": "diagnostic_only",
         "label": "Diagnostico sin publicar",
@@ -264,6 +306,20 @@
         "id": "contentId",
         "name": "contentId",
         "label": "contentId",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "contentMode",
+        "name": "contentMode",
+        "label": "contentMode",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "contentUri",
+        "name": "contentUri",
+        "label": "contentUri",
         "value": "",
         "secret": false
       }
@@ -336,7 +392,7 @@
               "breakpoint": false,
               "timeoutAdbReconnect": "60",
               "nodeLog": "",
-              "script": "const v = this.variables;\nconst enabled = value => value === true || value === 1 || /^(true|1)$/i.test(String(value));\nconst raw = String(v.contentUrl || '').trim();\nlet parsed;\ntry { parsed = new URL(raw); } catch (_) { parsed = null; }\nconst host = parsed ? parsed.hostname.toLowerCase() : '';\nconst valid = parsed && parsed.protocol === 'https:' && (host === 'tiktok.com' || host.endsWith('.tiktok.com')) &&\n  /^\\/@[^/]+\\/video\\/\\d+\\/?$/.test(parsed.pathname) && !/['\"\\s]/.test(raw);\nif (!valid) { v.tiktok_error = 'Introduce un enlace https de video de TikTok valido.'; throw new Error('TIKTOK_INPUT_ERROR'); }\nv.contentId = parsed.pathname.split('/').filter(Boolean).pop();\nif (enabled(v.comment)) {\n  const text = String(v.commentText || '').trim();\n  if (!text || text.length > 150) { v.tiktok_error = 'El comentario debe tener entre 1 y 150 caracteres.'; throw new Error('TIKTOK_INPUT_ERROR'); }\n}\n"
+              "script": "const v = this.variables;\nconst enabled = value => value === true || value === 1 || /^(true|1)$/i.test(String(value));\nconst raw = String(v.contentUrl || '').trim();\nlet parsed;\ntry { parsed = new URL(raw); } catch (_) { parsed = null; }\nconst host = parsed ? parsed.hostname.toLowerCase() : '';\nconst video = parsed && /^\\/@[^/]+\\/video\\/\\d+\\/?$/.test(parsed.pathname);\nconst live = parsed && /^\\/@[^/]+\\/live\\/?$/i.test(parsed.pathname);\nconst valid = parsed && parsed.protocol === 'https:' && (host === 'tiktok.com' || host.endsWith('.tiktok.com')) &&\n  (video || live) && !/['\"\\s]/.test(raw);\nif (!valid) { v.tiktok_error = 'Introduce un enlace https de video o Live de TikTok valido.'; throw new Error('TIKTOK_INPUT_ERROR'); }\nv.contentId = video ? parsed.pathname.split('/').filter(Boolean).pop() : '';\nv.contentMode = live ? (enabled(v.diagnostic_only) ? 'live-diagnostic' : 'live') : 'video';\nv.contentUri = live ? raw : 'snssdk1233://aweme/detail/' + v.contentId;\nif (enabled(v.comment)) {\n  const text = String(v.commentText || '').trim();\n  if (!text || text.length > 150) { v.tiktok_error = 'El comentario debe tener entre 1 y 150 caracteres.'; throw new Error('TIKTOK_INPUT_ERROR'); }\n}\n"
             },
             "successNode": "tiktok_force_stop",
             "failNode": "tiktok_action_error"
@@ -393,13 +449,129 @@
               "breakpoint": false,
               "timeoutAdbReconnect": "60",
               "nodeLog": "",
-              "command": "am start -W -a android.intent.action.VIEW -d 'snssdk1233://aweme/detail/${contentId}' -p com.zhiliaoapp.musically",
+              "command": "am start -W -a android.intent.action.VIEW -d '${contentUri}' -p com.zhiliaoapp.musically",
               "outputVariable": null
             },
-            "successNode": "tiktok_actions",
+            "successNode": "tiktok_route_live_diagnostic",
             "failNode": "tiktok_open_error"
           },
-          "label": "TikTok · Abrir video",
+          "label": "TikTok · Abrir video o Live",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_route_live_diagnostic",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": -80
+          },
+          "data": {
+            "icon": "if",
+            "action": "If",
+            "options": {
+              "leftOperand": "contentMode",
+              "operator": "=",
+              "rightOperand": "live-diagnostic",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "tiktok_live_actions",
+            "failNode": "tiktok_route_live"
+          },
+          "label": "¿Diagnostico Live?",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_route_live",
+          "type": "custom",
+          "position": {
+            "x": 1260,
+            "y": 60
+          },
+          "data": {
+            "icon": "if",
+            "action": "If",
+            "options": {
+              "leftOperand": "contentMode",
+              "operator": "=",
+              "rightOperand": "live",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "tiktok_live_publish",
+            "failNode": "tiktok_actions"
+          },
+          "label": "¿TikTok Live?",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_live_publish",
+          "type": "custom",
+          "position": {
+            "x": 1500,
+            "y": 60
+          },
+          "data": {
+            "icon": "code",
+            "action": "Javascript",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "300",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "script": "'use strict';\nconst fs = require('fs');\nconst path = require('path');\nconst os = require('os');\nconst ctx = this;\nconst v = ctx.variables;\nconst ui = ctx.clientUiAutomator;\nconst enabled = value => value === true || value === 1 || /^(true|1)$/i.test(String(value));\nconst actions = { comment: enabled(v.comment), like: enabled(v.like), share: enabled(v.share) };\nconst commentText = String(v.commentText || '').trim();\nconst normalize = value => String(value || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').replace(/[\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]/g, '').replace(/\\s+/g, ' ').trim().toLowerCase();\nconst expectedTarget = normalize(v.targetText);\nconst selector = (name, fallback) => { try { return new RegExp(String(v[name] || fallback)); } catch (_) { throw new Error('Selector invalido: ' + name + '.'); } };\nconst selectors = {\n  commentTrigger: selector('liveCommentTriggerIdPattern', ':id/gjl$'),\n  commentEditor: selector('liveCommentEditorIdPattern', ':id/ff5$'),\n  commentSend: selector('liveCommentSendIdPattern', ':id/rbk$'),\n  shareTrigger: selector('liveShareTriggerIdPattern', ':id/u9q$'),\n  shareAction: selector('liveShareActionPattern', '^(compartir|share)$'),\n  likeContainer: selector('liveLikeContainerIdPattern', ':id/n76$'),\n  copyLink: selector('copyLinkPattern', '^(copiar enlace|copy link)$')\n};\nconst folder = path.join(os.tmpdir(), 'opencode', 'GenFarmer-TiktokLive', String(ctx.runId || Date.now()).replace(/[^\\w-]/g, '_'), String(ctx.deviceId));\nfs.mkdirSync(folder, { recursive: true });\nconst result = { serial: ctx.deviceId, url: String(v.contentUrl || ''), mode: 'publish', status: 'running', actions: {}, evidence: folder };\nconst deadline = Date.now() + 270000;\nlet sequence = 0;\nv.tiktok_error = '';\nv.tiktok_summary = '';\nfunction check() { if (ctx.actionProcessed || Date.now() > deadline) throw new Error('Ejecucion interrumpida o plazo UI agotado.'); }\nasync function wait(ms) { const end = Date.now() + ms; while (Date.now() < end) { check(); await new Promise(resolve => setTimeout(resolve, Math.min(200, end - Date.now()))); } }\nfunction save() { fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify(result, null, 2)); }\nfunction report(message) { save(); if (ctx.logCallback) ctx.logCallback({ logType: 'Info', logText: message, action: { id: 'tiktok_live_publish', label: 'UI TikTok Live' } }); }\nfunction parse(xml) {\n  if (typeof xml !== 'string' || !xml.includes('<hierarchy') || !xml.includes('</hierarchy>') || xml.length > 3000000 || xml.includes('\\0')) throw new Error('Jerarquia XML vacia o corrupta.');\n  const decode = value => value.replace(/&(#x[0-9a-f]+|#\\d+|amp|lt|gt|quot|apos);/gi, (all, entity) => { if (entity[0] === '#') return String.fromCodePoint(entity[1].toLowerCase() === 'x' ? parseInt(entity.slice(2), 16) : Number(entity.slice(1))); return { amp: '&', lt: '<', gt: '>', quot: '\"', apos: \"'\" }[entity]; });\n  const found = [];\n  for (const tag of xml.match(/<node\\b[^>]*>/g) || []) {\n    const node = {};\n    for (const attr of tag.matchAll(/([\\w-]+)\\s*=\\s*([\"'])(.*?)\\2/g)) node[attr[1]] = decode(attr[3]);\n    const bounds = String(node.bounds || '').match(/^\\[(-?\\d+),(-?\\d+)\\]\\[(-?\\d+),(-?\\d+)\\]$/);\n    if (!bounds) continue;\n    node.bounds = bounds.slice(1).map(Number);\n    node.label = normalize(node['content-desc'] || node.text);\n    found.push(node);\n  }\n  return found;\n}\nasync function rpc(method, params) {\n  check();\n  const response = await ui.callRpc(method, params, 10000, 5);\n  check();\n  if (!response || response.error || response.result === false) throw new Error('Operacion UI no confirmada: ' + method);\n  return response.result;\n}\nasync function clickOnce(node, purpose) {\n  if (!node || !node.bounds || node.bounds[2] <= node.bounds[0] || node.bounds[3] - node.bounds[1] < 20) throw new Error('Control ausente, ambiguo u oculto: ' + purpose + '.');\n  try {\n    await rpc('click', [Math.round((node.bounds[0] + node.bounds[2]) / 2), Math.round((node.bounds[1] + node.bounds[3]) / 2)]);\n    return true;\n  } catch (error) {\n    result.uncertainClicks = result.uncertainClicks || [];\n    result.uncertainClicks.push({ purpose, error: String(error && error.message || error) });\n    save();\n    return false;\n  }\n}\nasync function pressBack(purpose) {\n  try { await rpc('pressKey', ['back']); return true; }\n  catch (error) { result.uncertainNavigation = result.uncertainNavigation || []; result.uncertainNavigation.push({ purpose, error: String(error && error.message || error) }); save(); return false; }\n}\nasync function screen(label) {\n  let lastError;\n  for (let attempt = 0; attempt < 8; attempt++) {\n    check();\n    try {\n      const xml = await ctx.getXml();\n      check();\n      fs.writeFileSync(path.join(folder, (++sequence) + '-' + label + '.xml'), xml);\n      const all = parse(xml).filter(node => node.enabled !== 'false' && node['visible-to-user'] !== 'false');\n      const nodes = all.filter(node => node.package === 'com.zhiliaoapp.musically');\n      if (!nodes.length) throw new Error('TikTok no esta en primer plano.');\n      if (nodes.some(node => /^(transmision finalizada|el live ha terminado|live has ended|iniciar sesion|log in|registrate en tiktok|sign up)$/.test(node.label))) throw new Error('El Live termino o la sesion de TikTok no permite interactuar.');\n      return nodes;\n    } catch (error) { lastError = error; if (attempt < 7) await wait(700); }\n  }\n  throw lastError;\n}\nasync function photo(label) { check(); const image = await ui.screenShotToBuffer(); check(); if (!image || !image.length) throw new Error('Captura de pantalla vacia.'); fs.writeFileSync(path.join(folder, (++sequence) + '-' + label + '.png'), image); }\nfunction one(nodes, pattern, extra) { const matches = nodes.filter(node => pattern.test(node['resource-id'] || '') && (!extra || extra(node))); return matches.length === 1 ? matches[0] : null; }\nfunction liveControls(nodes) {\n  const comment = one(nodes, selectors.commentTrigger, node => node.clickable === 'true');\n  const share = one(nodes, selectors.shareTrigger);\n  const container = one(nodes, selectors.likeContainer);\n  let like = null;\n  if (container) {\n    const icons = nodes.filter(node => node.class === 'android.widget.ImageView' && !node['resource-id'] && node.bounds[0] >= container.bounds[0] && node.bounds[2] <= container.bounds[2] && node.bounds[1] >= container.bounds[1] && node.bounds[3] <= container.bounds[3] && node.bounds[2] - node.bounds[0] >= 60 && node.bounds[2] - node.bounds[0] <= 140 && Math.abs((node.bounds[2] - node.bounds[0]) - (node.bounds[3] - node.bounds[1])) <= 20);\n    if (icons.length === 1) like = icons[0];\n  }\n  return { comment, share, like };\n}\nfunction targetMatches(nodes) { return !expectedTarget || normalize(nodes.map(node => node.label).join(' ')).includes(expectedTarget); }\nasync function locateLive(seconds) {\n  const end = Date.now() + seconds * 1000;\n  while (Date.now() < end) {\n    const nodes = await screen('live');\n    const controls = liveControls(nodes);\n    if (controls.comment && controls.share && (!actions.like || controls.like) && targetMatches(nodes)) return { nodes, controls };\n    await wait(700);\n  }\n  throw new Error(expectedTarget ? 'No se confirmo el Live o su identidad visible.' : 'No se identificaron los controles del Live.');\n}\nfunction editor(nodes, expected) { let matches = nodes.filter(node => node.class === 'android.widget.EditText' && selectors.commentEditor.test(node['resource-id'] || '')); if (expected !== undefined) matches = matches.filter(node => node.text === expected); return matches.length === 1 ? matches[0] : null; }\nfunction placeholder(text) { return /^(escribe algo|write something)/.test(normalize(text)); }\nasync function openComment(live) {\n  await clickOnce(live.controls.comment, 'abrir comentario Live');\n  for (let attempt = 0; attempt < 12; attempt++) { await wait(500); const nodes = await screen('comment-open'); if (editor(nodes)) return nodes; }\n  throw new Error('No se abrio el editor del comentario Live.');\n}\nasync function setDraft(nodes, text) {\n  let lastError;\n  for (let attempt = 0; attempt < 4; attempt++) {\n    const edit = editor(nodes);\n    if (!edit) throw new Error('Editor del comentario Live ausente.');\n    if (text ? edit.text === text : (!edit.text || placeholder(edit.text))) return nodes;\n    try { await rpc('setText', [{ mask: 2097152, childOrSibling: [], childOrSiblingSelector: [], resourceId: edit['resource-id'] }, text]); } catch (error) { lastError = error; }\n    await wait(500);\n    nodes = await screen('comment-draft');\n  }\n  throw lastError || new Error('No se confirmo el texto del comentario Live.');\n}\nfunction commentKeys(nodes, text) { const expected = normalize(text); return nodes.filter(node => node.class !== 'android.widget.EditText' && normalize(node.text) === expected).map(node => (node['resource-id'] || node.class || '') + '|' + node.bounds.join(',') + '|' + expected); }\nfunction sendButton(nodes) { return one(nodes, selectors.commentSend, node => node.clickable === 'true'); }\nfunction shareSheet(nodes) { return nodes.some(node => /^(compartir|share)$/.test(node.label)) && nodes.some(node => selectors.copyLink.test(node.label)); }\nfunction shareAction(nodes) { const matches = nodes.filter(node => node.class === 'android.widget.Button' && node.clickable === 'true' && selectors.shareAction.test(node.label)); return matches.length === 1 ? matches[0] : null; }\nasync function openShare(live) {\n  await clickOnce(live.controls.share, 'abrir Compartir Live');\n  for (let attempt = 0; attempt < 12; attempt++) { await wait(500); const nodes = await screen('share-open'); if (shareSheet(nodes) && shareAction(nodes)) return nodes; }\n  throw new Error('No se abrio la hoja Compartir del Live.');\n}\ntry {\n  if (!/^https:\\/\\/(?:[^/]+\\.)?tiktok\\.com\\/@[^/]+\\/live\\/?$/i.test(String(v.contentUrl || '').trim())) throw new Error('Introduce un enlace https de TikTok Live valido.');\n  if (actions.comment && (!commentText || commentText.length > 150)) throw new Error('El comentario debe tener entre 1 y 150 caracteres.');\n  let live = await locateLive(90);\n  result.identity = expectedTarget || normalize(live.nodes.find(node => /:id\\/(?:wtb|ajh)$/.test(node['resource-id'] || '') && node.label)?.label);\n  report('TikTok Live identificado: ' + (result.identity || 'sin texto objetivo'));\n  if (actions.comment) {\n    const beforeKeys = commentKeys(live.nodes, commentText);\n    let nodes = await openComment(live);\n    const existing = editor(nodes);\n    if (existing && existing.text && !placeholder(existing.text)) throw new Error('Existe un borrador previo; se conserva sin reemplazarlo.');\n    nodes = await setDraft(nodes, commentText);\n    await photo('comment-ready');\n    const send = sendButton(nodes);\n    if (!send || !editor(nodes, commentText)) throw new Error('No se confirmo el texto o el boton de envio Live.');\n    result.commentText = commentText;\n    result.actions.comment = 'pending';\n    save();\n    await clickOnce(send, 'enviar comentario Live');\n    let confirmed = false;\n    for (let attempt = 0; attempt < 16; attempt++) {\n      await wait(600);\n      nodes = await screen('comment-confirmation');\n      const currentEditor = editor(nodes);\n      const clear = !currentEditor || !currentEditor.text || placeholder(currentEditor.text);\n      const added = commentKeys(nodes, commentText).some(key => !beforeKeys.includes(key));\n      if (clear && added) { confirmed = true; break; }\n    }\n    if (!confirmed) throw new Error('Envio pendiente de confirmar: comentario Live. No se repetira.');\n    if (editor(nodes)) { await pressBack('cerrar teclado tras comentario Live'); await wait(500); }\n    live = await locateLive(20);\n    result.actions.comment = 'publicado y visible en el chat';\n    report('Comentario Live: ' + result.actions.comment);\n  }\n  if (actions.like) {\n    live = await locateLive(20);\n    result.actions.like = 'pending';\n    save();\n    const acknowledged = await clickOnce(live.controls.like, 'enviar Me gusta Live');\n    if (!acknowledged) throw new Error('Envio pendiente de confirmar: Me gusta Live. No se repetira.');\n    await wait(700);\n    live = await locateLive(15);\n    result.actions.like = 'un toque enviado; Live conservado (TikTok no expone estado persistente)';\n    report('Me gusta Live: ' + result.actions.like);\n  }\n  if (actions.share) {\n    live = await locateLive(20);\n    let nodes = await openShare(live);\n    const action = shareAction(nodes);\n    await photo('share-ready');\n    result.shareLabel = action.label;\n    result.actions.share = 'pending';\n    save();\n    await clickOnce(action, 'Compartir Live');\n    let confirmed = false;\n    for (let attempt = 0; attempt < 16; attempt++) {\n      await wait(500);\n      nodes = await screen('share-confirmation');\n      if (!shareSheet(nodes)) { const controls = liveControls(nodes); if (controls.comment && controls.share && targetMatches(nodes)) { confirmed = true; live = { nodes, controls }; break; } }\n    }\n    if (!confirmed) throw new Error('Envio pendiente de confirmar: Compartir Live. No se repetira.');\n    result.actions.share = 'Compartir ejecutado; hoja cerrada y Live verificado';\n    report('Compartir Live: ' + result.actions.share);\n  }\n  await photo('final-live');\n  result.status = 'success';\n  v.tiktok_summary = Object.keys(result.actions).length ? Object.entries(result.actions).map(entry => entry[0] + ': ' + entry[1]).join('; ') : 'Live abierto y verificado; acciones desactivadas';\n  save();\n} catch (error) {\n  result.status = 'failed';\n  result.error = String(error && error.message || error);\n  v.tiktok_error = result.error;\n  save();\n  try { await photo('error'); } catch (_) { }\n  throw new Error('TIKTOK_LIVE_ACTION_ERROR: consultar tiktok_error y result.json.');\n}\n"
+            },
+            "successNode": "tiktok_action_success",
+            "failNode": "tiktok_action_error"
+          },
+          "label": "TikTok Live · Comentar / Like / Compartir",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "tiktok_live_actions",
+          "type": "custom",
+          "position": {
+            "x": 1500,
+            "y": -80
+          },
+          "data": {
+            "icon": "code",
+            "action": "Javascript",
+            "options": {
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "300",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": "",
+              "script": "'use strict';\nconst fs = require('fs');\nconst path = require('path');\nconst os = require('os');\nconst ctx = this;\nconst v = ctx.variables;\nconst ui = ctx.clientUiAutomator;\nconst diagnostic = v.diagnostic_only === true || v.diagnostic_only === 1 || /^(true|1)$/i.test(String(v.diagnostic_only));\nconst folder = path.join(os.tmpdir(), 'opencode', 'GenFarmer-TiktokLive', String(ctx.runId || Date.now()).replace(/[^\\w-]/g, '_'), String(ctx.deviceId));\nfs.mkdirSync(folder, { recursive: true });\nconst result = { serial: ctx.deviceId, url: String(v.contentUrl || ''), mode: diagnostic ? 'diagnostic' : 'publish', status: 'running', evidence: folder, screens: [] };\nconst save = () => fs.writeFileSync(path.join(folder, 'result.json'), JSON.stringify(result, null, 2));\nconst wait = ms => new Promise(resolve => setTimeout(resolve, ms));\nfunction nodes(xml) {\n  const found = [];\n  for (const tag of xml.match(/<node\\b[^>]*>/g) || []) {\n    const node = {};\n    for (const attr of tag.matchAll(/([\\w-]+)\\s*=\\s*([\"'])(.*?)\\2/g)) node[attr[1]] = attr[3];\n    const bounds = String(node.bounds || '').match(/^\\[(-?\\d+),(-?\\d+)\\]\\[(-?\\d+),(-?\\d+)\\]$/);\n    if (bounds) { node.bounds = bounds.slice(1).map(Number); found.push(node); }\n  }\n  return found;\n}\nasync function rpc(method, params) {\n  const response = await ui.callRpc(method, params, 10000, 5);\n  if (!response || response.error || response.result === false) throw new Error('Operacion UI no confirmada: ' + method);\n  return response.result;\n}\nasync function capture(label) {\n  const xml = await ctx.getXml();\n  fs.writeFileSync(path.join(folder, label + '.xml'), xml);\n  const image = await ui.screenShotToBuffer();\n  if (!image || !image.length) throw new Error('Captura de pantalla vacia.');\n  fs.writeFileSync(path.join(folder, label + '.png'), image);\n  result.screens.push(label);\n  save();\n  return nodes(xml);\n}\nasync function click(node, purpose) {\n  if (!node || !node.bounds || node.bounds[2] <= node.bounds[0] || node.bounds[3] <= node.bounds[1]) throw new Error('Control ausente: ' + purpose);\n  await rpc('click', [Math.round((node.bounds[0] + node.bounds[2]) / 2), Math.round((node.bounds[1] + node.bounds[3]) / 2)]);\n}\ntry {\n  if (!diagnostic) throw new Error('TikTok Live aun requiere diagnostico visual; no se publico ninguna accion.');\n  let liveNodes;\n  for (let attempt = 0; attempt < 20; attempt++) {\n    await wait(1000);\n    liveNodes = await capture('ready-' + (attempt + 1));\n    if (liveNodes.some(node => /:id\\/gjl$/.test(node['resource-id'] || '')) && liveNodes.some(node => /:id\\/u9q$/.test(node['resource-id'] || ''))) break;\n  }\n  const comment = liveNodes.find(node => /:id\\/gjl$/.test(node['resource-id'] || ''));\n  const share = liveNodes.find(node => /:id\\/u9q$/.test(node['resource-id'] || ''));\n  if (!comment || !share) throw new Error('No se identificaron los controles del Live.');\n  await click(comment, 'abrir editor de comentario');\n  await wait(1200);\n  await capture('comment-open');\n  await rpc('pressKey', ['back']);\n  await wait(800);\n  liveNodes = await capture('comment-closed');\n  await click(liveNodes.find(node => /:id\\/u9q$/.test(node['resource-id'] || '')), 'abrir compartir');\n  await wait(1200);\n  await capture('share-open');\n  await rpc('pressKey', ['back']);\n  result.status = 'success';\n  result.summary = 'Editor y hoja de compartir del Live identificados sin acciones publicas.';\n  v.tiktok_summary = result.summary;\n  save();\n} catch (error) {\n  result.status = 'failed';\n  result.error = String(error && error.message || error);\n  v.tiktok_error = result.error;\n  save();\n  throw new Error('TIKTOK_LIVE_ACTION_ERROR: consultar tiktok_error y result.json.');\n}\n"
+            },
+            "successNode": "tiktok_action_success",
+            "failNode": "tiktok_action_error"
+          },
+          "label": "TikTok Live · Diagnosticar acciones",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -674,7 +846,7 @@
           "id": "edge-tiktok_content-success",
           "type": "custom",
           "source": "tiktok_content",
-          "target": "tiktok_actions",
+          "target": "tiktok_route_live_diagnostic",
           "sourceHandle": "success",
           "targetHandle": "success",
           "data": {
@@ -687,7 +859,157 @@
             "stroke": "#62fcaf"
           },
           "animated": true,
-          "class": "source-tiktok_content target-tiktok_actions"
+          "class": "source-tiktok_content target-tiktok_route_live_diagnostic"
+        },
+        {
+          "id": "edge-tiktok-route-live-diagnostic-yes",
+          "type": "custom",
+          "source": "tiktok_route_live_diagnostic",
+          "target": "tiktok_live_actions",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_route_live_diagnostic target-tiktok_live_actions"
+        },
+        {
+          "id": "edge-tiktok-route-live-diagnostic-no",
+          "type": "custom",
+          "source": "tiktok_route_live_diagnostic",
+          "target": "tiktok_route_live",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-tiktok_route_live_diagnostic target-tiktok_route_live"
+        },
+        {
+          "id": "edge-tiktok-route-live",
+          "type": "custom",
+          "source": "tiktok_route_live",
+          "target": "tiktok_live_publish",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_route_live target-tiktok_live_publish"
+        },
+        {
+          "id": "edge-tiktok-route-video",
+          "type": "custom",
+          "source": "tiktok_route_live",
+          "target": "tiktok_actions",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-tiktok_route_live target-tiktok_actions"
+        },
+        {
+          "id": "edge-tiktok-live-publish-success",
+          "type": "custom",
+          "source": "tiktok_live_publish",
+          "target": "tiktok_action_success",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_live_publish target-tiktok_action_success"
+        },
+        {
+          "id": "edge-tiktok-live-publish-fail",
+          "type": "custom",
+          "source": "tiktok_live_publish",
+          "target": "tiktok_action_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#d03050"
+          },
+          "animated": true,
+          "class": "source-tiktok_live_publish target-tiktok_action_error"
+        },
+        {
+          "id": "edge-tiktok-live-actions-success",
+          "type": "custom",
+          "source": "tiktok_live_actions",
+          "target": "tiktok_action_success",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-tiktok_live_actions target-tiktok_action_success"
+        },
+        {
+          "id": "edge-tiktok-live-actions-fail",
+          "type": "custom",
+          "source": "tiktok_live_actions",
+          "target": "tiktok_action_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#d03050"
+          },
+          "animated": true,
+          "class": "source-tiktok_live_actions target-tiktok_action_error"
         },
         {
           "id": "edge-tiktok_content-fail",

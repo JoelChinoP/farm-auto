@@ -8,9 +8,10 @@ from .config import settings
 
 
 class GenFarmerError(RuntimeError):
-    def __init__(self, message: str, ambiguous: bool = False):
+    def __init__(self, message: str, ambiguous: bool = False, unavailable: bool = False):
         super().__init__(message)
         self.ambiguous = ambiguous
+        self.unavailable = unavailable
 
 
 def request(path: str, method: str = "GET", data=None):
@@ -24,17 +25,34 @@ def request(path: str, method: str = "GET", data=None):
         with urlopen(outgoing, timeout=settings.genfarmer_timeout) as response:
             payload = json.load(response)
     except HTTPError as error:
-        raise GenFarmerError(f"GenFarmer respondio HTTP {error.code}", mutation and error.code >= 500) from error
+        raise GenFarmerError(f"GenFarmer respondio HTTP {error.code}", mutation and error.code >= 500, error.code >= 500) from error
     except (URLError, OSError, ValueError) as error:
-        raise GenFarmerError("GenFarmer no responde o devolvio una respuesta invalida", mutation) from error
+        raise GenFarmerError("GenFarmer no responde o devolvio una respuesta invalida", mutation, True) from error
     # Explicit success:false is a rejection; a missing envelope cannot confirm a mutation receipt.
     if not isinstance(payload, dict):
-        raise GenFarmerError("GenFarmer no confirmo la solicitud; revisar su API local", mutation)
+        raise GenFarmerError("GenFarmer no confirmo la solicitud; revisar su API local", mutation, True)
     if payload.get("success") is not True:
         rejected = payload.get("success") is False
         message = "GenFarmer rechazo la solicitud" if rejected else "GenFarmer no confirmo la solicitud"
-        raise GenFarmerError(f"{message}; revisar su API local", mutation and not rejected)
+        raise GenFarmerError(f"{message}; revisar su API local", mutation and not rejected, not rejected)
     return payload.get("data", {})
+
+
+def run_finished(run_id: str, task_id: str) -> bool:
+    run = request(f"/automation/runs/{path_id(run_id)}")
+    if not isinstance(run, dict) or run.get("id") != run_id or run.get("taskId") != task_id:
+        raise GenFarmerError("GenFarmer devolvio un run distinto al solicitado")
+    run_status = run.get("status")
+    devices = run.get("deviceStatuses")
+    if type(run_status) is not int or run_status not in range(5) or not isinstance(devices, list) or len(devices) != 1:
+        raise GenFarmerError("Formato de estado de run distinto al contrato de GenFarmer")
+    device = devices[0]
+    if not isinstance(device, dict) or device.get("runId") != run_id or not isinstance(device.get("deviceId"), str) or not device["deviceId"]:
+        raise GenFarmerError("GenFarmer devolvio un dispositivo distinto al run solicitado")
+    device_status = device.get("status")
+    if type(device_status) is not int or device_status not in range(5):
+        raise GenFarmerError("Formato de estado de dispositivo distinto al contrato de GenFarmer")
+    return run_status in {2, 3, 4} and device_status in {2, 3, 4}
 
 
 def devices() -> list[dict]:

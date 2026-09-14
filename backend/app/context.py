@@ -9,7 +9,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 def validate_url(value: str, platform: str, require_video: bool = False) -> str:
-    if len(value) > 2048 or "'" in value or re.search(r"[\x00-\x20\x7f]", value):
+    if len(value) > 2048 or any(char in value for char in "'\"") or re.search(r"[\x00-\x20\x7f]", value):
         raise ValueError("URL invalida")
     parsed = urlsplit(value)
     host = (parsed.hostname or "").lower()
@@ -17,10 +17,8 @@ def validate_url(value: str, platform: str, require_video: bool = False) -> str:
     allowed = host == domain or host.endswith("." + domain) or (platform == "facebook" and host == "fb.watch")
     if parsed.scheme != "https" or not allowed or parsed.username or parsed.password or parsed.port not in {None, 443}:
         raise ValueError("Usa una URL HTTPS de la plataforma, sin credenciales ni puertos alternativos")
-    if platform == "tiktok" and re.fullmatch(r"/@[^/]+/live/?", parsed.path, re.I):
-        raise ValueError("TikTok Live no esta incluido")
-    if platform == "tiktok" and require_video and not re.fullmatch(r"/@[^/]+/video/\d+/?", parsed.path):
-        raise ValueError("Las acciones de TikTok requieren la URL completa /@usuario/video/id")
+    if platform == "tiktok" and require_video and not re.fullmatch(r"/@[^/]+/(?:video/\d+|live)/?", parsed.path, re.I):
+        raise ValueError("Las acciones de TikTok requieren /@usuario/video/id o /@usuario/live")
     return value
 
 

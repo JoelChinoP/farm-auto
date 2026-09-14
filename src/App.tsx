@@ -133,9 +133,9 @@ function urlProblem(urls: string[], platform: Platform, requireVideo = false) {
   const invalid = urls.findIndex((value) => {
     try {
       const url = new URL(value)
-      return url.protocol !== 'https:' || !!url.username || !!url.password || !!url.port || value.length > 2048 || /\s/u.test(value) || value.includes("'") || value.includes(String.fromCharCode(0)) ||
+      return url.protocol !== 'https:' || !!url.username || !!url.password || !!url.port || value.length > 2048 || /\s/u.test(value) || value.includes("'") || value.includes('"') || value.includes(String.fromCharCode(0)) ||
         (!(platform === 'facebook' && url.hostname === 'fb.watch') && !domains.some((domain) => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) ||
-        (platform === 'tiktok' && (/^\/@[^/]+\/live\/?$/i.test(url.pathname) || (requireVideo && !/^\/@[^/]+\/video\/\d+\/?$/.test(url.pathname))))
+        (platform === 'tiktok' && requireVideo && !/^\/@[^/]+\/(?:video\/\d+|live)\/?$/i.test(url.pathname))
     } catch { return true }
   })
   if (invalid !== -1) return `Revisa la URL de la línea ${invalid + 1}: debe ser un enlace de ${views[platform].title}.`
@@ -148,7 +148,7 @@ function formatDate(value: number) {
 }
 
 function actionLabel(actions: Actions, platform: Platform) {
-  return [actions.like && 'Like', actions.comment && 'Comentar', actions.share && (platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)')].filter(Boolean).join(' · ') || 'Solo abrir contenido'
+  return [actions.like && 'Like', actions.comment && 'Comentar', actions.share && (platform === 'tiktok' ? 'Repost / Compartir Live' : 'Compartir ahora (público)')].filter(Boolean).join(' · ') || 'Solo abrir contenido'
 }
 
 function App() {
@@ -625,7 +625,7 @@ function App() {
 
           {activeView === 'submissions' && <section className="work-section" aria-label="Lista de envíos" aria-busy={refreshing}>
             <div className="section-heading"><h2>Estado de envíos</h2>{submissions && <span className="field-help">Consulta: {formatDate(submissions.serverTime)}</span>}</div>
-            <p className="field-help">Enviado no significa acción completada. Revisa resultados en GenFarmer. Cancelar solo retira envíos programados.</p>
+            <p className="field-help">Programado puede estar esperando la hora o el run anterior del equipo. Enviado no significa acción completada. Revisa resultados en GenFarmer.</p>
             {errors.submissions && <p className="notice error" role="alert">{errors.submissions} Pulsa Actualizar.{submissions ? ' La lista conserva la última consulta; puede estar desactualizada.' : ''}</p>}
             {!submissions ? !errors.submissions && <p className="empty-state" role="status">Consultando envíos…</p> : !submissions.submissions.length ? <div className="empty-state"><span className="empty-number" aria-hidden="true">00</span><h2>Aún no hay envíos</h2><p>Prepara contenido en Facebook o TikTok para empezar.</p></div> : <ul className="submission-list">{submissions.submissions.map((submission) => <li key={submission.id}>
               <div className="submission-main"><span className="device-order">#{submission.deviceOrder}</span><div className="submission-content"><strong>{submission.deviceName}</strong><span className="field-help">{views[submission.platform].title} / {submission.kind === 'open' ? 'Abrir contenido' : 'Acciones'}</span><a href={/^https?:\/\//i.test(submission.url) ? submission.url : undefined} target="_blank" rel="noreferrer">{submission.url}<span className="sr-only"> (abre otra pestaña)</span></a></div><span className={`submission-status status-${submission.status}`}>{statuses[submission.status]}</span></div>
