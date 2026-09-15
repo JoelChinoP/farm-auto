@@ -88,8 +88,8 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
             assert "not(ancestor::*[@class='androidx.recyclerview.widget.RecyclerView'])" not in live_script
             assert "clicks < 2 && check - lastClick >= 4" in live_script
     if path.stem == "facebook":
-        assert package["version"] == package["script"]["version"] == "2.5.16"
-        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.5.16")
+        assert package["version"] == package["script"]["version"] == "2.5.17"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.5.17")
         assert "publicAudiencePattern" in scripts and "amigos|friends" not in scripts
         assert "composer) { send = composer; audienceConfirmed = true" not in scripts
         audience_pattern = next(item["value"] for item in package["script"]["variables"] if item["name"] == "publicAudiencePattern")
@@ -105,6 +105,7 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
         assert (scripts.index("    if (actions.like) {") <
                 scripts.index("    if (actions.share) {") <
                 scripts.index("    if (actions.comment) {"))
+        assert "const liveUrl = /\\/(?:share\\/v|[0-9]+\\/videos\\/[0-9]+)(?:[/?#]|$)/i.test(String(v.contentUrl));" in scripts
         assert "const live = await locateLive(12, true)" in scripts
         assert "marker || visual.liveBadge" in scripts and "function liteLiveBadge" in scripts
         assert "liteLiveShareEntry(nodes, visual)" in scripts
@@ -308,12 +309,24 @@ with TestClient(main.app) as client:
     assert [call for call in calls if call[:2] == (f"/automation/runs/{first_run}", "GET")]
     finish_run(current[chained_ids[1]]["runId"])
 
-    scheduled = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174001", "scheduledAt": int(time.time() * 1000) + 60_000}
-    response = client.post("/api/submissions", json=scheduled, headers=origin)
+    timestamp = main.now_ms()
+    scheduled = {**chained, "requestId": "123e4567-e89b-12d3-a456-426614174001",
+                 "deviceIds": ["serial-first", "serial-second"], "scheduledAt": timestamp + 60_000}
+    draws = [timestamp + offset for offset in (50_000, 10_000, 40_000, 20_000)]
+    with patch.object(main, "now_ms", return_value=timestamp), patch.object(main.random, "randint", side_effect=draws) as draw:
+        response = client.post("/api/submissions", json=scheduled, headers=origin)
+    assert draw.call_count == 4 and all(call.args == (timestamp, scheduled["scheduledAt"]) for call in draw.call_args_list)
     assert response.status_code == 201, response.text
-    pending = response.json()["submissions"][0]
-    cancelled = client.delete(f"/api/submissions/{pending['id']}", headers=origin)
-    assert cancelled.status_code == 200 and cancelled.json()["submission"]["status"] == "cancelled"
+    planned = response.json()["submissions"]
+    assert [row["scheduledAt"] for row in planned] == [timestamp + offset for offset in (10_000, 20_000, 50_000, 40_000)]
+    with patch.object(main.random, "randint", side_effect=AssertionError("Do not reschedule a replay")):
+        replay = client.post("/api/submissions", json=scheduled, headers=origin)
+    assert replay.status_code == 200 and replay.json()["submissions"] == planned
+    assert client.post("/api/submissions", json={**payload, "scheduledAt": timestamp + 31 * 86_400_000,
+                                               "requestId": str(main.uuid4())}, headers=origin).status_code == 422
+    for pending in planned:
+        cancelled = client.delete(f"/api/submissions/{pending['id']}", headers=origin)
+        assert cancelled.status_code == 200 and cancelled.json()["submission"]["status"] == "cancelled"
     assert client.post("/api/context", json={"url": "https://www.tiktok.com/@example/video/1"}, headers=origin).status_code == 422
     too_long = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174002", "platform": "tiktok",
                 "kind": "actions", "actions": {"like": False, "comment": True, "share": False},
@@ -371,6 +384,37 @@ with connect() as db:
 init_database()
 with connect() as db:
     assert db.execute("SELECT status FROM submissions WHERE id=?", (submission["id"],)).fetchone()[0] == "unknown"
+
+# Persist a future schedule with the worker stopped; restart after its time has passed.
+timestamp = main.now_ms()
+overdue = {**payload, "requestId": str(main.uuid4()), "deviceIds": ["serial-second"], "scheduledAt": timestamp - 10_000}
+with patch.object(main, "now_ms", return_value=timestamp - 60_000), patch.object(main.random, "randint", side_effect=lambda start, end: end):
+    response = main.submit(main.SubmissionRequest(**overdue))
+pending = json.loads(response.body)["submissions"][0]
+assert pending["status"] == "scheduled" and pending["scheduledAt"] == overdue["scheduledAt"]
+tasks_before = fake_state["tasks"]
+with TestClient(main.app) as client:
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        current = next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == pending["id"])
+        if current["status"] == "sent":
+            break
+        time.sleep(0.02)
+    assert current["status"] == "sent" and fake_state["tasks"] == tasks_before + 1, current
+    finish_run(current["runId"])
+    # A limit already in the past is accepted and dispatched immediately.
+    response = client.post("/api/submissions", json={**overdue, "requestId": str(main.uuid4()), "scheduledAt": 1}, headers=origin)
+    assert response.status_code == 201, response.text
+    pending = response.json()["submissions"][0]
+    assert pending["scheduledAt"] is None
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        current = next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == pending["id"])
+        if current["status"] == "sent":
+            break
+        time.sleep(0.02)
+    assert current["status"] == "sent" and fake_state["tasks"] == tasks_before + 2, current
+    finish_run(current["runId"])
 
 
 class FakeResponse:

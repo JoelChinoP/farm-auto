@@ -66,11 +66,17 @@ se revisa el `result.json` de evidencia y el log de la tarea. Farm no reintenta.
 ## Envio y programacion
 
 1. React envia un `requestId` UUID, plataforma, dispositivos, publicaciones,
-   flags y una fecha opcional en milisegundos Unix.
+   flags y una fecha limite opcional en milisegundos Unix (`scheduledAt`).
 2. Python valida la seleccion contra GenFarmer, consulta una vez la app y el usuario
    para el lote y persiste una fila por dispositivo/publicacion en `submissions`.
+   Cada fila recibe una hora aleatoria entre la recepcion y el limite, ordenadas
+   por publicacion dentro de cada dispositivo. Sin fecha o con limite vencido,
+   queda lista para envio inmediato. El horario sorteado se conserva al repetir
+   la misma solicitud; no se vuelve a sortear.
 3. Un unico hilo trabajador consulta las filas vencidas y considera solo la primera
-   de cada dispositivo. Los handoffs llevan `GENFARMER_DISPATCH_GAP` segundos de
+   de cada dispositivo. Una pendiente vencida se envia en cuanto el equipo esta
+   libre, tambien tras reiniciar el backend; no se descarta ni se reprograma.
+   Los handoffs llevan `GENFARMER_DISPATCH_GAP` segundos de
    pausa (ritmo inicial: 1) para no saturar GenFarmer. No hay un temporizador por
    fila, cron ni servicios adicionales. El backend debe seguir abierto; cerrar el
    navegador no detiene la programacion.

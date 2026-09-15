@@ -388,8 +388,8 @@ function App() {
         return
       }
       const scheduledAt = campaign.schedule ? new Date(campaign.schedule).getTime() : null
-      if (scheduledAt !== null && (!Number.isFinite(scheduledAt) || scheduledAt <= Date.now() + serverOffset.current)) {
-        setNotice({ text: 'Elige una fecha y hora futuras.', error: true })
+      if (scheduledAt !== null && (!Number.isFinite(scheduledAt) || scheduledAt < 0)) {
+        setNotice({ text: 'Elige una fecha y hora válidas.', error: true })
         return
       }
       const payload = {
@@ -409,7 +409,7 @@ function App() {
       setNotice({ text: 'Hay equipos de esta solicitud sin conexión. Revisa Envíos antes de modificar el borrador.', error: true })
       return
     }
-    const summary = `${views[platform].title}: ${request.deviceIds.length} equipos × ${request.publications.length} publicaciones.\n${actionLabel(request.actions, platform)}.\n${request.scheduledAt === null ? 'Ahora' : formatDate(request.scheduledAt)}.`
+    const summary = `${views[platform].title}: ${request.deviceIds.length} equipos × ${request.publications.length} publicaciones.\n${actionLabel(request.actions, platform)}.\n${request.scheduledAt === null || request.scheduledAt <= Date.now() + serverOffset.current ? 'Ahora' : `Horario aleatorio entre ahora y ${formatDate(request.scheduledAt)}`}.`
     if (!window.confirm(`${retry ? 'Revisa Envíos y pulsa Actualizar antes de reintentar. Se usará la misma solicitud.\n\n' : ''}${summary}\n\n${request.kind === 'actions' ? 'Las acciones serán públicas. ¿Confirmar envío?' : 'Solo se abrirá el contenido, sin interacciones. ¿Confirmar envío?'}`)) return
     mutationBusy.current = true
     const body = request
@@ -602,7 +602,7 @@ function App() {
                 </section>
                 <section className="work-section send-section">
                   <div className="section-heading"><h2><span className="step-number">3</span>Envía</h2></div>
-                  <div className="schedule-field"><label htmlFor={`${platform}-schedule`}>Programar <span className="field-help">opcional</span></label><div className="schedule-input"><input id={`${platform}-schedule`} type="datetime-local" value={campaign.schedule} onChange={(event) => updateCampaign(platform, { schedule: event.target.value })} />{campaign.schedule && <button className="text-button" onClick={() => updateCampaign(platform, { schedule: '' })}>Quitar fecha</button>}</div><p className="field-help">Hora local. Sin fecha, se envía ahora. La programación queda en el backend.</p></div>
+                  <div className="schedule-field"><label htmlFor={`${platform}-schedule`}>Programar aleatoriamente hasta <span className="field-help">opcional</span></label><div className="schedule-input"><input id={`${platform}-schedule`} type="datetime-local" value={campaign.schedule} onChange={(event) => updateCampaign(platform, { schedule: event.target.value })} />{campaign.schedule && <button className="text-button" onClick={() => updateCampaign(platform, { schedule: '' })}>Quitar fecha</button>}</div><p className="field-help">Hora local. Cada tarea se programa al azar entre ahora y esta hora límite. Sin fecha o si ya pasó, se envía ahora. Las pendientes vencidas se envían en cuanto el equipo queda libre. Mantén el backend abierto.</p></div>
                   <label className="review-check"><input type="checkbox" checked={campaign.reviewed} disabled={extracting} onChange={(event) => updateCampaign(platform, { reviewed: event.target.checked })} />He revisado las URLs, el contexto y los comentarios.</label>
                   {missingComment && <p className="field-error">Escribe un comentario para cada dispositivo y publicación.</p>}
                   <div className="send-bar"><div><strong>{campaign.deviceIds.length} equipos <span aria-hidden="true">×</span> {campaign.publications.length} publicaciones</strong><span>{actionLabel(campaign.actions, platform)}</span></div><div className="send-buttons"><button className={hasActions ? 'secondary-button' : 'primary-button'} disabled={!canSend || hasActions} onClick={() => void send(platform)}>Abrir contenido</button><button className={hasActions ? 'primary-button' : 'secondary-button'} disabled={!canSend || !hasActions} onClick={() => void send(platform)}>Enviar acciones</button></div></div>

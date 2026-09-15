@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import random
 import sqlite3
 import threading
 from contextlib import asynccontextmanager
@@ -265,9 +266,9 @@ def submit(payload: SubmissionRequest):
             raise HTTPException(409, "La solicitud ya existe con otro contenido")
         return {"submissions": [submission_dict(row) for row in existing]}
     timestamp = now_ms()
-    when = payload.scheduledAt if payload.scheduledAt is not None else timestamp
-    if payload.scheduledAt is not None and not timestamp <= when <= timestamp + 30 * 86_400_000:
-        raise HTTPException(422, "Programa una fecha futura dentro de los proximos 30 dias")
+    until = max(timestamp, payload.scheduledAt if payload.scheduledAt is not None else timestamp)
+    if until > timestamp + 30 * 86_400_000:
+        raise HTTPException(422, "El limite debe estar dentro de los proximos 30 dias")
     try:
         for publication in payload.publications:
             validate_url(publication.url, payload.platform, payload.kind == "actions")
@@ -297,9 +298,12 @@ def submit(payload: SubmissionRequest):
         raise genfarmer.GenFarmerError("El workflow configurado no existe en GenFarmer")
     user = genfarmer.user_id()
     entries = []
+    # Draw once per task, keeping publication order within each device.
+    schedules = {device["id"]: sorted(random.randint(timestamp, until) for _ in payload.publications) for device in chosen}
     # Publication-major order lets each device finish one publication before its next.
-    for publication in payload.publications:
+    for publication_index, publication in enumerate(payload.publications):
         for device in chosen:
+            when = schedules[device["id"]][publication_index]
             identifier = str(uuid4())
             values = {"contentUrl": publication.url}
             if payload.kind == "open":
