@@ -2,9 +2,9 @@
   "id": "",
   "userId": 0,
   "name": "📱 Facebook/TikTok · Abrir contenido",
-  "description": "Reinicia la aplicación seleccionada y abre el contenido indicado.",
+  "description": "Enciende la pantalla, reinicia la aplicación seleccionada y abre publicaciones, videos o Live.",
   "logo": null,
-  "version": "2.1.1",
+  "version": "2.2.0",
   "input": [
     {
       "id": "input-content-url",
@@ -65,8 +65,8 @@
   "script": {
     "id": "control-panel-open-social-content",
     "name": "Control Panel - Abrir contenido social",
-    "description": "Cierra la aplicación, la inicia nuevamente y abre el contenido solicitado.",
-    "version": "2.1.1",
+    "description": "Valida el enlace, enciende la pantalla y abre el contenido con navegación específica de Facebook y TikTok.",
+    "version": "2.2.0",
     "variables": [
       {
         "id": "content_url",
@@ -80,6 +80,20 @@
         "name": "packageName",
         "label": "Plataforma",
         "value": "",
+        "secret": false
+      },
+      {
+        "id": "contentUri",
+        "name": "contentUri",
+        "label": "URI de apertura",
+        "value": "",
+        "secret": false
+      },
+      {
+        "id": "open_error",
+        "name": "open_error",
+        "label": "Error de apertura",
+        "value": "No se pudo abrir el contenido en el dispositivo; consulta el registro del nodo.",
         "secret": false
       }
     ],
@@ -95,13 +109,70 @@
           "data": {
             "action": "Start",
             "options": {},
-            "successNode": "social_platform_facebook",
+            "successNode": "social_validate",
             "failNode": null
           },
           "label": "Start",
           "sourcePosition": "right",
           "targetPosition": "left",
           "deletable": false,
+          "class": ""
+        },
+        {
+          "id": "social_validate",
+          "type": "custom",
+          "position": {
+            "x": 80,
+            "y": 400
+          },
+          "data": {
+            "icon": "code",
+            "action": "Javascript",
+            "options": {
+              "script": "const v = this.variables;\nv.open_error = 'No se pudo abrir el contenido en el dispositivo; consulta el registro del nodo.';\nv.contentUri = '';\nconst raw = String(v.contentUrl || '').trim();\nconst facebook = v.packageName === 'com.facebook.lite';\nconst tiktok = v.packageName === 'com.zhiliaoapp.musically';\nlet parsed;\ntry { parsed = new URL(raw); } catch (_) { parsed = null; }\nconst host = parsed ? parsed.hostname.toLowerCase() : '';\nconst domain = facebook ? 'facebook.com' : 'tiktok.com';\nconst allowed = host === domain || host.endsWith('.' + domain) || (facebook && host === 'fb.watch');\nif ((!facebook && !tiktok) || !parsed || parsed.protocol !== 'https:' || !allowed ||\n    parsed.username || parsed.password || (parsed.port && parsed.port !== '443') ||\n    raw.length > 2048 || /['\"\\s\\x00-\\x1f\\x7f\\\\]/.test(raw)) {\n  v.open_error = 'Introduce un enlace HTTPS válido de la plataforma seleccionada, sin credenciales ni puertos alternativos.';\n  throw new Error('OPEN_INPUT_ERROR');\n}\nv.contentUrl = raw;\nconst video = tiktok && /^\\/@[^/]+\\/video\\/(\\d+)\\/?$/.exec(parsed.pathname);\nv.contentUri = video ? 'snssdk1233://aweme/detail/' + video[1] : raw;",
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_wake",
+            "failNode": "social_error"
+          },
+          "label": "Validar enlace y preparar URI",
+          "sourcePosition": "right",
+          "targetPosition": "left",
+          "class": ""
+        },
+        {
+          "id": "social_wake",
+          "type": "custom",
+          "position": {
+            "x": 300,
+            "y": 400
+          },
+          "data": {
+            "icon": "terminal",
+            "action": "Adb",
+            "options": {
+              "command": "input keyevent KEYCODE_WAKEUP",
+              "outputVariable": null,
+              "disabled": false,
+              "nodeSleep": "0",
+              "nodeTimeout": "30",
+              "timeoutNextNode": "failNode",
+              "breakpoint": false,
+              "timeoutAdbReconnect": "60",
+              "nodeLog": ""
+            },
+            "successNode": "social_platform_facebook",
+            "failNode": "social_error"
+          },
+          "label": "Preparar pantalla · Encender",
+          "sourcePosition": "right",
+          "targetPosition": "left",
           "class": ""
         },
         {
@@ -180,7 +251,7 @@
               "disabled": false,
               "nodeSleep": "0",
               "nodeTimeout": "45",
-              "timeoutNextNode": "successNode",
+              "timeoutNextNode": "failNode",
               "breakpoint": false,
               "timeoutAdbReconnect": "60",
               "nodeLog": ""
@@ -209,7 +280,7 @@
               "disabled": false,
               "nodeSleep": "3",
               "nodeTimeout": "60",
-              "timeoutNextNode": "successNode",
+              "timeoutNextNode": "failNode",
               "breakpoint": false,
               "timeoutAdbReconnect": "60",
               "nodeLog": ""
@@ -238,7 +309,7 @@
               "disabled": false,
               "nodeSleep": "4",
               "nodeTimeout": "60",
-              "timeoutNextNode": "successNode",
+              "timeoutNextNode": "failNode",
               "breakpoint": false,
               "timeoutAdbReconnect": "60",
               "nodeLog": ""
@@ -399,7 +470,7 @@
             "icon": "touch",
             "action": "Javascript",
             "options": {
-              "script": "const video = \"//*[@package='com.facebook.lite' and @resource-id='com.facebook.lite:id/video_view']\";\nconst inFeed = video + \"[ancestor::*[@class='androidx.recyclerview.widget.RecyclerView']]\";\nconst preview = \"//*[@package='com.facebook.lite' and @class='androidx.recyclerview.widget.RecyclerView']/*/*[@clickable='true']/*[@class='android.view.ViewGroup' and @clickable='false']/*[@class='android.view.View' and @clickable='true']\";\nconst player = video + \"[not(ancestor::*[@class='androidx.recyclerview.widget.RecyclerView'])]\";\nlet clicked = false;\nlet stable = 0;\nlet lastError = '';\nfor (let check = 0; check < 15; check++) {\n  try {\n    const xml = await this.getXml();\n    if (await this.queryXpath(player, xml)) {\n      if (++stable >= 2) return;\n    } else {\n      stable = 0;\n      if (!clicked) {\n        const element = (await this.queryXpath('(' + inFeed + ')[1]', xml)) ||\n          (await this.queryXpath('(' + preview + ')[1]', xml));\n        if (element) {\n          clicked = true;\n          await element.click();\n        }\n      }\n    }\n    lastError = '';\n  } catch (error) {\n    stable = 0;\n    lastError = String(error && error.message || error);\n    if (!/HTTP 50[234]|status code 50[234]|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|timed out/i.test(lastError)) throw error;\n  }\n  await genfarmerSleep(1);\n}\nthrow new Error('No se pudo confirmar el reproductor LIVE tras la espera.' + (lastError ? ' ' + lastError : ''));",
+              "script": "const app = \"(@package='com.facebook.lite' or @package='com.facebook.katana')\";\nconst video = \"//*[\" + app + \" and (@resource-id='com.facebook.lite:id/video_view' or @resource-id='com.facebook.katana:id/video_view')]\";\nconst inFeed = video + \"[ancestor::*[@class='androidx.recyclerview.widget.RecyclerView']]/ancestor::*[@clickable='true'][1]\";\nconst preview = \"//*[(\" + app.slice(1, -1) + \") and @class='androidx.recyclerview.widget.RecyclerView']/*/*[@clickable='true']/*[@class='android.view.ViewGroup' and @clickable='false']/*[@class='android.view.View' and @clickable='true'] | \" +\n  \"//*[(\" + app.slice(1, -1) + \") and @class='android.widget.Button' and (@content-desc='Detalles del video' or @content-desc='Video details')]\";\nconst player = video + \"[ancestor::*[@resource-id='com.facebook.lite:id/videoview' or @resource-id='com.facebook.katana:id/videoview']]\";\nlet clicked = false;\nlet stable = 0;\nlet lastError = '';\nfor (let check = 0; check < 15; check++) {\n  try {\n    const xml = await this.getXml();\n    if (await this.queryXpath(player, xml)) {\n      if (++stable >= 2) return;\n    } else {\n      stable = 0;\n      if (!clicked) {\n        const element = (await this.queryXpath('(' + inFeed + ')[1]', xml)) ||\n          (await this.queryXpath('(' + preview + ')[1]', xml));\n        if (element) {\n          clicked = true;\n          await element.click();\n        }\n      }\n    }\n    lastError = '';\n  } catch (error) {\n    stable = 0;\n    lastError = String(error && error.message || error);\n    if (!/HTTP 50[234]|status code 50[234]|ECONNRESET|ECONNREFUSED|ETIMEDOUT|socket hang up|timed out/i.test(lastError)) throw error;\n  }\n  await genfarmerSleep(1);\n}\nthrow new Error('No se pudo confirmar el reproductor LIVE tras la espera.' + (lastError ? ' ' + lastError : ''));",
               "disabled": false,
               "nodeSleep": "0",
               "nodeTimeout": "45",
@@ -432,36 +503,7 @@
               "disabled": false,
               "nodeSleep": "0",
               "nodeTimeout": "45",
-              "timeoutNextNode": "successNode",
-              "breakpoint": false,
-              "timeoutAdbReconnect": "60",
-              "nodeLog": ""
-            },
-            "successNode": "tiktok_open_app",
-            "failNode": "social_error"
-          },
-          "label": "TikTok · Cerrar aplicación",
-          "sourcePosition": "right",
-          "targetPosition": "left",
-          "class": ""
-        },
-        {
-          "id": "tiktok_open_app",
-          "type": "custom",
-          "position": {
-            "x": 1020,
-            "y": 420
-          },
-          "data": {
-            "icon": "play",
-            "action": "StartApp",
-            "options": {
-              "packageName": "com.zhiliaoapp.musically",
-              "timeout": "45",
-              "disabled": false,
-              "nodeSleep": "3",
-              "nodeTimeout": "60",
-              "timeoutNextNode": "successNode",
+              "timeoutNextNode": "failNode",
               "breakpoint": false,
               "timeoutAdbReconnect": "60",
               "nodeLog": ""
@@ -469,7 +511,7 @@
             "successNode": "tiktok_content",
             "failNode": "social_error"
           },
-          "label": "TikTok · Abrir aplicación",
+          "label": "TikTok · Cerrar aplicación",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -485,12 +527,12 @@
             "icon": "terminal",
             "action": "Adb",
             "options": {
-              "command": "am start -W -a android.intent.action.VIEW -d '${contentUrl}' -p com.zhiliaoapp.musically",
+              "command": "am start -W -a android.intent.action.VIEW -d '${contentUri}' -p com.zhiliaoapp.musically",
               "outputVariable": null,
               "disabled": false,
-              "nodeSleep": "4",
+              "nodeSleep": "8",
               "nodeTimeout": "60",
-              "timeoutNextNode": "successNode",
+              "timeoutNextNode": "failNode",
               "breakpoint": false,
               "timeoutAdbReconnect": "60",
               "nodeLog": ""
@@ -498,7 +540,7 @@
             "successNode": "social_success",
             "failNode": "social_error"
           },
-          "label": "TikTok · Abrir contenido",
+          "label": "TikTok · Abrir video o Live",
           "sourcePosition": "right",
           "targetPosition": "left",
           "class": ""
@@ -542,7 +584,7 @@
             "icon": "log",
             "action": "Log",
             "options": {
-              "log": "No se pudo abrir el contenido en el dispositivo.",
+              "log": "${open_error}",
               "disabled": false,
               "nodeSleep": "0",
               "nodeTimeout": "30",
@@ -581,10 +623,10 @@
       ],
       "edges": [
         {
-          "id": "edge-start-platform-facebook",
+          "id": "edge-start-validate",
           "type": "custom",
           "source": "social_start",
-          "target": "social_platform_facebook",
+          "target": "social_validate",
           "sourceHandle": "social_start",
           "targetHandle": "success",
           "data": {
@@ -597,7 +639,81 @@
             "stroke": "#62fcaf"
           },
           "animated": true,
-          "class": "source-social_start target-social_platform_facebook"
+          "class": "source-social_start target-social_validate"
+        },
+        {
+          "id": "edge-validate-wake",
+          "type": "custom",
+          "source": "social_validate",
+          "target": "social_wake",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_validate target-social_wake"
+        },
+        {
+          "id": "edge-validate-error",
+          "type": "custom",
+          "source": "social_validate",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_validate target-social_error"
+        },
+        {
+          "id": "edge-wake-platform-facebook",
+          "type": "custom",
+          "source": "social_wake",
+          "target": "social_platform_facebook",
+          "sourceHandle": "success",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "success",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2,
+            "stroke": "#62fcaf"
+          },
+          "animated": true,
+          "class": "source-social_wake target-social_platform_facebook"
+        },
+        {
+          "id": "edge-wake-error",
+          "type": "custom",
+          "source": "social_wake",
+          "target": "social_error",
+          "sourceHandle": "fail",
+          "targetHandle": "success",
+          "data": {
+            "sourceHandle": "fail",
+            "targetHandle": "success"
+          },
+          "label": "",
+          "style": {
+            "strokeWidth": 2
+          },
+          "animated": true,
+          "class": "source-social_wake target-social_error"
         },
         {
           "id": "edge-platform-facebook-yes",
@@ -916,28 +1032,9 @@
           "class": "source-social_live_open target-social_error"
         },
         {
-          "id": "edge-tiktok-force-stop-open",
+          "id": "edge-tiktok-force-stop-content",
           "type": "custom",
           "source": "tiktok_force_stop",
-          "target": "tiktok_open_app",
-          "sourceHandle": "success",
-          "targetHandle": "success",
-          "data": {
-            "sourceHandle": "success",
-            "targetHandle": "success"
-          },
-          "label": "",
-          "style": {
-            "strokeWidth": 2,
-            "stroke": "#62fcaf"
-          },
-          "animated": true,
-          "class": "source-tiktok_force_stop target-tiktok_open_app"
-        },
-        {
-          "id": "edge-tiktok-open-content",
-          "type": "custom",
-          "source": "tiktok_open_app",
           "target": "tiktok_content",
           "sourceHandle": "success",
           "targetHandle": "success",
@@ -951,7 +1048,7 @@
             "stroke": "#62fcaf"
           },
           "animated": true,
-          "class": "source-tiktok_open_app target-tiktok_content"
+          "class": "source-tiktok_force_stop target-tiktok_content"
         },
         {
           "id": "edge-tiktok-content-success",
@@ -1043,24 +1140,6 @@
           },
           "animated": true,
           "class": "source-tiktok_force_stop target-social_error"
-        },
-        {
-          "id": "edge-tiktok-open-error",
-          "type": "custom",
-          "source": "tiktok_open_app",
-          "target": "social_error",
-          "sourceHandle": "fail",
-          "targetHandle": "success",
-          "data": {
-            "sourceHandle": "fail",
-            "targetHandle": "success"
-          },
-          "label": "",
-          "style": {
-            "strokeWidth": 2
-          },
-          "animated": true,
-          "class": "source-tiktok_open_app target-social_error"
         },
         {
           "id": "edge-tiktok-content-error",

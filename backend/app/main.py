@@ -103,12 +103,18 @@ def dispatch_worker():
                 continue
             seen_devices.add(row["device_id"])
             try:
-                if not ready_for_dispatch(row):
-                    continue
+                ready = ready_for_dispatch(row)
             except genfarmer.GenFarmerError as error:
-                log.warning("No se pudo confirmar el run anterior de %s: %s", row["device_id"], error)
-                if error.unavailable:
-                    break
+                if not error.missing:
+                    log.warning("No se pudo confirmar el run anterior de %s: %s", row["device_id"], error)
+                    if error.unavailable:
+                        break
+                    continue
+                # GenFarmer no longer stores the previous run: it cannot be running,
+                # so the device is released without resending the uncertain one.
+                log.warning("GenFarmer ya no conserva el run anterior de %s; se libera sin reenviarlo", row["device_id"])
+                ready = True
+            if not ready:
                 continue
             dispatch(row["id"])
             if stopping.wait(settings.genfarmer_dispatch_gap):

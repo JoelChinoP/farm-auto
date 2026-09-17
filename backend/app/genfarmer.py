@@ -8,10 +8,11 @@ from .config import settings
 
 
 class GenFarmerError(RuntimeError):
-    def __init__(self, message: str, ambiguous: bool = False, unavailable: bool = False):
+    def __init__(self, message: str, ambiguous: bool = False, unavailable: bool = False, missing: bool = False):
         super().__init__(message)
         self.ambiguous = ambiguous
         self.unavailable = unavailable
+        self.missing = missing
 
 
 def request(path: str, method: str = "GET", data=None):
@@ -40,6 +41,10 @@ def request(path: str, method: str = "GET", data=None):
 
 def run_finished(run_id: str, task_id: str) -> bool:
     run = request(f"/automation/runs/{path_id(run_id)}")
+    # Installed 2.6.1 answers an empty run object (only deviceStorages) when its
+    # history no longer stores the run: nothing can still be executing there.
+    if isinstance(run, dict) and run.get("id") is None and run.get("taskId") is None:
+        raise GenFarmerError("GenFarmer ya no conserva el run solicitado", missing=True)
     if not isinstance(run, dict) or run.get("id") != run_id or run.get("taskId") != task_id:
         raise GenFarmerError("GenFarmer devolvio un run distinto al solicitado")
     run_status = run.get("status")

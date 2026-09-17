@@ -45,14 +45,24 @@ Los tres flags son booleanos independientes. Facebook ejecuta las acciones habil
 en orden: Me gusta, Compartir y Comentar. Todos en `false` solo abren la URL.
 `commentText` es obligatorio al comentar; `targetText` es texto visible opcional
 de la publicacion, no una descripcion inventada. En Reels se expande la leyenda y
-se valida un prefijo significativo en orden, tolerando errores acotados de OCR. Las
+se valida un prefijo significativo en orden, tolerando errores acotados de OCR. En
+Live, sus dos primeras palabras significativas identifican al usuario visible. Las
 variables de selectores se pueden modificar en GenFarmer sin cambios en el backend.
 Se preservan los defaults de la app importada y solo se sustituyen las entradas de
 cada envio, tanto en `input` como en `variables`.
 
 Facebook usa Lite (`com.facebook.lite`); TikTok usa `com.zhiliaoapp.musically`.
-En un Facebook Live se exige el marcador visible `DIRECTO`/`LIVE` y una fila
-estructural unica de Like, comentario y compartir antes de cualquier accion.
+En un Facebook Live se exige el marcador visible `DIRECTO`/`LIVE`, el usuario
+visible correcto y una fila estructural unica de Like, comentario y compartir antes
+de cualquier accion; no se exige descripcion porque esa vista no la muestra.
+Si un enlace directo abre primero la pestaña Videos, solo se entra al unico video
+visible cuando OCR confirma el marcador Live, el anuncio de transmision y el usuario
+derivado de `targetText`; ese toque de navegacion no se repite.
+Al abrir comentarios se espera la transicion hasta que aparezca el editor, sin
+repetir el toque en Comentar.
+Tras el unico envio de un comentario Live, la confirmacion puede ocultar el
+teclado y desplazar la publicacion para revelar comentarios recientes; nunca
+usa ese desplazamiento para justificar otro click de envio.
 Compartir significa **Compartir ahora (publico)** en Facebook, **Repost** en videos
 TikTok y la accion **Compartir** de la hoja de un TikTok Live. En Live, el comentario
 se confirma visible en el chat; Like es un unico toque aceptado porque TikTok no
@@ -85,8 +95,11 @@ se revisa el `result.json` de evidencia y el log de la tarea. Farm no reintenta.
    `GENFARMER_COMPLETION_POLL` segundos (ritmo inicial: 5). Solo libera la siguiente
    publicacion cuando el run esta `ABORTED`, `STOPPED` o `FINISHED` (2/3/4) y su
    unico `deviceStatus` esta `SUCCESS`, `FAIL` o `ABORTED` (2/3/4). Un formato
-   desconocido, un run ausente o una recepcion anterior incierta sin IDs bloquean
-   el siguiente envio; nunca provocan un reintento.
+   desconocido, un run distinto o una recepcion anterior incierta sin IDs bloquean
+   el siguiente envio; nunca provocan un reintento. Si la respuesta es un run sin
+   identidad (GenFarmer 2.6.1 ya no conserva ese run en su historial), el equipo no
+   puede tener una ejecucion en curso: se libera la siguiente publicacion y el envio
+   incierto se conserva como `sent`/`unknown` sin reenviarse nunca.
 5. Cuando no hay predecesor activo se reclama atomicamente la fila y se vuelve a
    consultar la conexion. Cada tarea tiene exactamente un dispositivo.
 6. Se crea la tarea (`POST /automation/tasks`), se fijan inputs/variables

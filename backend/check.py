@@ -87,9 +87,99 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
             assert "ancestor::*[@resource-id='com.facebook.lite:id/videoview'" in live_script
             assert "not(ancestor::*[@class='androidx.recyclerview.widget.RecyclerView'])" not in live_script
             assert "clicks < 2 && check - lastClick >= 4" in live_script
+    if path.stem == "open-content":
+        assert package["version"] == package["script"]["version"] == "2.2.0"
+        nodes = {node["id"]: node["data"] for node in package["script"]["flow"]["nodes"]}
+        edges = package["script"]["flow"]["edges"]
+        expected_edges = {(key, key if data["action"] == "Start" else handle, data[branch])
+                          for key, data in nodes.items()
+                          for branch, handle in (("successNode", "success"), ("failNode", "fail")) if data[branch]}
+        assert {(edge["source"], edge["sourceHandle"], edge["target"]) for edge in edges} == expected_edges
+        assert len(edges) == len(expected_edges)
+        assert all(data["options"]["timeoutNextNode"] == "failNode" for data in nodes.values()
+                   if data["action"] in {"Adb", "StartApp", "Javascript"})
+        facebook = json.loads(path.with_name("facebook.genfarm").read_text(encoding="utf-8"))
+        facebook_live = next(node["data"]["options"]["script"] for node in facebook["script"]["flow"]["nodes"]
+                             if node["id"] == "social_live_open")
+        assert nodes["social_live_open"]["options"]["script"].split("let clicked")[0] == facebook_live.split("let clicks")[0]
+        probe = r"""
+const assert = require('node:assert/strict');
+const nodes = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
+const validate = new Function(nodes.social_validate.options.script);
+const fb = 'com.facebook.lite', tt = 'com.zhiliaoapp.musically';
+for (const [packageName, contentUrl, expected] of [
+  [fb, 'https://www.facebook.com/share/p/123/'],
+  [fb, 'https://www.facebook.com/share/r/123/'],
+  [fb, 'https://www.facebook.com/123/videos/456'],
+  [fb, 'https://fb.watch/example'],
+  [tt, 'https://www.tiktok.com/@example/video/7651603660060871954/?x=1', 'snssdk1233://aweme/detail/7651603660060871954'],
+  [tt, 'https://www.tiktok.com/@example/live?x=1'],
+  [tt, 'https://vm.tiktok.com/example'],
+  [tt, 'https://vt.tiktok.com/example'],
+]) {
+  const variables = { packageName, contentUrl };
+  validate.call({ variables });
+  assert.equal(variables.contentUri, expected || contentUrl);
+  const route = [];
+  for (let id = 'social_start'; id && id !== 'social_live_ready';) {
+    route.push(id);
+    const node = nodes[id];
+    id = node.action === 'If' && variables[node.options.leftOperand] !== node.options.rightOperand
+      ? node.failNode : node.successNode;
+  }
+  assert.deepEqual(route, ['social_start', 'social_validate', 'social_wake', 'social_platform_facebook',
+    ...(packageName === fb ? ['social_force_stop', 'social_open_app', 'social_content']
+      : ['social_platform_tiktok', 'tiktok_force_stop', 'tiktok_content', 'social_success', 'social_stop'])]);
+}
+assert.equal(nodes.social_wake.options.command, 'input keyevent KEYCODE_WAKEUP');
+assert.equal(nodes.tiktok_content.options.command, "am start -W -a android.intent.action.VIEW -d '${contentUri}' -p com.zhiliaoapp.musically");
+assert.equal(nodes.tiktok_content.options.nodeSleep, '8');
+for (const [packageName, contentUrl] of [
+  [fb, 'https://www.tiktok.com/@example/live'], [tt, 'https://facebook.com/123'],
+  ['invalid', 'https://tiktok.com/@example/live'], [tt, 'not a URL'],
+  [tt, 'http://tiktok.com/@example/live'], [tt, 'https://tiktok.com.evil.example/video/1'],
+  [tt, 'https://user:pass@tiktok.com/@example/live'], [tt, 'https://tiktok.com:444/@example/live'],
+  [fb, "https://facebook.com/';input keyevent 3;'"], [tt, 'https://tiktok.com/a\nb'],
+  [tt, 'https://tiktok.com/\x00'], [tt, 'https://tiktok.com/"'],
+  [tt, 'https://tiktok.com/\\example'], [tt, 'https://tiktok.com/' + 'a'.repeat(2048)],
+]) {
+  const variables = { packageName, contentUrl, contentUri: 'stale' };
+  assert.throws(() => validate.call({ variables }), /OPEN_INPUT_ERROR/);
+  assert.equal(variables.contentUri, '');
+  assert.match(variables.open_error, /HTTPS/);
+}
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.options.script);
+(async () => {
+  for (const mode of ['ready', 'feed', 'preview', 'read-error', 'uncertain', 'missing', 'fatal']) {
+    let reads = 0, clicks = 0;
+    const ctx = {
+      async getXml() {
+        reads++;
+        if (mode === 'read-error' && reads === 1) throw new Error('HTTP 503');
+        if (mode === 'fatal') throw new Error('invalid selector');
+        return '<hierarchy/>';
+      },
+      async queryXpath(xpath) {
+        if (xpath.includes("ancestor::*[@resource-id='com.facebook.lite:id/videoview'"))
+          return mode === 'ready' || (!['uncertain', 'missing'].includes(mode) && reads >= 4);
+        if (mode === 'missing' || (mode === 'preview' && !xpath.includes('Video details'))) return null;
+        return { async click() { clicks++; if (mode === 'uncertain') throw new Error('ECONNRESET'); } };
+      },
+    };
+    const run = () => openLive.call(ctx, async () => {});
+    if (['uncertain', 'missing'].includes(mode)) await assert.rejects(run, /No se pudo confirmar/);
+    else if (mode === 'fatal') await assert.rejects(run, /invalid selector/);
+    else await run();
+    assert.equal(clicks, ['ready', 'missing', 'fatal'].includes(mode) ? 0 : 1, mode);
+    if (mode === 'ready') assert.equal(reads, 2);
+  }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+        subprocess.run(["node", "-e", probe], input=json.dumps(nodes), check=True, text=True)
     if path.stem == "facebook":
-        assert package["version"] == package["script"]["version"] == "2.5.17"
-        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.5.17")
+        assert package["version"] == package["script"]["version"] == "2.5.22"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.5.22")
         assert "publicAudiencePattern" in scripts and "amigos|friends" not in scripts
         assert "composer) { send = composer; audienceConfirmed = true" not in scripts
         audience_pattern = next(item["value"] for item in package["script"]["variables"] if item["name"] == "publicAudiencePattern")
@@ -108,9 +198,21 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
         assert "const liveUrl = /\\/(?:share\\/v|[0-9]+\\/videos\\/[0-9]+)(?:[/?#]|$)/i.test(String(v.contentUrl));" in scripts
         assert "const live = await locateLive(12, true)" in scripts
         assert "marker || visual.liveBadge" in scripts and "function liteLiveBadge" in scripts
+        assert "function liteLiveFeedVideo" in scripts
+        assert scripts.count("/^(?:directo|l?ive)(?:\\s|$)/") == 2
+        assert "esta transmitiendo en (?:vivo|directo)" in scripts
+        assert "(marker || visual.liveBadge) && announced && liteLiveUserMatches(feedUser, targetText)" in scripts
+        assert "liteLiveUserMatches(title.label, targetText)" in scripts
+        assert "El Live visible no coincide con targetText." not in scripts
+        assert scripts.count("feedOpened = true;\n            await navigate(video);") == 1
         assert "liteLiveShareEntry(nodes, visual)" in scripts
         assert "liteLiveShareComposer(nodes, visual)" in scripts
-        live_helper = scripts[scripts.index("function liteLiveToolbar"):scripts.index("function liteSendButton")]
+        assert "if (liveMode && keys.length === 0 && (i === 0 || i === 2))" in scripts
+        assert "await scrollPost(edit ? await dismissKeyboard(nodes) : nodes);" in scripts
+        assert "for (let i = 0; i < 16 && !edit; i++)" in scripts
+        assert scripts.count("await navigate(live.bar.comment);") == 1
+        assert scripts.count("result.actions.comment = 'pending'; save();\n        await tap(send);") == 2
+        live_helper = scripts[scripts.index("function liteLiveFeedVideo"):scripts.index("function liteSendButton")]
         live_nodes = [
             {"resource-id": "com.facebook.lite:id/main_layout", "bounds": [0, 63, 1080, 1776]},
             {"resource-id": "com.facebook.lite:id/video_view", "bounds": [0, 420, 1080, 1638]},
@@ -122,7 +224,26 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
                         f"\nconst row = liteLiveToolbar({json.dumps(live_nodes)});" +
                         "if (!row || row.like.bounds[0] !== 0 || row.share.bounds[2] !== 1080) throw new Error('live row');"],
                        check=True, capture_output=True, text=True)
+        feed_nodes = [
+            {"resource-id": "com.facebook.lite:id/main_layout", "bounds": [0, 63, 1080, 1776]},
+            {"resource-id": "com.facebook.lite:id/video_view", "bounds": [0, 762, 1080, 1776]},
+        ]
+        subprocess.run(["node", "-e", live_helper +
+                        f"\nconst video = liteLiveFeedVideo({json.dumps(feed_nodes)});" +
+                        "if (!video || video.bounds[1] !== 762) throw new Error('live feed video');"],
+                       check=True, capture_output=True, text=True)
         helper = scripts[scripts.index("function normalizeLiteText"):scripts.index("function parseLiteXml")]
+        live_user_cases = [
+            ["Yoel Paya", "Yoel Paya on Reels realizando prueba", True],
+            ["Otro Creador", "Yoel Paya on Reels realizando prueba", False],
+            ["Yoel Otro", "Yoel Paya on Reels realizando prueba", False],
+        ]
+        subprocess.run(["node", "-e", helper +
+                        f"\nfor (const [user, target, expected] of {json.dumps(live_user_cases)}) {{" +
+                        "if (liteLiveUserMatches(user, target) !== expected) throw new Error(target); }" +
+                        "const feedUser = liteLiveFeedUser([{label: 'Yoel Paya esta transmitiendo en'}, {label: 'directo.'}]);" +
+                        "if (feedUser !== 'yoel paya') throw new Error(feedUser);"],
+                        check=True, capture_output=True, text=True)
         target_cases = [
             ["reels puquis recibe a pandia eduardo quispe", "¡PUQUIS RECIBE A PANDIA! Eduardo Quispe Pandia llegó a Puquis", True],
             ["reels igractas provinci de el collao ilave agradecemos de corazon",
@@ -224,7 +345,9 @@ def fake_request(path, method="GET", data=None):
         return {"runId": run_id}
     if path.startswith("/automation/runs/run-") and method == "GET":
         run_id = path.rsplit("/", 1)[-1]
-        state = fake_state["runStates"][run_id]
+        state = fake_state["runStates"].get(run_id)
+        if state is None:
+            return {"deviceStorages": 0}
         return {"id": run_id, "taskId": state["taskId"], "status": state["status"],
                 "deviceStatuses": [{"runId": run_id, "deviceId": "usb-1", "status": state["deviceStatus"]}]}
     raise AssertionError((path, method, data))
@@ -415,6 +538,23 @@ with TestClient(main.app) as client:
         time.sleep(0.02)
     assert current["status"] == "sent" and fake_state["tasks"] == tasks_before + 2, current
     finish_run(current["runId"])
+    # GenFarmer borro su historial: el run anterior ausente libera el equipo sin reenviarlo.
+    purged_run = current["runId"]
+    del fake_state["runStates"][purged_run]
+    released = client.post("/api/submissions", json={**overdue, "requestId": str(main.uuid4())}, headers=origin)
+    assert released.status_code == 201, released.text
+    released_id = released.json()["submissions"][0]["id"]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        rows = client.get("/api/submissions").json()["submissions"]
+        predecessor = next(item for item in rows if item["id"] == current["id"])
+        released_row = next(item for item in rows if item["id"] == released_id)
+        if released_row["status"] == "sent":
+            break
+        time.sleep(0.02)
+    assert released_row["status"] == "sent" and predecessor["status"] == "sent", (released_row, predecessor)
+    assert predecessor["runId"] == purged_run and ("/automation/runs/" + purged_run, "GET", None) in calls
+    finish_run(released_row["runId"])
 
 
 class FakeResponse:
