@@ -17,6 +17,7 @@ Windows PowerShell:
 
 ```powershell
 backend\.venv\Scripts\python -m pip install -r backend/requirements.txt
+backend\.venv\Scripts\python -m playwright install chromium
 npm run dev
 ```
 
@@ -24,6 +25,7 @@ Linux:
 
 ```sh
 backend/.venv/bin/python -m pip install -r backend/requirements.txt
+backend/.venv/bin/python -m playwright install chromium
 backend/.venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -49,10 +51,11 @@ los workflows se pueden consultar dispositivos y extraer contexto, pero no envia
 ## Uso
 
 - **Dispositivos:** refleja GenFarmer; no hay altas, bajas ni preparacion local.
-- **Facebook / TikTok:** elegir equipos, URLs, acciones, revisar texto y enviar o
-  programar. TikTok admite videos y URLs `/@usuario/live`; Compartir hace Repost en
-  videos y usa Compartir en Live. Los flags son independientes; sin flags solo se
-  abre el contenido.
+- **Facebook / TikTok:** elegir equipos, URLs, acciones, revisar y enviar o programar.
+  Playwright clasifica Facebook como publicacion, Reel, video o Live antes del envio;
+  Facebook Lite valida la estructura y no compara el texto visible. TikTok admite
+  videos y URLs `/@usuario/live`; Compartir hace Repost en videos y usa Compartir en
+  Live. Los flags de accion son independientes; sin flags solo se abre el contenido.
 - **Comentarios:** las intenciones se reparten en grupos (**Intención / Tono /
   Cantidad**) que deben cubrir los equipos seleccionados; se pueden agregar o quitar
   grupos. Los equipos se asignan en orden a cada grupo. **Generar con IA** pide un

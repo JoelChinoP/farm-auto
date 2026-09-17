@@ -38,26 +38,30 @@ GenFarmer y comprobar las entradas antes de volver a usarla.
 | Archivo | Entradas |
 | --- | --- |
 | `open-content.genfarm` | `contentUrl`, `packageName` |
-| `facebook.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `targetText` |
-| `tiktok.genfarm` | Las mismas entradas que Facebook |
+| `facebook.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `isPost`, `isReel`, `isVideo`, `isLive` |
+| `tiktok.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `targetText` |
 
-Los tres flags son booleanos independientes. Facebook ejecuta las acciones habilitadas
+Los cuatro flags son booleanos independientes. Facebook ejecuta las acciones habilitadas
 en orden: Me gusta, Compartir y Comentar. Todos en `false` solo abren la URL.
-`commentText` es obligatorio al comentar; `targetText` es texto visible opcional
-de la publicacion, no una descripcion inventada. En Reels se expande la leyenda y
-se valida un prefijo significativo en orden, tolerando errores acotados de OCR. En
-Live, sus dos primeras palabras significativas identifican al usuario visible. Las
-variables de selectores se pueden modificar en GenFarmer sin cambios en el backend.
+`commentText` es obligatorio al comentar. En Facebook exactamente uno de los cuatro
+flags de tipo debe ser `true`; Farm los obtiene con Playwright y no acepta una
+clasificacion ambigua. El workflow no compara texto de la publicacion: conserva las
+validaciones estructurales de reproductor, barra de acciones, editor, audiencia y
+confirmaciones. En Reels la leyenda visible solo evita continuar si el contenido
+cambia durante la ejecucion. Las variables de selectores se pueden modificar en
+GenFarmer sin cambios en el backend.
+Los cuatro flags deben tener default `false` en el paquete: GenFarmer 2.6.1 ignora
+un `false` enviado cuando el default importado es verdadero.
 Se preservan los defaults de la app importada y solo se sustituyen las entradas de
 cada envio, tanto en `input` como en `variables`.
 
 Facebook usa Lite (`com.facebook.lite`); TikTok usa `com.zhiliaoapp.musically`.
-En un Facebook Live se exige el marcador visible `DIRECTO`/`LIVE`, el usuario
-visible correcto y una fila estructural unica de Like, comentario y compartir antes
-de cualquier accion; no se exige descripcion porque esa vista no la muestra.
+En un Facebook Live se exige el marcador visible `DIRECTO`/`LIVE`, el anuncio de
+transmision y una fila estructural unica de Like, comentario y compartir antes de
+cualquier accion; no se exige usuario ni descripcion visibles.
 Si un enlace directo abre primero la pestaña Videos, solo se entra al unico video
-visible cuando OCR confirma el marcador Live, el anuncio de transmision y el usuario
-derivado de `targetText`; ese toque de navegacion no se repite.
+visible cuando OCR confirma el marcador Live y el anuncio de transmision; ese toque
+de navegacion no se repite.
 Al abrir comentarios se espera la transicion hasta que aparezca el editor, sin
 repetir el toque en Comentar.
 Tras el unico envio de un comentario Live, la confirmacion puede ocultar el
@@ -134,18 +138,15 @@ consulta las filas locales, no los resultados de acciones.
 
 ## Contexto y consultas
 
-Facebook permite solicitar metadatos publicos por URL. `og:description` suele venir
-truncado con `...`; si el JSON publico de la pagina trae el mensaje completo y su
-inicio coincide con esos metadatos, se usa ese texto (hasta 1000 caracteres). El
-campo `context`, que viaja como `targetText`, se recorta a 500 para la verificacion
-visible; la generacion con IA usa el texto completo (hasta 1000). Una cache en
-memoria de cinco minutos y hasta 128
-URLs evita repetir consultas; el navegador conserva la extraccion mientras se edita
-el borrador. No se envian cookies ni credenciales.
-Los redirects se restringen a dominios Facebook HTTPS y las respuestas a 1 MiB.
-Si hay login, contenido privado o metadatos ausentes, se informa el error y se
-permite pegar el texto. No se garantiza que los metadatos sean el texto visible
-exacto; el operador debe revisarlo antes de usarlo como `targetText`.
+Facebook se inspecciona con un contexto Chromium nuevo de Playwright, sin cookies ni
+credenciales. Se restringen las navegaciones principales y el enlace canonico a
+dominios Facebook HTTPS. La URL final clasifica Reels; los marcadores visibles de
+transmision clasifican Live; las rutas/metadatos de video clasifican videos y el
+resto se trata como publicacion. `og:description` suele venir truncado con `...`; si
+el JSON publico trae el mensaje completo y su inicio coincide, se usa ese texto
+(hasta 1000 caracteres) solo como contexto para IA. Una cache en memoria de cinco
+minutos y hasta 128 URLs evita repetir navegaciones. Si no hay metadatos, el tipo
+todavia puede detectarse y el operador puede pegar contexto para IA.
 
 ## Comentarios con IA
 
@@ -173,6 +174,8 @@ la IA nunca se invoca al extraer contexto ni al programar envios.
   verificados antes de actualizar GenFarmer.
 - Verificar inputs booleanos, `Loop 1..0`, `TypeText`, selectores ES/EN y respuesta
   de `clientAdb.shell`; estan basados en paquetes historicos, no probados aqui.
+- Instalar el Chromium compatible con el Playwright fijado mediante
+  `python -m playwright install chromium`.
 - Probar cada combinacion de flags con contenido de prueba y revisar sus logs.
 - Probar desconexion antes/despues del acuse, reinicio y cancelacion de un horario.
 - Farm permite concurrencia entre equipos distintos, pero nunca entrega una segunda

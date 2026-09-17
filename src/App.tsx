@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 type Platform = 'facebook' | 'tiktok'
+type ContentType = 'post' | 'reel' | 'video' | 'live'
 type View = 'devices' | Platform | 'submissions'
 type Tone = 'Cercano' | 'Entusiasta' | 'Informativo' | 'Breve'
 type Actions = { like: boolean; comment: boolean; share: boolean }
@@ -9,7 +10,7 @@ type Device = { id: string; serial: string; connectionId: string; name: string; 
 type Settings = { genfarmerUrl: string; workflows: Record<'open-content' | Platform, boolean> }
 type Distribution = { id: string; intention: string; tone: Tone; count: number }
 type CommentProfile = { deviceId: string; intention: string; tone: Tone }
-type Publication = { url: string; context: string; aiContext: string; comments: Record<string, string> }
+type Publication = { url: string; context: string; aiContext: string; contentType: ContentType | null; comments: Record<string, string> }
 type DraftPublication = Publication & { extracting: boolean; error: string; generating: boolean; generateError: string }
 type Campaign = {
   deviceIds: string[]
@@ -167,7 +168,7 @@ function App() {
   const mutationBusy = useRef(false)
   const cancelRequests = useRef(new Set<string>())
   const contextRequests = useRef(new Map<string, AbortController>())
-  const contextCache = useRef(new Map<string, string>())
+  const contextCache = useRef(new Map<string, { context: string; type: ContentType }>())
   const contextRevision = useRef(0)
   const serverOffset = useRef(0)
   const heading = useRef<HTMLHeadingElement>(null)
@@ -281,10 +282,15 @@ function App() {
 
   async function extractContext(url: string) {
     const publication = campaigns.facebook.publications.find((item) => item.url === url)
-    if (!publication || publication.context.trim() || contextRequests.current.has(url)) return
+    if (!publication || contextRequests.current.has(url)) return
     const cached = contextCache.current.get(url)
     if (cached) {
-      updatePublication('facebook', url, { context: cached.slice(0, 500).trim(), aiContext: cached, error: '' })
+      updatePublication('facebook', url, {
+        context: publication.context.trim() || cached.context.slice(0, 500).trim(),
+        aiContext: cached.context || publication.aiContext,
+        contentType: cached.type,
+        error: '',
+      })
       return
     }
     const controller = new AbortController()
@@ -292,21 +298,27 @@ function App() {
     contextRequests.current.set(url, controller)
     updatePublication('facebook', url, { extracting: true, error: '' })
     try {
-      const result = await api<{ url: string; context: string; source: 'metadata' }>('/api/context', {
-        method: 'POST', body: JSON.stringify({ url }), signal: controller.signal,
+      const result = await api<{ url: string; context: string; type: ContentType; resolvedUrl: string; source: 'playwright' }>('/api/context', {
+        method: 'POST', body: JSON.stringify({ url }), signal: controller.signal, timeoutMs: 30_000,
       })
       if (controller.signal.aborted || revision !== contextRevision.current) return
-      if (result.url !== url || result.source !== 'metadata' || !result.context.trim()) throw new Error('No se encontraron metadatos públicos.')
+      if (result.url !== url || result.source !== 'playwright' || !['post', 'reel', 'video', 'live'].includes(result.type)) throw new Error('Playwright no pudo clasificar la publicación.')
       if (result.context.length > 1000) throw new Error('El contexto supera los 1000 caracteres. Pega una versión más breve.')
-      contextCache.current.set(url, result.context)
+      contextCache.current.set(url, { context: result.context, type: result.type })
       setCampaigns((current) => ({ ...current, facebook: {
         ...current.facebook, reviewed: false,
-        publications: current.facebook.publications.map((item) => item.url === url && !item.context.trim()
-          ? { ...item, context: result.context.slice(0, 500).trim(), aiContext: result.context, error: '' }
+        publications: current.facebook.publications.map((item) => item.url === url
+          ? {
+              ...item,
+              context: item.context.trim() || result.context.slice(0, 500).trim(),
+              aiContext: result.context || item.aiContext,
+              contentType: result.type,
+              error: '',
+            }
           : item),
       } }))
     } catch (error) {
-      if (!controller.signal.aborted && revision === contextRevision.current) updatePublication('facebook', url, { error: `${errorMessage(error)} Puedes pegar o editar el contexto.` })
+      if (!controller.signal.aborted && revision === contextRevision.current) updatePublication('facebook', url, { error: errorMessage(error) })
     } finally {
       if (contextRequests.current.get(url) === controller) {
         contextRequests.current.delete(url)
@@ -416,7 +428,9 @@ function App() {
     setNotice(null)
     setAttempts((current) => ({ ...current, [platform]: { request: body, state: 'sending', message: '' } }))
     try {
-      const result = await api<{ submissions: Submission[] }>('/api/submissions', { method: 'POST', body: JSON.stringify(body) })
+      const result = await api<{ submissions: Submission[] }>('/api/submissions', {
+        method: 'POST', body: JSON.stringify(body), timeoutMs: 300_000,
+      })
       setSubmissions((current) => current ? {
         ...current, submissions: [...result.submissions, ...current.submissions.filter((item) => !result.submissions.some((submitted) => submitted.id === item.id))],
       } : { submissions: result.submissions, serverTime: Date.now() + serverOffset.current })
@@ -534,7 +548,7 @@ function App() {
                         const comments = syncComments(existing?.comments ?? {}, campaign.deviceIds)
                         return existing
                           ? { ...existing, comments, extracting: false, generating: false, generateError: '' }
-                          : { url, context: '', aiContext: '', comments, extracting: false, error: '', generating: false, generateError: '' }
+                          : { url, context: '', aiContext: '', contentType: null, comments, extracting: false, error: '', generating: false, generateError: '' }
                       }),
                     })}>{campaign.prepared ? 'Actualizar revisión' : 'Preparar y revisar'}<span aria-hidden="true"> ↓</span></button>
                   </div>
@@ -566,13 +580,14 @@ function App() {
                     </div>
                     {!distributionReady && <p className="field-error" role="alert">Cada grupo necesita intención y al menos 1 dispositivo; la suma debe coincidir con los {campaign.deviceIds.length} seleccionados.</p>}
                   </section>}
-                  <p className="context-note">{platform === 'facebook' ? 'El texto visible verifica el destino. "Generar con IA" envía a DeepSeek el texto completo extraído (hasta 1000 caracteres), la intención y el tono.' : 'Pega el texto visible de la publicación; "Generar con IA" usa ese contexto con DeepSeek.'}</p>
+                  <p className="context-note">{platform === 'facebook' ? 'Playwright detecta si cada enlace es publicación, Reel, video o Live. El contexto se usa sólo para generar comentarios con IA, no para verificar el destino en el teléfono.' : 'Pega el texto visible de la publicación; "Generar con IA" usa ese contexto con DeepSeek.'}</p>
                   <ol className="publication-list">{campaign.publications.map((publication, index) => <li key={publication.url}>
                     <div className="publication-heading"><span className="device-order">{String(index + 1).padStart(2, '0')}</span><a href={publication.url} target="_blank" rel="noreferrer">{publication.url}<span className="sr-only"> (abre otra pestaña)</span></a></div>
-                    <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>Texto visible exacto para verificar el destino <span className="field-help">opcional · {publication.context.length}/500</span></label>
-                      {platform === 'facebook' && <button className="text-button" disabled={publication.extracting || !!publication.context.trim()} onClick={() => void extractContext(publication.url)}>{publication.extracting ? 'Extrayendo…' : 'Extraer contexto'}</button>}
+                    <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>{platform === 'facebook' ? 'Contexto para comentarios con IA' : 'Texto visible exacto para verificar el destino'} <span className="field-help">opcional · {publication.context.length}/500</span></label>
+                      {platform === 'facebook' && <button className="text-button" disabled={publication.extracting || !!publication.contentType} onClick={() => void extractContext(publication.url)}>{publication.extracting ? 'Detectando…' : 'Detectar tipo y contexto'}</button>}
                     </div>
-                    <textarea id={`${platform}-context-${index}`} rows={3} maxLength={500} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder="Pega un fragmento exacto visible en esta publicación" />
+                    {platform === 'facebook' && <p className="field-help">{publication.contentType ? `Tipo detectado: ${publication.contentType}` : 'El tipo se detectará con Playwright antes de enviar.'}</p>}
+                    <textarea id={`${platform}-context-${index}`} rows={3} maxLength={500} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder={platform === 'facebook' ? 'Contexto opcional para generar comentarios' : 'Pega un fragmento exacto visible en esta publicación'} />
                     {publication.aiContext.length > publication.context.length && <p className="field-help">La IA usará el texto completo extraído ({publication.aiContext.length} caracteres).</p>}
                     {publication.error && <p className="field-error" role="alert" id={`${platform}-context-error-${index}`}>{publication.error}</p>}
                     {campaign.actions.comment && <div className="comment-field">
@@ -603,7 +618,7 @@ function App() {
                 <section className="work-section send-section">
                   <div className="section-heading"><h2><span className="step-number">3</span>Envía</h2></div>
                   <div className="schedule-field"><label htmlFor={`${platform}-schedule`}>Programar aleatoriamente hasta <span className="field-help">opcional</span></label><div className="schedule-input"><input id={`${platform}-schedule`} type="datetime-local" value={campaign.schedule} onChange={(event) => updateCampaign(platform, { schedule: event.target.value })} />{campaign.schedule && <button className="text-button" onClick={() => updateCampaign(platform, { schedule: '' })}>Quitar fecha</button>}</div><p className="field-help">Hora local. Cada tarea se programa al azar entre ahora y esta hora límite. Sin fecha o si ya pasó, se envía ahora. Las pendientes vencidas se envían en cuanto el equipo queda libre. Mantén el backend abierto.</p></div>
-                  <label className="review-check"><input type="checkbox" checked={campaign.reviewed} disabled={extracting} onChange={(event) => updateCampaign(platform, { reviewed: event.target.checked })} />He revisado las URLs, el contexto y los comentarios.</label>
+                  <label className="review-check"><input type="checkbox" checked={campaign.reviewed} disabled={extracting} onChange={(event) => updateCampaign(platform, { reviewed: event.target.checked })} />He revisado las URLs, el contexto opcional y los comentarios.</label>
                   {missingComment && <p className="field-error">Escribe un comentario para cada dispositivo y publicación.</p>}
                   <div className="send-bar"><div><strong>{campaign.deviceIds.length} equipos <span aria-hidden="true">×</span> {campaign.publications.length} publicaciones</strong><span>{actionLabel(campaign.actions, platform)}</span></div><div className="send-buttons"><button className={hasActions ? 'secondary-button' : 'primary-button'} disabled={!canSend || hasActions} onClick={() => void send(platform)}>Abrir contenido</button><button className={hasActions ? 'primary-button' : 'secondary-button'} disabled={!canSend || !hasActions} onClick={() => void send(platform)}>Enviar acciones</button></div></div>
                 </section>

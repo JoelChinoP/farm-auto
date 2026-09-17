@@ -25,7 +25,7 @@ from app import main  # noqa: E402
 from app import comments  # noqa: E402
 from app import genfarmer  # noqa: E402
 from app.config import Settings  # noqa: E402
-from app.context import full_message, validate_url  # noqa: E402
+from app.context import classify_facebook, full_message, validate_url  # noqa: E402
 from app.database import connect, init_database  # noqa: E402
 
 
@@ -40,7 +40,7 @@ for invalid_settings in ({"app_host": "0.0.0.0"}, {"frontend_url": "https://farm
 
 contracts = {
     "open-content": {"contentUrl", "packageName"},
-    "facebook": {"contentUrl", "like", "comment", "share", "commentText", "targetText"},
+    "facebook": {"contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive"},
     "tiktok": {"contentUrl", "like", "comment", "share", "commentText", "targetText"},
 }
 selector_contracts = {
@@ -65,6 +65,7 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
         "contentUrl": "https://www.facebook.com/share/p/19cmrzLH7p/",
         "packageName": "com.facebook.lite", "like": True, "comment": True,
         "share": True, "commentText": "prueba", "targetText": "texto visible",
+        "isPost": True, "isReel": False, "isVideo": False, "isLive": False,
     }
     values = {name: samples[name] for name in inputs}
     package["id"] = f"{path.stem}-app"
@@ -98,10 +99,6 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
         assert len(edges) == len(expected_edges)
         assert all(data["options"]["timeoutNextNode"] == "failNode" for data in nodes.values()
                    if data["action"] in {"Adb", "StartApp", "Javascript"})
-        facebook = json.loads(path.with_name("facebook.genfarm").read_text(encoding="utf-8"))
-        facebook_live = next(node["data"]["options"]["script"] for node in facebook["script"]["flow"]["nodes"]
-                             if node["id"] == "social_live_open")
-        assert nodes["social_live_open"]["options"]["script"].split("let clicked")[0] == facebook_live.split("let clicks")[0]
         probe = r"""
 const assert = require('node:assert/strict');
 const nodes = JSON.parse(require('node:fs').readFileSync(0, 'utf8'));
@@ -178,16 +175,29 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
 """
         subprocess.run(["node", "-e", probe], input=json.dumps(nodes), check=True, text=True)
     if path.stem == "facebook":
-        assert package["version"] == package["script"]["version"] == "2.5.22"
-        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.5.22")
+        assert package["version"] == package["script"]["version"] == "2.6.10"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.10")
+        type_names = {"isPost", "isReel", "isVideo", "isLive"}
+        assert all(item["value"] is False for item in package["script"]["variables"] if item["name"] in type_names)
+        assert all(item["options"]["value"] is False and item["options"]["variable"]["value"] is False
+                   for item in package["input"] if item["options"]["variable"]["name"] in type_names)
+        assert "require('os').tmpdir()" in scripts
+        assert "targetText" not in inputs and "targetText" not in scripts
+        assert all(f"const is{kind.title()} = enabled(v.is{kind.title()});" in scripts for kind in ("post", "reel", "video", "live"))
+        assert "[isPost, isReel, isVideo, isLive].filter(Boolean).length !== 1" in scripts
+        assert "liveUrl" not in scripts
+        assert "if (isLive) {" in scripts and "const live = await locateLive(12);" in scripts
+        assert "locateLive(12, true)" not in scripts
         assert "publicAudiencePattern" in scripts and "amigos|friends" not in scripts
         assert "composer) { send = composer; audienceConfirmed = true" not in scripts
         audience_pattern = next(item["value"] for item in package["script"]["variables"] if item["name"] == "publicAudiencePattern")
+        share_confirmed_pattern = next(item["value"] for item in package["script"]["variables"] if item["name"] == "shareConfirmedPattern")
         assert audience_pattern == "^(publico|public)\\b"
         # Lite expone el boton como "Publico. Toca dos veces para cambiar la audiencia...".
         assert re.search(audience_pattern, "publico. toca dos veces para cambiar la audiencia de esta publicacion concreta")
         assert re.search(audience_pattern, "public. double tap to change who can see this post")
         assert not re.search(audience_pattern, "amigos")
+        assert re.search(share_confirmed_pattern, "compartiste esta publicacion.")
         assert "n.clickable === 'true' && liteSelectors.publicAudience.test(n.label)" in scripts
         assert "visual.lines.some(l => liteSelectors.publicAudience" not in scripts
         assert "reelExpandedCaption || descriptionCollapsed || liteCaptionOverlapsTime" in scripts
@@ -195,20 +205,67 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
         assert (scripts.index("    if (actions.like) {") <
                 scripts.index("    if (actions.share) {") <
                 scripts.index("    if (actions.comment) {"))
-        assert "const liveUrl = /\\/(?:share\\/v|[0-9]+\\/videos\\/[0-9]+)(?:[/?#]|$)/i.test(String(v.contentUrl));" in scripts
-        assert "const live = await locateLive(12, true)" in scripts
         assert "marker || visual.liveBadge" in scripts and "function liteLiveBadge" in scripts
         assert "function liteLiveFeedVideo" in scripts
-        assert scripts.count("/^(?:directo|l?ive)(?:\\s|$)/") == 2
+        assert scripts.count("/^(?:directo|l?ive)(?:\\s|$)/") == 1
+        assert scripts.count("/^(?:en directo|directo|l?ive)(?:\\s|$)/") == 1
         assert "esta transmitiendo en (?:vivo|directo)" in scripts
-        assert "(marker || visual.liveBadge) && announced && liteLiveUserMatches(feedUser, targetText)" in scripts
-        assert "liteLiveUserMatches(title.label, targetText)" in scripts
-        assert "El Live visible no coincide con targetText." not in scripts
+        assert "if ((marker || visual.liveBadge) && announced)" in scripts
+        assert not any(name in scripts for name in ("liteTargetMatches", "liteLiveUserMatches", "liteLiveFeedUser"))
         assert scripts.count("feedOpened = true;\n            await navigate(video);") == 1
         assert "liteLiveShareEntry(nodes, visual)" in scripts
         assert "liteLiveShareComposer(nodes, visual)" in scripts
+        assert "escribir publicacion(?: compartir como)?" in scripts
+        share_helpers = scripts[scripts.index("function liteVisualButton"):scripts.index("function liteShareComposer")]
+        subprocess.run(["node", "-e", """
+const areaOf = node => (node.bounds[2] - node.bounds[0]) * (node.bounds[3] - node.bounds[1]);
+""" + share_helpers + """
+const entry = { clickable: 'true', enabled: 'true', bounds: [31, 940, 370, 1172] };
+const visual = { width: 1080, height: 1920, lines: [
+  { label: 'escribir publicacion compartir como', x: 42, y: 1086, width: 627, height: 35 }
+] };
+        if (liteLiveShareEntry([entry], visual) !== entry) throw new Error('merged Live share entry');
+"""], check=True, capture_output=True, text=True)
+        comment_helper = scripts[scripts.index("function liteCommentKeys"):scripts.index("function sameLiteCaption")]
+        subprocess.run(["node", "-e", comment_helper + """
+const visual = { width: 1080, lines: [
+  { label: 'prueba automatizada live v2.6.7 #1 5', x: 192, y: 325, width: 800, height: 45 },
+  { label: 'lorenza moya', x: 192, y: 267, width: 300, height: 40 }
+] };
+const keys = liteCommentKeys(visual, { bounds: [24, 1666, 1056, 1769] }, 'prueba automatizada live v2.6.7 #15');
+if (keys.length !== 1 || !keys[0].endsWith('|prueba automatizada live v2.6.7 #15')) {
+  throw new Error('split comment digits');
+}
+visual.lines[0].label = 'prueba automatizada live v2.6.10';
+const missingSuffix = liteCommentKeys(visual, { bounds: [24, 1666, 1056, 1769] }, 'prueba automatizada live v2.6.10 #19');
+if (missingSuffix.length !== 1) throw new Error('missing trailing comment order');
+"""], check=True, capture_output=True, text=True)
         assert "if (liveMode && keys.length === 0 && (i === 0 || i === 2))" in scripts
-        assert "await scrollPost(edit ? await dismissKeyboard(nodes) : nodes);" in scripts
+        assert "await scrollPost(edit ? await dismissKeyboard(nodes) : nodes, i === 2, true)" in scripts
+        assert "await scrollPost(nodes, true, true)" in scripts
+        assert "if (error.message !== 'Operacion UI no confirmada: swipe') throw error;" in scripts
+        assert scripts.count("result.swipeReplyUncertain = (result.swipeReplyUncertain || 0) + 1;") == 1
+        scroll_helper = scripts[scripts.index("async function scrollPost"):scripts.index("async function locatePost")]
+        subprocess.run(["node", "-e", """
+const result = {};
+const reel = false;
+const areaOf = node => (node.bounds[2] - node.bounds[0]) * (node.bounds[3] - node.bounds[1]);
+let errorMessage = 'Operacion UI no confirmada: swipe';
+async function rpc() { throw new Error(errorMessage); }
+async function wait() {}
+""" + scroll_helper + """
+(async () => {
+  const nodes = [{ scrollable: 'true', bounds: [0, 0, 100, 100] }];
+  await scrollPost(nodes);
+  if (result.swipeReplyUncertain !== 1) throw new Error('uncertain swipe');
+  if (await scrollPost([], false, true) !== false) throw new Error('optional missing scroll');
+  try { await scrollPost([]); throw new Error('missing strict failure'); }
+  catch (error) { if (error.message !== 'No se encontro el contenedor desplazable de la publicacion.') throw error; }
+  errorMessage = 'fatal';
+  try { await scrollPost(nodes); throw new Error('missing failure'); }
+  catch (error) { if (error.message !== 'fatal') throw error; }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""], check=True, capture_output=True, text=True)
         assert "for (let i = 0; i < 16 && !edit; i++)" in scripts
         assert scripts.count("await navigate(live.bar.comment);") == 1
         assert scripts.count("result.actions.comment = 'pending'; save();\n        await tap(send);") == 2
@@ -232,27 +289,15 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
                         f"\nconst video = liteLiveFeedVideo({json.dumps(feed_nodes)});" +
                         "if (!video || video.bounds[1] !== 762) throw new Error('live feed video');"],
                        check=True, capture_output=True, text=True)
-        helper = scripts[scripts.index("function normalizeLiteText"):scripts.index("function parseLiteXml")]
-        live_user_cases = [
-            ["Yoel Paya", "Yoel Paya on Reels realizando prueba", True],
-            ["Otro Creador", "Yoel Paya on Reels realizando prueba", False],
-            ["Yoel Otro", "Yoel Paya on Reels realizando prueba", False],
-        ]
-        subprocess.run(["node", "-e", helper +
-                        f"\nfor (const [user, target, expected] of {json.dumps(live_user_cases)}) {{" +
-                        "if (liteLiveUserMatches(user, target) !== expected) throw new Error(target); }" +
-                        "const feedUser = liteLiveFeedUser([{label: 'Yoel Paya esta transmitiendo en'}, {label: 'directo.'}]);" +
-                        "if (feedUser !== 'yoel paya') throw new Error(feedUser);"],
-                        check=True, capture_output=True, text=True)
-        target_cases = [
-            ["reels puquis recibe a pandia eduardo quispe", "¡PUQUIS RECIBE A PANDIA! Eduardo Quispe Pandia llegó a Puquis", True],
-            ["reels igractas provinci de el collao ilave agradecemos de corazon",
-             "¡GRACIAS, PROVINCIA DE EL COLLAO - ILAVE! Agradecemos de corazón el cariño y recibimiento", True],
-            ["reels pandia region puno gobernador regional", "¡GRACIAS, PROVINCIA DE EL COLLAO - ILAVE!", False],
-        ]
-        probe = helper + f"\nfor (const [visible, target, expected] of {json.dumps(target_cases)}) {{\n" \
-            "  if (liteTargetMatches(visible, target) !== expected) throw new Error(target);\n}"
-        subprocess.run(["node", "-e", probe], check=True, capture_output=True, text=True)
+        facebook_nodes = {node["id"]: node["data"] for node in package["script"]["flow"]["nodes"]}
+        assert facebook_nodes["social_content"]["successNode"] == "social_success"
+        assert not ({"social_live_ready", "social_live_detect", "social_live_detect_variant", "social_live_detect_vivo", "social_live_open"} & facebook_nodes.keys())
+        expected_edges = {(key, key if data["action"] == "Start" else handle, data[branch])
+                          for key, data in facebook_nodes.items()
+                          for branch, handle in (("successNode", "success"), ("failNode", "fail")) if data[branch]}
+        assert {(edge["source"], edge["sourceHandle"], edge["target"])
+                for edge in package["script"]["flow"]["edges"]} == expected_edges
+        assert len(package["script"]["flow"]["edges"]) == len(expected_edges)
     if path.stem == "tiktok":
         assert package["version"] == package["script"]["version"] == "1.2.0"
         assert "repostActionPattern" in scripts and "^(compartir|republicar" not in scripts
@@ -269,6 +314,14 @@ assert full_message(html_fixture, "Primera parte ¡Hola!") == "Primera parte ¡H
 assert full_message(html_fixture, "Texto de otra publicacion") == "Texto de otra publicacion"
 assert full_message(html_fixture, "") == ""
 assert full_message("<html>sin json</html>", "Primera parte") == "Primera parte"
+
+assert classify_facebook("https://www.facebook.com/reel/123", "", "video.other", "LIVE\nAlice is now live") == "reel"
+assert classify_facebook("https://www.facebook.com/1/videos/2", "", "video.other", "DIRECTO\nEstá transmitiendo en vivo") == "live"
+assert classify_facebook("https://www.facebook.com/1/videos/2", "", "video.other", "Alice is now live") == "video"
+assert classify_facebook("https://www.facebook.com/1/videos/2", "", "video.other", "DIRECTO") == "video"
+assert classify_facebook("https://www.facebook.com/1/videos/2", "", "video.other", "Video finalizado") == "video"
+assert classify_facebook("https://www.facebook.com/user/posts/3", "", "video.other", "Publicación") == "post"
+assert classify_facebook("https://www.facebook.com/share/p/4", "", "article", "Publicación") == "post"
 
 for url, platform in [
     ("https://www.facebook.com/example/posts/1", "facebook"),
@@ -317,7 +370,7 @@ def fake_workflow(app_id, names):
 
 
 open_workflow = fake_workflow("open-app", ["contentUrl", "packageName"])
-facebook_workflow = fake_workflow("facebook-app", ["contentUrl", "like", "comment", "share", "commentText", "targetText"])
+facebook_workflow = fake_workflow("facebook-app", ["contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive"])
 
 
 def fake_request(path, method="GET", data=None):
@@ -360,6 +413,15 @@ def finish_run(run_id):
 
 main.genfarmer.request = fake_request
 main.genfarmer.user_id = lambda: 7
+
+
+def fake_inspect_facebook(url):
+    validate_url(url, "facebook")
+    content_type = next((kind for kind in ("reel", "video", "live") if f"/{kind}/" in url), "post")
+    return {"type": content_type, "context": "Contexto publico", "resolvedUrl": url}
+
+
+main.inspect_facebook = fake_inspect_facebook
 
 payload = {
     "requestId": "123e4567-e89b-12d3-a456-426614174000",
@@ -451,6 +513,8 @@ with TestClient(main.app) as client:
         cancelled = client.delete(f"/api/submissions/{pending['id']}", headers=origin)
         assert cancelled.status_code == 200 and cancelled.json()["submission"]["status"] == "cancelled"
     assert client.post("/api/context", json={"url": "https://www.tiktok.com/@example/video/1"}, headers=origin).status_code == 422
+    inspected = client.post("/api/context", json={"url": "https://www.facebook.com/example/posts/1"}, headers=origin)
+    assert inspected.status_code == 200 and inspected.json()["type"] == "post" and inspected.json()["source"] == "playwright"
     too_long = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174002", "platform": "tiktok",
                 "kind": "actions", "actions": {"like": False, "comment": True, "share": False},
                 "publications": [{"url": "https://www.tiktok.com/@example/video/1", "context": "",
@@ -472,13 +536,37 @@ with TestClient(main.app) as client:
         time.sleep(0.02)
     assert len(current) == 2 and all(item["status"] == "sent" for item in current), current
     per_device = {}
+    facebook_flags = {}
     for call in calls:
         if call[:2] == ("/automation/tasks", "POST") and call[2]["appId"] == "facebook-app":
             values = {item["name"]: item["value"] for item in call[2]["variables"]}
             per_device[call[2]["devices"]["list"][0]["serialNo"]] = values["commentText"]
+            facebook_flags = {name: values[name] for name in ("isPost", "isReel", "isVideo", "isLive")}
     assert per_device == {"serial-first": "Comentario del primero", "serial-second": "Comentario del segundo"}, per_device
+    assert facebook_flags == {"isPost": True, "isReel": False, "isVideo": False, "isLive": False}
+    assert "targetText" not in values
     for item in current:
         finish_run(item["runId"])
+    for index, content_type in enumerate(("reel", "video", "live"), start=7):
+        typed = {**payload, "requestId": f"123e4567-e89b-12d3-a456-4266141740{index:02d}", "kind": "actions",
+                 "actions": {"like": True, "comment": False, "share": False},
+                 "publications": [{"url": f"https://www.facebook.com/{content_type}/1", "context": "", "comments": {}}]}
+        response = client.post("/api/submissions", json=typed, headers=origin)
+        assert response.status_code == 201, response.text
+        typed_id = response.json()["submissions"][0]["id"]
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            typed_row = next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == typed_id)
+            if typed_row["status"] == "sent":
+                break
+            time.sleep(0.02)
+        assert typed_row["status"] == "sent", typed_row
+        task = next(call[2] for call in reversed(calls) if call[:2] == ("/automation/tasks", "POST")
+                    and any(item["name"] == "contentUrl" and item["value"] == typed["publications"][0]["url"]
+                            for item in call[2]["variables"]))
+        flags = {item["name"]: item["value"] for item in task["variables"] if item["name"] in {"isPost", "isReel", "isVideo", "isLive"}}
+        assert flags == {f"is{kind.title()}": kind == content_type for kind in ("post", "reel", "video", "live")}
+        finish_run(typed_row["runId"])
     reject_run["enabled"] = True
     rejected_run = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174003"}
     response = client.post("/api/submissions", json=rejected_run, headers=origin)

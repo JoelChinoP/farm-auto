@@ -17,7 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from . import comments, genfarmer
 from .config import settings
-from .context import extract_context, validate_url
+from .context import inspect_facebook, validate_url
 from .database import connect, init_database, now_ms, submission_dict
 
 
@@ -299,6 +299,12 @@ def submit(payload: SubmissionRequest):
     chosen = [device for device in device_list if device["id"] in payload.deviceIds]
     if len(chosen) != len(payload.deviceIds) or any(not item["connected"] for item in chosen):
         raise HTTPException(409, "Hay dispositivos desconectados; actualiza la lista")
+    facebook_types = {}
+    if payload.platform == "facebook" and payload.kind == "actions":
+        try:
+            facebook_types = {publication.url: inspect_facebook(publication.url)["type"] for publication in payload.publications}
+        except (ValueError, OSError) as error:
+            raise HTTPException(422, "No se pudo detectar el tipo de una publicacion de Facebook con Playwright") from error
     app_data = genfarmer.request(f"/automation/apps/{genfarmer.path_id(app_id)}")
     if not isinstance(app_data, dict) or app_data.get("id") != app_id:
         raise genfarmer.GenFarmerError("El workflow configurado no existe en GenFarmer")
@@ -315,7 +321,12 @@ def submit(payload: SubmissionRequest):
             if payload.kind == "open":
                 values["packageName"] = "com.facebook.lite" if payload.platform == "facebook" else "com.zhiliaoapp.musically"
             else:
-                values.update(payload.actions.model_dump(), commentText=publication.comments.get(device["id"], ""), targetText=publication.context)
+                values.update(payload.actions.model_dump(), commentText=publication.comments.get(device["id"], ""))
+                if payload.platform == "facebook":
+                    content_type = facebook_types[publication.url]
+                    values.update({f"is{kind.title()}": content_type == kind for kind in ("post", "reel", "video", "live")})
+                else:
+                    values["targetText"] = publication.context
             task = genfarmer.task_payload(app_data, values, device, user, f"Farm {identifier}")
             entries.append((identifier, request_id, fingerprint, len(entries), device["id"], device["name"], device["order"], payload.platform, payload.kind, publication.url, json.dumps(task, ensure_ascii=False), when, "scheduled", timestamp))
     with connect() as db:
@@ -359,9 +370,10 @@ class ContextRequest(BaseModel):
 @app.post("/api/context")
 def context(payload: ContextRequest):
     try:
-        return {"url": payload.url, "context": extract_context(payload.url), "source": "metadata"}
+        inspected = inspect_facebook(payload.url)
+        return {"url": payload.url, **inspected, "source": "playwright"}
     except (ValueError, OSError) as error:
-        raise HTTPException(422, "No se pudo extraer contexto publico. Pega una frase visible de la publicacion.") from error
+        raise HTTPException(422, "No se pudo inspeccionar la publicacion publica con Playwright.") from error
 
 
 @app.post("/api/comments")
