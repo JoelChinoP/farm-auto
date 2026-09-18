@@ -38,11 +38,13 @@ GenFarmer y comprobar las entradas antes de volver a usarla.
 | Archivo | Entradas |
 | --- | --- |
 | `open-content.genfarm` | `contentUrl`, `packageName` |
-| `facebook.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `isPost`, `isReel`, `isVideo`, `isLive` |
+| `facebook.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `isPost`, `isReel`, `isVideo`, `isLive`, `diagnostic_only` |
 | `tiktok.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `targetText` |
 
 Los cuatro flags son booleanos independientes. Facebook ejecuta las acciones habilitadas
 en orden: Me gusta, Compartir y Comentar. Todos en `false` solo abren la URL.
+`diagnostic_only` se mantiene en `false` para envios normales; al activarlo en una
+prueba controlada se validan los controles sin publicar acciones.
 `commentText` es obligatorio al comentar. En Facebook exactamente uno de los cuatro
 flags de tipo debe ser `true`; Farm los obtiene con Playwright y no acepta una
 clasificacion ambigua. El workflow no compara texto de la publicacion: conserva las
@@ -65,8 +67,9 @@ de navegacion no se repite.
 Al abrir comentarios se espera la transicion hasta que aparezca el editor, sin
 repetir el toque en Comentar.
 Tras el unico envio de un comentario Live, la confirmacion puede ocultar el
-teclado y desplazar la publicacion para revelar comentarios recientes; nunca
-usa ese desplazamiento para justificar otro click de envio.
+teclado y desplazar la publicacion para revelar comentarios recientes. Antes
+del desplazamiento relee la jerarquia para no enviar el gesto a un teclado que
+haya reaparecido; nunca usa ese desplazamiento para justificar otro click de envio.
 Compartir significa **Compartir ahora (publico)** en Facebook, **Repost** en videos
 TikTok y la accion **Compartir** de la hoja de un TikTok Live. En Live, el comentario
 se confirma visible en el chat; Like es un unico toque aceptado porque TikTok no

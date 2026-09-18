@@ -40,7 +40,7 @@ for invalid_settings in ({"app_host": "0.0.0.0"}, {"frontend_url": "https://farm
 
 contracts = {
     "open-content": {"contentUrl", "packageName"},
-    "facebook": {"contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive"},
+    "facebook": {"contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive", "diagnostic_only"},
     "tiktok": {"contentUrl", "like", "comment", "share", "commentText", "targetText"},
 }
 selector_contracts = {
@@ -65,7 +65,7 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
         "contentUrl": "https://www.facebook.com/share/p/19cmrzLH7p/",
         "packageName": "com.facebook.lite", "like": True, "comment": True,
         "share": True, "commentText": "prueba", "targetText": "texto visible",
-        "isPost": True, "isReel": False, "isVideo": False, "isLive": False,
+        "isPost": True, "isReel": False, "isVideo": False, "isLive": False, "diagnostic_only": False,
     }
     values = {name: samples[name] for name in inputs}
     package["id"] = f"{path.stem}-app"
@@ -175,12 +175,13 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
 """
         subprocess.run(["node", "-e", probe], input=json.dumps(nodes), check=True, text=True)
     if path.stem == "facebook":
-        assert package["version"] == package["script"]["version"] == "2.6.10"
-        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.10")
+        assert package["version"] == package["script"]["version"] == "2.6.16"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.16")
         type_names = {"isPost", "isReel", "isVideo", "isLive"}
         assert all(item["value"] is False for item in package["script"]["variables"] if item["name"] in type_names)
         assert all(item["options"]["value"] is False and item["options"]["variable"]["value"] is False
                    for item in package["input"] if item["options"]["variable"]["name"] in type_names)
+        assert next(item for item in package["input"] if item["options"]["variable"]["name"] == "diagnostic_only")["options"]["value"] is False
         assert "require('os').tmpdir()" in scripts
         assert "targetText" not in inputs and "targetText" not in scripts
         assert all(f"const is{kind.title()} = enabled(v.is{kind.title()});" in scripts for kind in ("post", "reel", "video", "live"))
@@ -212,7 +213,10 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
         assert "esta transmitiendo en (?:vivo|directo)" in scripts
         assert "if ((marker || visual.liveBadge) && announced)" in scripts
         assert not any(name in scripts for name in ("liteTargetMatches", "liteLiveUserMatches", "liteLiveFeedUser"))
-        assert scripts.count("feedOpened = true;\n            await navigate(video);") == 1
+        assert scripts.count("ancestor::*[@class='androidx.recyclerview.widget.RecyclerView']]/ancestor::*[@clickable='true'][1]") == 1
+        assert scripts.count("await navigate(video);") == 1
+        assert "feedOpened = true;\n              try { await element.click(); }" in scripts
+        assert "\\b(?:para ti|reels?)\\b" in scripts
         assert "liteLiveShareEntry(nodes, visual)" in scripts
         assert "liteLiveShareComposer(nodes, visual)" in scripts
         assert "escribir publicacion(?: compartir como)?" in scripts
@@ -239,11 +243,53 @@ if (keys.length !== 1 || !keys[0].endsWith('|prueba automatizada live v2.6.7 #15
 visual.lines[0].label = 'prueba automatizada live v2.6.10';
 const missingSuffix = liteCommentKeys(visual, { bounds: [24, 1666, 1056, 1769] }, 'prueba automatizada live v2.6.10 #19');
 if (missingSuffix.length !== 1) throw new Error('missing trailing comment order');
+visual.lines = [
+  { label: 'phil caroll casimiro', x: 194, y: 1306, width: 370, height: 33 },
+  { label: 'otra vez lo mismo, ya no se por quien', x: 193, y: 1364, width: 789, height: 47 },
+  { label: 'votar', x: 192, y: 1431, width: 107, height: 33 },
+  { label: 'hace un momento responder', x: 194, y: 1529, width: 585, height: 41 }
+];
+const wrapped = liteCommentKeys(visual, { bounds: [52, 1669, 853, 1764] }, 'otra vez lo mismo, ya no se por quien votar');
+if (wrapped.length !== 1 || wrapped[0] !== 'phil caroll casimiro|otra vez lo mismo, ya no se por quien votar') {
+  throw new Error('wrapped Live comment');
+}
+"""], check=True, capture_output=True, text=True)
+        dismiss_helper = scripts[scripts.index("async function dismissKeyboard"):scripts.index("async function scrollPost")]
+        subprocess.run(["node", "-e", """
+const stale = [
+  { 'resource-id': 'com.facebook.lite:id/main_layout', bounds: [0, 63, 1080, 1794] },
+  { scrollable: 'true', bounds: [0, 191, 1080, 1640] },
+  { bounds: [0, 1794, 1080, 1920] }
+];
+const keyboard = [
+  { 'resource-id': 'com.facebook.lite:id/main_layout', bounds: [0, 63, 1080, 917] },
+  { scrollable: 'true', bounds: [0, 191, 1080, 763] },
+  { bounds: [0, 917, 1080, 1794] },
+  { bounds: [0, 1794, 1080, 1920] }
+];
+const closed = [
+  { 'resource-id': 'com.facebook.lite:id/main_layout', bounds: [0, 63, 1080, 1794] },
+  { scrollable: 'true', bounds: [0, 191, 1080, 1640] },
+  { bounds: [0, 1794, 1080, 1920] }
+];
+let current = keyboard, presses = 0;
+const ctx = { async getXml() { return '<hierarchy/>'; } };
+function parseLiteXml() { return current; }
+async function rpc(method) { if (method !== 'pressKey') throw new Error(method); presses++; }
+async function wait() {}
+async function screen() { current = closed; return current; }
+""" + dismiss_helper + """
+(async () => {
+  const refreshed = await dismissKeyboard(stale);
+  if (presses !== 1 || refreshed !== closed) throw new Error('stale keyboard hierarchy');
+  current = closed;
+  if (await dismissKeyboard(keyboard) !== closed || presses !== 1) throw new Error('fresh scroll hierarchy');
+})().catch(error => { console.error(error); process.exitCode = 1; });
 """], check=True, capture_output=True, text=True)
         assert "if (liveMode && keys.length === 0 && (i === 0 || i === 2))" in scripts
         assert "await scrollPost(edit ? await dismissKeyboard(nodes) : nodes, i === 2, true)" in scripts
         assert "await scrollPost(nodes, true, true)" in scripts
-        assert "if (error.message !== 'Operacion UI no confirmada: swipe') throw error;" in scripts
+        assert "if (!optional && error.message !== 'Operacion UI no confirmada: swipe') throw error;" in scripts
         assert scripts.count("result.swipeReplyUncertain = (result.swipeReplyUncertain || 0) + 1;") == 1
         scroll_helper = scripts[scripts.index("async function scrollPost"):scripts.index("async function locatePost")]
         subprocess.run(["node", "-e", """
@@ -261,9 +307,21 @@ async function wait() {}
   if (await scrollPost([], false, true) !== false) throw new Error('optional missing scroll');
   try { await scrollPost([]); throw new Error('missing strict failure'); }
   catch (error) { if (error.message !== 'No se encontro el contenedor desplazable de la publicacion.') throw error; }
-  errorMessage = 'fatal';
-  try { await scrollPost(nodes); throw new Error('missing failure'); }
+   errorMessage = 'fatal';
+   if (await scrollPost(nodes, false, true) !== false) throw new Error('optional fatal failure');
+   try { await scrollPost(nodes); throw new Error('missing failure'); }
   catch (error) { if (error.message !== 'fatal') throw error; }
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""], check=True, capture_output=True, text=True)
+        toast_helpers = scripts[scripts.index("async function resetToast"):scripts.index("async function confirm")]
+        subprocess.run(["node", "-e", """
+let toastEnabled = true, calls = 0;
+async function rpc() { calls++; throw new Error('socket hang up'); }
+""" + toast_helpers + """
+(async () => {
+  await resetToast();
+  if (toastEnabled || calls !== 1) throw new Error('toast reset fallback');
+  if (await toast() !== '' || calls !== 1) throw new Error('disabled toast fallback');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """], check=True, capture_output=True, text=True)
         assert "for (let i = 0; i < 16 && !edit; i++)" in scripts
@@ -289,6 +347,42 @@ async function wait() {}
                         f"\nconst video = liteLiveFeedVideo({json.dumps(feed_nodes)});" +
                         "if (!video || video.bounds[1] !== 762) throw new Error('live feed video');"],
                        check=True, capture_output=True, text=True)
+        locate_live = scripts[scripts.index("async function locateLive"):scripts.index("async function runLive")]
+        subprocess.run(["node", "-e", """
+const assert = require('node:assert/strict');
+let latestXml = '', liveIdentity = '';
+const result = {};
+const feed = [{ feed: true }], player = [{ player: true }];
+let screens = 0, clicks = 0;
+async function screen() { latestXml = screens++ ? 'player-xml' : 'feed-xml'; return screens === 1 ? feed : player; }
+function liteLiveToolbar(nodes) { return { like: {}, comment: {}, share: {} }; }
+function liteLiveFeedVideo(nodes) { return nodes === feed ? nodes[0] : null; }
+function normalizeLiteText(value) { return value.toLowerCase(); }
+function transient() { return false; }
+async function wait() {}
+async function recognize(label) {
+  return label.endsWith('-feed')
+    ? { width: 1080, height: 1920, liveBadge: false, lines: [
+        { label: 'en directo' }, { label: 'alice esta transmitiendo en vivo' }
+      ] }
+    : { width: 1080, height: 1920, liveBadge: false, lines: [
+        { label: 'directo', y: 10, height: 20, x: 10, width: 100 },
+        { label: '< videos', y: 60, height: 30, x: 10, width: 200 }
+      ] };
+}
+const ctx = { async queryXpath(xpath, xml) {
+  assert.ok(xpath.includes('RecyclerView') && xpath.includes("ancestor::*[@clickable='true'][1]"));
+  assert.equal(xml, 'feed-xml');
+  return { async click() { clicks++; } };
+} };
+""" + locate_live + """
+(async () => {
+  const live = await locateLive(1);
+  assert.ok(live && live.bar);
+  assert.equal(liveIdentity, 'alice');
+  assert.equal(clicks, 1);
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""], check=True, capture_output=True, text=True)
         facebook_nodes = {node["id"]: node["data"] for node in package["script"]["flow"]["nodes"]}
         assert facebook_nodes["social_content"]["successNode"] == "social_success"
         assert not ({"social_live_ready", "social_live_detect", "social_live_detect_variant", "social_live_detect_vivo", "social_live_open"} & facebook_nodes.keys())
