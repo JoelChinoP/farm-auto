@@ -286,7 +286,7 @@ function App() {
     const cached = contextCache.current.get(url)
     if (cached) {
       updatePublication('facebook', url, {
-        context: publication.context.trim() || cached.context.slice(0, 500).trim(),
+        context: publication.context.trim() || cached.context.slice(0, 2000).trim(),
         aiContext: cached.context || publication.aiContext,
         contentType: cached.type,
         error: '',
@@ -303,14 +303,14 @@ function App() {
       })
       if (controller.signal.aborted || revision !== contextRevision.current) return
       if (result.url !== url || result.source !== 'playwright' || !['post', 'reel', 'video', 'live'].includes(result.type)) throw new Error('Playwright no pudo clasificar la publicación.')
-      if (result.context.length > 1000) throw new Error('El contexto supera los 1000 caracteres. Pega una versión más breve.')
+      if (result.context.length > 2000) throw new Error('El contexto supera los 2000 caracteres. Pega una versión más breve.')
       contextCache.current.set(url, { context: result.context, type: result.type })
       setCampaigns((current) => ({ ...current, facebook: {
         ...current.facebook, reviewed: false,
         publications: current.facebook.publications.map((item) => item.url === url
           ? {
               ...item,
-              context: item.context.trim() || result.context.slice(0, 500).trim(),
+              context: item.context.trim() || result.context.slice(0, 2000).trim(),
               aiContext: result.context || item.aiContext,
               contentType: result.type,
               error: '',
@@ -395,7 +395,7 @@ function App() {
         const text = publication.comments[deviceId] ?? ''
         return !text.trim() || text.length > commentLimit
       }))
-      if (badComment || campaign.publications.some((publication) => publication.context.length > 500)) {
+      if (badComment || campaign.publications.some((publication) => publication.context.length > 2000)) {
         setNotice({ text: `Revisa el contexto y los comentarios: un comentario por dispositivo, máximo ${commentLimit} caracteres.`, error: true })
         return
       }
@@ -583,11 +583,11 @@ function App() {
                   <p className="context-note">{platform === 'facebook' ? 'Playwright detecta si cada enlace es publicación, Reel, video o Live. El contexto se usa sólo para generar comentarios con IA, no para verificar el destino en el teléfono.' : 'Pega el texto visible de la publicación; "Generar con IA" usa ese contexto con DeepSeek.'}</p>
                   <ol className="publication-list">{campaign.publications.map((publication, index) => <li key={publication.url}>
                     <div className="publication-heading"><span className="device-order">{String(index + 1).padStart(2, '0')}</span><a href={publication.url} target="_blank" rel="noreferrer">{publication.url}<span className="sr-only"> (abre otra pestaña)</span></a></div>
-                    <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>{platform === 'facebook' ? 'Contexto para comentarios con IA' : 'Texto visible exacto para verificar el destino'} <span className="field-help">opcional · {publication.context.length}/500</span></label>
+                    <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>{platform === 'facebook' ? 'Contexto para comentarios con IA' : 'Texto visible exacto para verificar el destino'} <span className="field-help">opcional · {publication.context.length}/2000</span></label>
                       {platform === 'facebook' && <button className="text-button" disabled={publication.extracting || !!publication.contentType} onClick={() => void extractContext(publication.url)}>{publication.extracting ? 'Detectando…' : 'Detectar tipo y contexto'}</button>}
                     </div>
                     {platform === 'facebook' && <p className="field-help">{publication.contentType ? `Tipo detectado: ${publication.contentType}` : 'El tipo se detectará con Playwright antes de enviar.'}</p>}
-                    <textarea id={`${platform}-context-${index}`} rows={3} maxLength={500} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder={platform === 'facebook' ? 'Contexto opcional para generar comentarios' : 'Pega un fragmento exacto visible en esta publicación'} />
+                    <textarea id={`${platform}-context-${index}`} rows={3} maxLength={2000} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder={platform === 'facebook' ? 'Contexto opcional para generar comentarios' : 'Pega un fragmento exacto visible en esta publicación'} />
                     {publication.aiContext.length > publication.context.length && <p className="field-help">La IA usará el texto completo extraído ({publication.aiContext.length} caracteres).</p>}
                     {publication.error && <p className="field-error" role="alert" id={`${platform}-context-error-${index}`}>{publication.error}</p>}
                     {campaign.actions.comment && <div className="comment-field">

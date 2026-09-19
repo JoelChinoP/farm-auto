@@ -178,7 +178,7 @@ class Actions(BaseModel):
 class Publication(BaseModel):
     model_config = ConfigDict(extra="forbid")
     url: str = Field(min_length=1, max_length=2048)
-    context: str = Field(default="", max_length=500)
+    context: str = Field(default="", max_length=2000)
     comments: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("context")
@@ -209,7 +209,7 @@ class CommentProfile(BaseModel):
 class CommentsRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     platform: Literal["facebook", "tiktok"]
-    context: str = Field(min_length=1, max_length=1000)
+    context: str = Field(min_length=1, max_length=2000)
     profiles: list[CommentProfile] = Field(min_length=1, max_length=100)
 
     @field_validator("profiles")

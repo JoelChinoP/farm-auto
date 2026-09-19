@@ -31,8 +31,8 @@ backend/.venv/bin/python -m uvicorn backend.app.main:app --host 127.0.0.1 --port
 
 `npm run dev` ejecuta juntos `npm run dev:back` y `npm run dev:front`; el panel queda
 en `http://127.0.0.1:5173` y Vite delega `/api` al backend. Para produccion,
-`npm run prod` construye React y sirve el panel y la API desde FastAPI en
-`http://127.0.0.1:8000` con una sola instancia.
+`npm run prod` construye React y ejecuta juntos el backend y `vite preview`; el panel
+queda en `http://127.0.0.1:4173` y delega `/api` al backend en el puerto 8000.
 
 ## GenFarmer
 

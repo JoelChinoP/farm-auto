@@ -124,7 +124,7 @@ def inspect_facebook(url: str) -> dict[str, str]:
         text = ""
     result = {
         "type": classify_facebook(final_url, canonical_url, metadata.get("og:type", ""), body),
-        "context": full_message(html, text)[:1000] if text else "",
+        "context": full_message(html, text)[:2000] if text else "",
         "resolvedUrl": final_url,
     }
     with _lock:

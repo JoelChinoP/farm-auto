@@ -64,7 +64,7 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
     samples = {
         "contentUrl": "https://www.facebook.com/share/p/19cmrzLH7p/",
         "packageName": "com.facebook.lite", "like": True, "comment": True,
-        "share": True, "commentText": "prueba", "targetText": "texto visible",
+        "share": True, "commentText": "¡Qué campaña mañana! 😊", "targetText": "texto visible",
         "isPost": True, "isReel": False, "isVideo": False, "isLive": False, "diagnostic_only": False,
     }
     values = {name: samples[name] for name in inputs}
@@ -175,8 +175,8 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
 """
         subprocess.run(["node", "-e", probe], input=json.dumps(nodes), check=True, text=True)
     if path.stem == "facebook":
-        assert package["version"] == package["script"]["version"] == "2.6.16"
-        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.16")
+        assert package["version"] == package["script"]["version"] == "2.6.18"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.18")
         type_names = {"isPost", "isReel", "isVideo", "isLive"}
         assert all(item["value"] is False for item in package["script"]["variables"] if item["name"] in type_names)
         assert all(item["options"]["value"] is False and item["options"]["variable"]["value"] is False
@@ -286,6 +286,15 @@ async function screen() { current = closed; return current; }
   if (await dismissKeyboard(keyboard) !== closed || presses !== 1) throw new Error('fresh scroll hierarchy');
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """], check=True, capture_output=True, text=True)
+        assert "({ nodes, edit } = await clearCorruptDraft(nodes, edit));" in scripts
+        assert scripts.count("await clearCorruptDraft(nodes, edit)") == 2
+        assert "includes('\ufffd')" in scripts
+        assert "const commentText = String(v.commentText || '').trim();" in scripts
+        assert "function liteCommentText" not in scripts
+        assert "async function writeDraft(edit, text)" in scripts
+        assert "await ui.sendKeys(text, true);" in scripts
+        assert scripts.count("await writeDraft(edit, commentText);") == 2
+        assert "rpc('setText'" not in scripts
         assert "if (liveMode && keys.length === 0 && (i === 0 || i === 2))" in scripts
         assert "await scrollPost(edit ? await dismissKeyboard(nodes) : nodes, i === 2, true)" in scripts
         assert "await scrollPost(nodes, true, true)" in scripts
@@ -393,9 +402,12 @@ const ctx = { async queryXpath(xpath, xml) {
                 for edge in package["script"]["flow"]["edges"]} == expected_edges
         assert len(package["script"]["flow"]["edges"]) == len(expected_edges)
     if path.stem == "tiktok":
-        assert package["version"] == package["script"]["version"] == "1.2.0"
+        assert package["version"] == package["script"]["version"] == "1.2.1"
         assert "repostActionPattern" in scripts and "^(compartir|republicar" not in scripts
         assert "/compartido|republicado|shared|reposted/" not in scripts
+        assert scripts.count("await ui.sendKeys(text, true);") == 2
+        assert "rpc('setText'" not in scripts and "tap(edit)" not in scripts
+        assert "await clickOnce(edit, text ? 'enfocar comentario Live'" in scripts
         variables_by_name = {item["name"]: item["value"] for item in package["script"]["variables"]}
         assert variables_by_name["diagnostic_only"] is False
         live_script = next(node["data"]["options"]["script"] for node in package["script"]["flow"]["nodes"]
@@ -408,6 +420,22 @@ assert full_message(html_fixture, "Primera parte ¡Hola!") == "Primera parte ¡H
 assert full_message(html_fixture, "Texto de otra publicacion") == "Texto de otra publicacion"
 assert full_message(html_fixture, "") == ""
 assert full_message("<html>sin json</html>", "Primera parte") == "Primera parte"
+
+context_limit = "x" * 2000
+assert main.Publication(url="https://www.facebook.com/example/posts/1", context=context_limit).context == context_limit
+assert main.CommentsRequest(platform="facebook", context=context_limit,
+                            profiles=[{"deviceId": "serial-first", "intention": "Apoyo", "tone": "Cercano"}]).context == context_limit
+for factory in (
+    lambda: main.Publication(url="https://www.facebook.com/example/posts/1", context=context_limit + "x"),
+    lambda: main.CommentsRequest(platform="facebook", context=context_limit + "x",
+                                 profiles=[{"deviceId": "serial-first", "intention": "Apoyo", "tone": "Cercano"}]),
+):
+    try:
+        factory()
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("Contexto mayor de 2000 caracteres aceptado")
 
 assert classify_facebook("https://www.facebook.com/reel/123", "", "video.other", "LIVE\nAlice is now live") == "reel"
 assert classify_facebook("https://www.facebook.com/1/videos/2", "", "video.other", "DIRECTO\nEstá transmitiendo en vivo") == "live"
@@ -617,8 +645,9 @@ with TestClient(main.app) as client:
     commented = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174004",
                  "kind": "actions", "deviceIds": ["serial-first", "serial-second"],
                  "actions": {"like": True, "comment": True, "share": False},
-                 "publications": [{"url": "https://www.facebook.com/example/posts/1", "context": "texto visible",
-                                   "comments": {"serial-first": "Comentario del primero", "serial-second": "Comentario del segundo"}}]}
+                  "publications": [{"url": "https://www.facebook.com/example/posts/1", "context": "texto visible",
+                                    "comments": {"serial-first": "¡Qué campaña mañana! 😊",
+                                                 "serial-second": "Niñez, acción y corazón 🇵🇪"}}]}
     response = client.post("/api/submissions", json=commented, headers=origin)
     assert response.status_code == 201, response.text
     commented_ids = {item["id"] for item in response.json()["submissions"]}
@@ -636,7 +665,8 @@ with TestClient(main.app) as client:
             values = {item["name"]: item["value"] for item in call[2]["variables"]}
             per_device[call[2]["devices"]["list"][0]["serialNo"]] = values["commentText"]
             facebook_flags = {name: values[name] for name in ("isPost", "isReel", "isVideo", "isLive")}
-    assert per_device == {"serial-first": "Comentario del primero", "serial-second": "Comentario del segundo"}, per_device
+    assert per_device == {"serial-first": "¡Qué campaña mañana! 😊",
+                          "serial-second": "Niñez, acción y corazón 🇵🇪"}, per_device
     assert facebook_flags == {"isPost": True, "isReel": False, "isVideo": False, "isLive": False}
     assert "targetText" not in values
     for item in current:

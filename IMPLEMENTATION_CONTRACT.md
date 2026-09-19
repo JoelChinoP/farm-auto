@@ -52,6 +52,11 @@ validaciones estructurales de reproductor, barra de acciones, editor, audiencia 
 confirmaciones. En Reels la leyenda visible solo evita continuar si el contenido
 cambia durante la ejecucion. Las variables de selectores se pueden modificar en
 GenFarmer sin cambios en el backend.
+Facebook y TikTok escriben `commentText` mediante `clientUiAutomator.sendKeys`, que
+usa el teclado ADB de GenFarmer y Base64 UTF-8. No se usa el RPC `setText`, porque
+GenFarmer 2.6.1 corrompe por esa ruta tildes, `ñ`, emojis y otros caracteres
+multibyte. Un borrador de Facebook con `�` se retira sin enviarlo; cualquier otro
+borrador previo se conserva y detiene la accion.
 Los cuatro flags deben tener default `false` en el paquete: GenFarmer 2.6.1 ignora
 un `false` enviado cuando el default importado es verdadero.
 Se preservan los defaults de la app importada y solo se sustituyen las entradas de
@@ -147,7 +152,7 @@ dominios Facebook HTTPS. La URL final clasifica Reels; los marcadores visibles d
 transmision clasifican Live; las rutas/metadatos de video clasifican videos y el
 resto se trata como publicacion. `og:description` suele venir truncado con `...`; si
 el JSON publico trae el mensaje completo y su inicio coincide, se usa ese texto
-(hasta 1000 caracteres) solo como contexto para IA. Una cache en memoria de cinco
+(hasta 2000 caracteres) solo como contexto para IA. Una cache en memoria de cinco
 minutos y hasta 128 URLs evita repetir navegaciones. Si no hay metadatos, el tipo
 todavia puede detectarse y el operador puede pegar contexto para IA.
 

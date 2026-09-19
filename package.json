@@ -12,7 +12,7 @@
     "typecheck": "tsc -b --pretty false",
     "preview": "vite preview",
     "start": "backend\\.venv\\Scripts\\python.exe -m backend.app.main",
-    "prod": "npm run build && npm run start"
+    "prod": "npm run build && concurrently -k -n back,front \"npm run start\" \"npm run preview\""
   },
   "dependencies": {
     "react": "^19.2.8",
