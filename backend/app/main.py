@@ -74,20 +74,46 @@ def dispatch(submission_id: str):
 
 def previous_submission(row):
     with connect() as db:
-        return db.execute("""SELECT status, task_id, run_id FROM submissions
+        return db.execute("""SELECT id, status, task_id, run_id FROM submissions
             WHERE device_id=? AND (scheduled_at, created_at, request_id, position) < (?, ?, ?, ?)
               AND status NOT IN ('failed', 'cancelled')
             ORDER BY scheduled_at DESC, created_at DESC, request_id DESC, position DESC LIMIT 1""",
             (row["device_id"], row["scheduled_at"], row["created_at"], row["request_id"], row["position"])).fetchone()
 
 
-def ready_for_dispatch(row) -> bool:
-    previous = previous_submission(row)
+def previous_round_submission(row):
+    if row["kind"] != "live_rounds":
+        return None
+    with connect() as db:
+        return db.execute("""SELECT id, status, task_id, run_id FROM submissions
+            WHERE request_id=? AND position<? AND status NOT IN ('failed', 'cancelled')
+            ORDER BY position DESC LIMIT 1""", (row["request_id"], row["position"])).fetchone()
+
+
+def predecessor_finished(row, previous) -> bool:
     if previous is None:
         return True
     if previous["status"] not in {"sent", "unknown"} or not previous["task_id"] or not previous["run_id"]:
         return False
-    return genfarmer.run_finished(previous["run_id"], previous["task_id"])
+    try:
+        return genfarmer.run_finished(previous["run_id"], previous["task_id"])
+    except genfarmer.GenFarmerError as error:
+        if not error.missing:
+            raise
+        log.warning("GenFarmer ya no conserva el run anterior de %s; se libera sin reenviarlo", row["device_id"])
+        return True
+
+
+def ready_for_dispatch(row) -> bool:
+    predecessors = [previous_submission(row), previous_round_submission(row)]
+    seen = set()
+    for previous in predecessors:
+        if previous is None or previous["id"] in seen:
+            continue
+        seen.add(previous["id"])
+        if not predecessor_finished(row, previous):
+            return False
+    return True
 
 
 def dispatch_worker():
@@ -96,24 +122,24 @@ def dispatch_worker():
             rows = db.execute("""SELECT * FROM submissions WHERE status='scheduled' AND scheduled_at<=?
                 ORDER BY scheduled_at, created_at, request_id, position""", (now_ms(),)).fetchall()
         seen_devices = set()
+        seen_round_requests = set()
         for row in rows:
             if stopping.is_set():
                 return
+            if row["kind"] == "live_rounds":
+                if row["request_id"] in seen_round_requests:
+                    continue
+                seen_round_requests.add(row["request_id"])
             if row["device_id"] in seen_devices:
                 continue
             seen_devices.add(row["device_id"])
             try:
                 ready = ready_for_dispatch(row)
             except genfarmer.GenFarmerError as error:
-                if not error.missing:
-                    log.warning("No se pudo confirmar el run anterior de %s: %s", row["device_id"], error)
-                    if error.unavailable:
-                        break
-                    continue
-                # GenFarmer no longer stores the previous run: it cannot be running,
-                # so the device is released without resending the uncertain one.
-                log.warning("GenFarmer ya no conserva el run anterior de %s; se libera sin reenviarlo", row["device_id"])
-                ready = True
+                log.warning("No se pudo confirmar el run anterior de %s: %s", row["device_id"], error)
+                if error.unavailable:
+                    break
+                continue
             if not ready:
                 continue
             dispatch(row["id"])
@@ -203,7 +229,7 @@ class CommentProfile(BaseModel):
     model_config = ConfigDict(extra="forbid")
     deviceId: str = Field(min_length=1, max_length=200)
     intention: str = Field(min_length=1, max_length=300)
-    tone: Literal["Cercano", "Entusiasta", "Informativo", "Breve"]
+    tone: Literal["Cercano", "Entusiasta", "Informativo", "Breve", "Dulce / Cálido", "Empático / Asertivo", "Distante / Formal", "Pasivo-Agresivo / Sarcástico", "Frío / Cortante", "Defensivo / Agresivo"]
 
 
 class CommentsRequest(BaseModel):
@@ -224,10 +250,11 @@ class SubmissionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     requestId: UUID
     platform: Literal["facebook", "tiktok"]
-    kind: Literal["open", "actions"]
+    kind: Literal["open", "actions", "live_rounds"]
     deviceIds: list[str] = Field(min_length=1, max_length=100)
     publications: list[Publication] = Field(min_length=1, max_length=10)
     actions: Actions = Field(default_factory=Actions)
+    rounds: int = Field(default=1, ge=1, le=200, strict=True)
     scheduledAt: int | None = Field(default=None, ge=0, le=8_640_000_000_000_000, strict=True)
 
     @field_validator("deviceIds")
@@ -264,7 +291,10 @@ def list_submissions():
 @app.post("/api/submissions")
 def submit(payload: SubmissionRequest):
     request_id = str(payload.requestId)
-    fingerprint = hashlib.sha256(json.dumps(payload.model_dump(mode="json", exclude={"requestId"}), sort_keys=True).encode()).hexdigest()
+    fingerprint_payload = payload.model_dump(mode="json", exclude={"requestId", "rounds"})
+    if payload.kind == "live_rounds":
+        fingerprint_payload["rounds"] = payload.rounds
+    fingerprint = hashlib.sha256(json.dumps(fingerprint_payload, sort_keys=True).encode()).hexdigest()
     with connect() as db:
         existing = db.execute("SELECT * FROM submissions WHERE request_id=? ORDER BY position", (request_id,)).fetchall()
     if existing:
@@ -282,8 +312,18 @@ def submit(payload: SubmissionRequest):
         raise HTTPException(422, str(error)) from error
     if len({item.url for item in payload.publications}) != len(payload.publications):
         raise HTTPException(422, "No repitas URLs")
+    round_mode = payload.kind == "live_rounds"
     if payload.kind == "open" and any(payload.actions.model_dump().values()):
         raise HTTPException(422, "Abrir contenido no admite acciones publicas")
+    if not round_mode and payload.rounds != 1:
+        raise HTTPException(422, "Las rondas solo se admiten en comentarios Live por rondas")
+    if round_mode:
+        if payload.platform != "facebook" or len(payload.publications) != 1:
+            raise HTTPException(422, "Las rondas requieren un unico Live de Facebook")
+        if payload.actions.model_dump() != {"like": False, "comment": True, "share": False}:
+            raise HTTPException(422, "Las rondas solo admiten comentar")
+        if len(payload.deviceIds) * payload.rounds > 200:
+            raise HTTPException(422, "El lote por rondas supera el limite de 200 envios")
     if payload.actions.comment:
         for publication in payload.publications:
             texts = [publication.comments.get(device_id, "") for device_id in payload.deviceIds]
@@ -291,7 +331,9 @@ def submit(payload: SubmissionRequest):
                 raise HTTPException(422, "Escribe un comentario por dispositivo y publicacion")
             if payload.platform == "tiktok" and any(len(text) > 150 for text in texts):
                 raise HTTPException(422, "Los comentarios de TikTok admiten hasta 150 caracteres")
-    slug = "open-content" if payload.kind == "open" else payload.platform
+            if round_mode and len(set(texts)) != 1:
+                raise HTTPException(422, "Las rondas deben usar el mismo comentario en todos los dispositivos")
+    slug = "open-content" if payload.kind == "open" else "facebook-live-rounds" if round_mode else payload.platform
     app_id = settings.workflows[slug]
     if not app_id:
         raise HTTPException(409, f"Importa {slug}.genfarm y configura su ID en backend/.env")
@@ -300,35 +342,42 @@ def submit(payload: SubmissionRequest):
     if len(chosen) != len(payload.deviceIds) or any(not item["connected"] for item in chosen):
         raise HTTPException(409, "Hay dispositivos desconectados; actualiza la lista")
     facebook_types = {}
-    if payload.platform == "facebook" and payload.kind == "actions":
+    if payload.platform == "facebook" and payload.kind in {"actions", "live_rounds"}:
         try:
             facebook_types = {publication.url: inspect_facebook(publication.url)["type"] for publication in payload.publications}
         except (ValueError, OSError) as error:
             raise HTTPException(422, "No se pudo detectar el tipo de una publicacion de Facebook con Playwright") from error
+        if round_mode and set(facebook_types.values()) != {"live"}:
+            raise HTTPException(422, "Las rondas solo se admiten en un Live activo de Facebook")
     app_data = genfarmer.request(f"/automation/apps/{genfarmer.path_id(app_id)}")
     if not isinstance(app_data, dict) or app_data.get("id") != app_id:
         raise genfarmer.GenFarmerError("El workflow configurado no existe en GenFarmer")
     user = genfarmer.user_id()
     entries = []
-    # Draw once per task, keeping publication order within each device.
-    schedules = {device["id"]: sorted(random.randint(timestamp, until) for _ in payload.publications) for device in chosen}
-    # Publication-major order lets each device finish one publication before its next.
-    for publication_index, publication in enumerate(payload.publications):
-        for device in chosen:
-            when = schedules[device["id"]][publication_index]
-            identifier = str(uuid4())
-            values = {"contentUrl": publication.url}
-            if payload.kind == "open":
-                values["packageName"] = "com.facebook.lite" if payload.platform == "facebook" else "com.zhiliaoapp.musically"
+    if round_mode:
+        when = random.randint(timestamp, until)
+        jobs = [(payload.publications[0], device, when, round_number)
+                for round_number in range(1, payload.rounds + 1) for device in chosen]
+    else:
+        # Draw once per task, keeping publication order within each device.
+        schedules = {device["id"]: sorted(random.randint(timestamp, until) for _ in payload.publications) for device in chosen}
+        jobs = [(publication, device, schedules[device["id"]][publication_index], 1)
+                for publication_index, publication in enumerate(payload.publications) for device in chosen]
+    for publication, device, when, round_number in jobs:
+        identifier = str(uuid4())
+        values = {"contentUrl": publication.url}
+        if payload.kind == "open":
+            values["packageName"] = "com.facebook.lite" if payload.platform == "facebook" else "com.zhiliaoapp.musically"
+        else:
+            values.update(payload.actions.model_dump(), commentText=publication.comments.get(device["id"], ""))
+            if payload.platform == "facebook":
+                content_type = facebook_types[publication.url]
+                values.update({f"is{kind.title()}": content_type == kind for kind in ("post", "reel", "video", "live")})
             else:
-                values.update(payload.actions.model_dump(), commentText=publication.comments.get(device["id"], ""))
-                if payload.platform == "facebook":
-                    content_type = facebook_types[publication.url]
-                    values.update({f"is{kind.title()}": content_type == kind for kind in ("post", "reel", "video", "live")})
-                else:
-                    values["targetText"] = publication.context
-            task = genfarmer.task_payload(app_data, values, device, user, f"Farm {identifier}")
-            entries.append((identifier, request_id, fingerprint, len(entries), device["id"], device["name"], device["order"], payload.platform, payload.kind, publication.url, json.dumps(task, ensure_ascii=False), when, "scheduled", timestamp))
+                values["targetText"] = publication.context
+        name = f"Farm Live ronda {round_number}/{payload.rounds} {identifier}" if round_mode else f"Farm {identifier}"
+        task = genfarmer.task_payload(app_data, values, device, user, name)
+        entries.append((identifier, request_id, fingerprint, len(entries), device["id"], device["name"], device["order"], payload.platform, payload.kind, publication.url, json.dumps(task, ensure_ascii=False), when, "scheduled", timestamp))
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         existing = db.execute("SELECT * FROM submissions WHERE request_id=? ORDER BY position", (request_id,)).fetchall()

@@ -38,9 +38,10 @@ queda en `http://127.0.0.1:4173` y delega `/api` al backend en el puerto 8000.
 
 1. Iniciar GenFarmer en el mismo equipo, con la sesion operativa abierta.
 2. Revisar `backend/.env.example` y ajustar `backend/.env`. Puerto inicial: `55554`.
-3. Importar `backend/automations/open-content.genfarm`, `facebook.genfarm` y
-   `tiktok.genfarm` desde GenFarmer. Configurar sus IDs reales en
-   `GENFARMER_OPEN_APP_ID`, `GENFARMER_FACEBOOK_APP_ID` y `GENFARMER_TIKTOK_APP_ID`.
+3. Importar `backend/automations/open-content.genfarm`, `facebook.genfarm`,
+   `facebook-live-rounds.genfarm` y `tiktok.genfarm` desde GenFarmer. Configurar sus
+   IDs reales en `GENFARMER_OPEN_APP_ID`, `GENFARMER_FACEBOOK_APP_ID`,
+   `GENFARMER_FACEBOOK_LIVE_ROUNDS_APP_ID` y `GENFARMER_TIKTOK_APP_ID`.
 4. La API instalada de GenFarmer 2.6.1 inicia cada run al crearlo; Farm no envia
    un segundo inicio explicito. Farm consulta el run antes de entregar otra
    publicacion al mismo equipo. Reiniciar el backend al cambiar configuracion.
@@ -56,6 +57,10 @@ los workflows se pueden consultar dispositivos y extraer contexto, pero no envia
   Facebook Lite valida la estructura y no compara el texto visible. TikTok admite
   videos y URLs `/@usuario/live`; Compartir hace Repost en videos y usa Compartir en
   Live. Los flags de accion son independientes; sin flags solo se abre el contenido.
+- **Live por rondas:** apartado independiente de Facebook normal. Usa un unico Live,
+  un comentario comun y N rondas. Farm crea una tarea por dispositivo y ronda, en el
+  orden de GenFarmer, y no entrega la siguiente hasta confirmar terminal el run
+  anterior. El maximo total es 200 ejecuciones pendientes.
 - **Comentarios:** las intenciones se reparten en grupos (**Intención / Tono /
   Cantidad**) que deben cubrir los equipos seleccionados; se pueden agregar o quitar
   grupos. Los equipos se asignan en orden a cada grupo. **Generar con IA** pide un
@@ -63,7 +68,8 @@ los workflows se pueden consultar dispositivos y extraer contexto, pero no envia
   revisan y se pueden editar antes de enviar. Requiere `API_DEEPSEEK` en el `.env`
   de la raíz (o en `backend/.env`, que tiene prioridad).
 - **Envios:** `Programado`, `Enviando`, `Enviado`, `No enviado`, `Por verificar` o
-  `Cancelado`. Pulsar **Actualizar** para consultar cambios.
+  `Cancelado`. Pulsar **Actualizar** para consultar cambios. **Cancelar todos**
+  cancela unicamente las filas programadas; no detiene tareas en GenFarmer.
 
 **Enviado no significa accion completada.** Consultar resultados y errores de
 ejecucion en GenFarmer mediante Task ID / Run ID. No se reintentan envios inciertos.

@@ -152,7 +152,7 @@ select { width: 100%; min-height: 44px; padding: 11px 12px; border: 1px solid va
 }
 @media (max-width: 800px) {
   .console-shell { display: block; }
-  .side-nav { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; padding: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+  .side-nav { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; padding: 0; border-right: 0; border-bottom: 1px solid var(--line); }
   .nav-item { justify-content: center; gap: 8px; min-height: 54px; padding: 10px 5px; border-radius: 0; }
   .nav-footer { display: none; }
   .view-heading { padding-top: 32px; }

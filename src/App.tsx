@@ -2,12 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 type Platform = 'facebook' | 'tiktok'
+type Workflow = 'open-content' | 'facebook-live-rounds' | Platform
 type ContentType = 'post' | 'reel' | 'video' | 'live'
-type View = 'devices' | Platform | 'submissions'
-type Tone = 'Cercano' | 'Entusiasta' | 'Informativo' | 'Breve'
+type CampaignView = Platform | 'facebook-live-rounds'
+type View = 'devices' | CampaignView | 'submissions'
+type Tone = 'Cercano' | 'Entusiasta' | 'Informativo' | 'Breve' | 'Dulce / Cálido' | 'Empático / Asertivo' | 'Distante / Formal' | 'Pasivo-Agresivo / Sarcástico' | 'Frío / Cortante' | 'Defensivo / Agresivo'
 type Actions = { like: boolean; comment: boolean; share: boolean }
 type Device = { id: string; serial: string; connectionId: string; name: string; order: number; connected: boolean }
-type Settings = { genfarmerUrl: string; workflows: Record<'open-content' | Platform, boolean> }
+type Settings = { genfarmerUrl: string; workflows: Record<Workflow, boolean> }
 type Distribution = { id: string; intention: string; tone: Tone; count: number }
 type CommentProfile = { deviceId: string; intention: string; tone: Tone }
 type Publication = { url: string; context: string; aiContext: string; contentType: ContentType | null; comments: Record<string, string> }
@@ -17,6 +19,7 @@ type Campaign = {
   urls: string
   publications: DraftPublication[]
   actions: Actions
+  rounds: number
   distribution: Distribution[]
   prepared: boolean
   reviewed: boolean
@@ -28,7 +31,7 @@ type Submission = {
   deviceName: string
   deviceOrder: number
   platform: Platform
-  kind: 'open' | 'actions'
+  kind: 'open' | 'actions' | 'live_rounds'
   url: string
   scheduledAt: number | null
   status: 'scheduled' | 'sending' | 'sent' | 'failed' | 'unknown' | 'cancelled'
@@ -41,10 +44,11 @@ type PublicationPayload = { url: string; context: string; comments: Record<strin
 type SubmissionRequest = {
   requestId: string
   platform: Platform
-  kind: 'open' | 'actions'
+  kind: 'open' | 'actions' | 'live_rounds'
   deviceIds: string[]
   publications: PublicationPayload[]
   actions: Actions
+  rounds: number
   scheduledAt: number | null
 }
 type Attempt = { request: SubmissionRequest; state: 'sending' | 'accepted' | 'uncertain' | 'rejected'; message: string }
@@ -52,16 +56,27 @@ type Attempt = { request: SubmissionRequest; state: 'sending' | 'accepted' | 'un
 const views: Record<View, { number: string; title: string; description: string }> = {
   devices: { number: '01', title: 'Dispositivos', description: 'Tus equipos, en el orden de GenFarmer.' },
   facebook: { number: '02', title: 'Facebook', description: 'Elige equipos. Prepara contenido. Revisa y envía.' },
-  tiktok: { number: '03', title: 'TikTok', description: 'Elige equipos. Prepara contenido. Revisa y envía.' },
-  submissions: { number: '04', title: 'Envíos', description: 'Actualizar para consultar el estado más reciente.' },
+  'facebook-live-rounds': { number: '03', title: 'Live por rondas', description: 'Un Live. Un comentario. Equipos y rondas en secuencia.' },
+  tiktok: { number: '04', title: 'TikTok', description: 'Elige equipos. Prepara contenido. Revisa y envía.' },
+  submissions: { number: '05', title: 'Envíos', description: 'Actualizar para consultar el estado más reciente.' },
 }
+const campaignViews: CampaignView[] = ['facebook', 'facebook-live-rounds', 'tiktok']
 const statuses: Record<Submission['status'], string> = {
   sent: 'Enviado', failed: 'No enviado', unknown: 'Por verificar',
   scheduled: 'Programado', sending: 'Enviando', cancelled: 'Cancelado',
 }
-const tones: Tone[] = ['Cercano', 'Entusiasta', 'Informativo', 'Breve']
+const tones: Tone[] = ['Cercano', 'Entusiasta', 'Informativo', 'Breve', 'Dulce / Cálido', 'Empático / Asertivo', 'Distante / Formal', 'Pasivo-Agresivo / Sarcástico', 'Frío / Cortante', 'Defensivo / Agresivo']
+const intentions = [
+  ['Ataque directo', 'Busca provocar una reacción inmediata.'],
+  ['Evitación / Desvinculación', 'Sin refuerzo dopaminérgico; mantiene distancia.'],
+  ['Crítica Constructiva', 'Busca debatir o aportar.'],
+  ['Afrontamiento Enfocado en el Problema', 'Validación y aportación desde una perspectiva razonada.'],
+  ['Desinformación o Error Factual', 'Aclara con datos sin juzgar.'],
+  ['Elogio o Apoyo', 'Refuerzo positivo, agradecimiento conciso.'],
+]
 const emptyCampaign: Campaign = {
   deviceIds: [], urls: '', publications: [], actions: { like: false, comment: false, share: false },
+  rounds: 1,
   distribution: [{ id: 'intent-1', intention: 'Reacción natural', tone: 'Cercano', count: 0 }],
   prepared: false, reviewed: false, schedule: '',
 }
@@ -152,6 +167,15 @@ function actionLabel(actions: Actions, platform: Platform) {
   return [actions.like && 'Like', actions.comment && 'Comentar', actions.share && (platform === 'tiktok' ? 'Repost / Compartir Live' : 'Compartir ahora (público)')].filter(Boolean).join(' · ') || 'Solo abrir contenido'
 }
 
+function requestWorkflow(request: SubmissionRequest): Workflow {
+  if (request.kind === 'open') return 'open-content'
+  return request.kind === 'live_rounds' ? 'facebook-live-rounds' : request.platform
+}
+
+function campaignPlatform(view: CampaignView): Platform {
+  return view === 'facebook-live-rounds' ? 'facebook' : view
+}
+
 function App() {
   const [activeView, setActiveView] = useState<View>('devices')
   const [devices, setDevices] = useState<{ devices: Device[]; fetchedAt: number } | null>(null)
@@ -160,9 +184,14 @@ function App() {
   const [errors, setErrors] = useState({ devices: '', settings: '', submissions: '' })
   const [refreshVersion, setRefreshVersion] = useState(0)
   const [refreshing, setRefreshing] = useState(true)
-  const [campaigns, setCampaigns] = useState<Record<Platform, Campaign>>({ facebook: { ...emptyCampaign }, tiktok: { ...emptyCampaign } })
-  const [attempts, setAttempts] = useState<Record<Platform, Attempt | null>>({ facebook: null, tiktok: null })
+  const [campaigns, setCampaigns] = useState<Record<CampaignView, Campaign>>({
+    facebook: { ...emptyCampaign },
+    'facebook-live-rounds': { ...emptyCampaign, actions: { like: false, comment: true, share: false } },
+    tiktok: { ...emptyCampaign },
+  })
+  const [attempts, setAttempts] = useState<Record<CampaignView, Attempt | null>>({ facebook: null, 'facebook-live-rounds': null, tiktok: null })
   const [cancelling, setCancelling] = useState<string[]>([])
+  const [cancellingAll, setCancellingAll] = useState(false)
   const [notice, setNotice] = useState<{ text: string; error: boolean } | null>(null)
   const requestIds = useRef(new Map<string, string>())
   const mutationBusy = useRef(false)
@@ -184,9 +213,9 @@ function App() {
         setErrors((current) => ({ ...current, devices: '' }))
         setCampaigns((current) => {
           const next = { ...current }
-          for (const platform of ['facebook', 'tiktok'] as const) {
-            const ids = current[platform].deviceIds.filter((id) => data.devices.some((device) => device.id === id && device.connected))
-            if (ids.length !== current[platform].deviceIds.length) next[platform] = { ...current[platform], deviceIds: ids, reviewed: false }
+          for (const view of campaignViews) {
+            const ids = current[view].deviceIds.filter((id) => data.devices.some((device) => device.id === id && device.connected))
+            if (ids.length !== current[view].deviceIds.length) next[view] = { ...current[view], deviceIds: ids, reviewed: false }
           }
           return next
         })
@@ -196,6 +225,7 @@ function App() {
         setErrors((current) => ({ ...current, devices: errorMessage(error) }))
         setCampaigns((current) => ({
           facebook: { ...current.facebook, deviceIds: [], reviewed: false },
+          'facebook-live-rounds': { ...current['facebook-live-rounds'], deviceIds: [], reviewed: false },
           tiktok: { ...current.tiktok, deviceIds: [], reviewed: false },
         }))
       }),
@@ -235,57 +265,72 @@ function App() {
     requestAnimationFrame(() => heading.current?.focus())
   }
 
-  function updateCampaign(platform: Platform, patch: Partial<Campaign>) {
-    if ('urls' in patch && platform === 'facebook') {
+  function updateCampaign(view: CampaignView, patch: Partial<Campaign>) {
+    if ('urls' in patch && view !== 'tiktok') {
       contextRevision.current += 1
       for (const controller of contextRequests.current.values()) controller.abort()
       contextRequests.current.clear()
     }
     setCampaigns((current) => {
-      const previous = current[platform]
+      const previous = current[view]
       const next = { ...previous, reviewed: false, ...patch }
       if ('urls' in patch) {
         next.prepared = false
         next.publications = previous.publications.map((publication) => ({ ...publication, extracting: false }))
       }
       if (patch.deviceIds) {
-        next.publications = next.publications.map((publication) => ({ ...publication, comments: syncComments(publication.comments, patch.deviceIds!) }))
+        next.publications = next.publications.map((publication) => {
+          if (view !== 'facebook-live-rounds') return { ...publication, comments: syncComments(publication.comments, patch.deviceIds!) }
+          const comment = Object.values(publication.comments).find((text) => text.trim()) ?? ''
+          return { ...publication, comments: Object.fromEntries(patch.deviceIds!.map((deviceId) => [deviceId, comment])) }
+        })
         // Single default group follows the selection, as in the previous panel.
         if (previous.distribution.length === 1) next.distribution = [{ ...previous.distribution[0], count: patch.deviceIds.length }]
       }
-      return { ...current, [platform]: next }
+      return { ...current, [view]: next }
     })
   }
 
-  function updateDistribution(platform: Platform, id: string, patch: Partial<Distribution>) {
-    setCampaigns((current) => ({ ...current, [platform]: {
-      ...current[platform], reviewed: false,
-      distribution: current[platform].distribution.map((row) => row.id === id ? { ...row, ...patch } : row),
+  function updateDistribution(view: CampaignView, id: string, patch: Partial<Distribution>) {
+    setCampaigns((current) => ({ ...current, [view]: {
+      ...current[view], reviewed: false,
+      distribution: current[view].distribution.map((row) => row.id === id ? { ...row, ...patch } : row),
     } }))
   }
 
-  function updatePublication(platform: Platform, url: string, patch: Partial<DraftPublication>) {
-    setCampaigns((current) => ({ ...current, [platform]: {
-      ...current[platform], reviewed: false,
-      publications: current[platform].publications.map((publication) => publication.url === url ? { ...publication, ...patch } : publication),
+  function updatePublication(view: CampaignView, url: string, patch: Partial<DraftPublication>) {
+    setCampaigns((current) => ({ ...current, [view]: {
+      ...current[view], reviewed: false,
+      publications: current[view].publications.map((publication) => publication.url === url ? { ...publication, ...patch } : publication),
     } }))
   }
 
-  function updateComment(platform: Platform, url: string, deviceId: string, text: string) {
-    setCampaigns((current) => ({ ...current, [platform]: {
-      ...current[platform], reviewed: false,
-      publications: current[platform].publications.map((publication) => publication.url === url
+  function updateComment(view: CampaignView, url: string, deviceId: string, text: string) {
+    setCampaigns((current) => ({ ...current, [view]: {
+      ...current[view], reviewed: false,
+      publications: current[view].publications.map((publication) => publication.url === url
         ? { ...publication, comments: { ...publication.comments, [deviceId]: text } }
         : publication),
     } }))
   }
 
-  async function extractContext(url: string) {
-    const publication = campaigns.facebook.publications.find((item) => item.url === url)
-    if (!publication || contextRequests.current.has(url)) return
+  function updateRoundComment(url: string, text: string) {
+    setCampaigns((current) => ({ ...current, 'facebook-live-rounds': {
+      ...current['facebook-live-rounds'], reviewed: false,
+      publications: current['facebook-live-rounds'].publications.map((publication) => publication.url === url
+        ? { ...publication, comments: Object.fromEntries(current['facebook-live-rounds'].deviceIds.map((deviceId) => [deviceId, text])) }
+        : publication),
+    } }))
+  }
+
+  async function extractContext(view: CampaignView, url: string) {
+    if (view === 'tiktok') return
+    const requestKey = `${view}:${url}`
+    const publication = campaigns[view].publications.find((item) => item.url === url)
+    if (!publication || contextRequests.current.has(requestKey)) return
     const cached = contextCache.current.get(url)
     if (cached) {
-      updatePublication('facebook', url, {
+      updatePublication(view, url, {
         context: publication.context.trim() || cached.context.slice(0, 2000).trim(),
         aiContext: cached.context || publication.aiContext,
         contentType: cached.type,
@@ -295,8 +340,8 @@ function App() {
     }
     const controller = new AbortController()
     const revision = contextRevision.current
-    contextRequests.current.set(url, controller)
-    updatePublication('facebook', url, { extracting: true, error: '' })
+    contextRequests.current.set(requestKey, controller)
+    updatePublication(view, url, { extracting: true, error: '' })
     try {
       const result = await api<{ url: string; context: string; type: ContentType; resolvedUrl: string; source: 'playwright' }>('/api/context', {
         method: 'POST', body: JSON.stringify({ url }), signal: controller.signal, timeoutMs: 30_000,
@@ -305,9 +350,9 @@ function App() {
       if (result.url !== url || result.source !== 'playwright' || !['post', 'reel', 'video', 'live'].includes(result.type)) throw new Error('Playwright no pudo clasificar la publicación.')
       if (result.context.length > 2000) throw new Error('El contexto supera los 2000 caracteres. Pega una versión más breve.')
       contextCache.current.set(url, { context: result.context, type: result.type })
-      setCampaigns((current) => ({ ...current, facebook: {
-        ...current.facebook, reviewed: false,
-        publications: current.facebook.publications.map((item) => item.url === url
+      setCampaigns((current) => ({ ...current, [view]: {
+        ...current[view], reviewed: false,
+        publications: current[view].publications.map((item) => item.url === url
           ? {
               ...item,
               context: item.context.trim() || result.context.slice(0, 2000).trim(),
@@ -318,11 +363,11 @@ function App() {
           : item),
       } }))
     } catch (error) {
-      if (!controller.signal.aborted && revision === contextRevision.current) updatePublication('facebook', url, { error: errorMessage(error) })
+      if (!controller.signal.aborted && revision === contextRevision.current) updatePublication(view, url, { error: errorMessage(error) })
     } finally {
-      if (contextRequests.current.get(url) === controller) {
-        contextRequests.current.delete(url)
-        updatePublication('facebook', url, { extracting: false })
+      if (contextRequests.current.get(requestKey) === controller) {
+        contextRequests.current.delete(requestKey)
+        updatePublication(view, url, { extracting: false })
       }
     }
   }
@@ -370,24 +415,26 @@ function App() {
     }
   }
 
-  async function send(platform: Platform, retry?: SubmissionRequest) {
+  async function send(view: CampaignView, retry?: SubmissionRequest) {
     if (mutationBusy.current || refreshing) return
-    const campaign = campaigns[platform]
+    const platform = campaignPlatform(view)
+    const campaign = campaigns[view]
     const hasActions = Object.values(campaign.actions).some(Boolean)
-    const workflow = retry ? (retry.kind === 'open' ? 'open-content' : platform) : hasActions ? platform : 'open-content'
+    const roundMode = view === 'facebook-live-rounds'
+    const workflow = retry ? requestWorkflow(retry) : roundMode ? 'facebook-live-rounds' : hasActions ? platform : 'open-content'
     if (!settings?.workflows[workflow] || !devices) return
     let request = retry
     if (!request) {
       if (!campaign.prepared || !campaign.reviewed || campaign.publications.some((publication) => publication.extracting)) return
       const urls = campaign.urls.split('\n').map((url) => url.trim()).filter(Boolean)
-      const problem = urlProblem(urls, platform, hasActions)
+      const problem = urlProblem(urls, platform, hasActions) || (roundMode && urls.length !== 1 ? 'Las rondas requieren un único Live de Facebook.' : '')
       const deviceIds = devices.devices.filter((device) => device.connected && campaign.deviceIds.includes(device.id)).map((device) => device.id)
       if (problem || !deviceIds.length || deviceIds.length !== campaign.deviceIds.length) {
         setNotice({ text: problem || 'Selecciona de nuevo los dispositivos conectados.', error: true })
         return
       }
       const commentLimit = platform === 'tiktok' ? 150 : 500
-      if (campaign.actions.comment && !commentProfiles(campaign)) {
+      if (campaign.actions.comment && !roundMode && !commentProfiles(campaign)) {
         setNotice({ text: `La distribución debe cubrir los ${campaign.deviceIds.length} dispositivos seleccionados.`, error: true })
         return
       }
@@ -399,18 +446,22 @@ function App() {
         setNotice({ text: `Revisa el contexto y los comentarios: un comentario por dispositivo, máximo ${commentLimit} caracteres.`, error: true })
         return
       }
+      if (roundMode && campaign.publications.some((publication) => new Set(campaign.deviceIds.map((deviceId) => publication.comments[deviceId]?.trim())).size !== 1)) {
+        setNotice({ text: 'Las rondas deben usar el mismo comentario en todos los dispositivos.', error: true })
+        return
+      }
       const scheduledAt = campaign.schedule ? new Date(campaign.schedule).getTime() : null
       if (scheduledAt !== null && (!Number.isFinite(scheduledAt) || scheduledAt < 0)) {
         setNotice({ text: 'Elige una fecha y hora válidas.', error: true })
         return
       }
       const payload = {
-        platform, kind: hasActions ? 'actions' as const : 'open' as const, deviceIds,
+        platform, kind: roundMode ? 'live_rounds' as const : hasActions ? 'actions' as const : 'open' as const, deviceIds,
         publications: campaign.publications.map(({ url, context, comments }) => ({
           url, context,
           comments: campaign.actions.comment ? Object.fromEntries(campaign.deviceIds.map((deviceId) => [deviceId, comments[deviceId] ?? ''])) : {},
         })),
-        actions: { ...campaign.actions }, scheduledAt,
+        actions: { ...campaign.actions }, rounds: roundMode ? campaign.rounds : 1, scheduledAt,
       }
       const signature = JSON.stringify(payload)
       const requestId = requestIds.current.get(signature) ?? crypto.randomUUID()
@@ -421,12 +472,14 @@ function App() {
       setNotice({ text: 'Hay equipos de esta solicitud sin conexión. Revisa Envíos antes de modificar el borrador.', error: true })
       return
     }
-    const summary = `${views[platform].title}: ${request.deviceIds.length} equipos × ${request.publications.length} publicaciones.\n${actionLabel(request.actions, platform)}.\n${request.scheduledAt === null || request.scheduledAt <= Date.now() + serverOffset.current ? 'Ahora' : `Horario aleatorio entre ahora y ${formatDate(request.scheduledAt)}`}.`
-    if (!window.confirm(`${retry ? 'Revisa Envíos y pulsa Actualizar antes de reintentar. Se usará la misma solicitud.\n\n' : ''}${summary}\n\n${request.kind === 'actions' ? 'Las acciones serán públicas. ¿Confirmar envío?' : 'Solo se abrirá el contenido, sin interacciones. ¿Confirmar envío?'}`)) return
+    const summary = request.kind === 'live_rounds'
+      ? `${views[view].title}: ${request.rounds} rondas × ${request.deviceIds.length} equipos, en secuencia.\nMismo comentario en un Live.\n${request.scheduledAt === null || request.scheduledAt <= Date.now() + serverOffset.current ? 'Ahora' : `Inicio aleatorio entre ahora y ${formatDate(request.scheduledAt)}`}.`
+      : `${views[platform].title}: ${request.deviceIds.length} equipos × ${request.publications.length} publicaciones.\n${actionLabel(request.actions, platform)}.\n${request.scheduledAt === null || request.scheduledAt <= Date.now() + serverOffset.current ? 'Ahora' : `Horario aleatorio entre ahora y ${formatDate(request.scheduledAt)}`}.`
+    if (!window.confirm(`${retry ? 'Revisa Envíos y pulsa Actualizar antes de reintentar. Se usará la misma solicitud.\n\n' : ''}${summary}\n\n${request.kind !== 'open' ? 'Las acciones serán públicas. ¿Confirmar envío?' : 'Solo se abrirá el contenido, sin interacciones. ¿Confirmar envío?'}`)) return
     mutationBusy.current = true
     const body = request
     setNotice(null)
-    setAttempts((current) => ({ ...current, [platform]: { request: body, state: 'sending', message: '' } }))
+    setAttempts((current) => ({ ...current, [view]: { request: body, state: 'sending', message: '' } }))
     try {
       const result = await api<{ submissions: Submission[] }>('/api/submissions', {
         method: 'POST', body: JSON.stringify(body), timeoutMs: 300_000,
@@ -434,10 +487,10 @@ function App() {
       setSubmissions((current) => current ? {
         ...current, submissions: [...result.submissions, ...current.submissions.filter((item) => !result.submissions.some((submitted) => submitted.id === item.id))],
       } : { submissions: result.submissions, serverTime: Date.now() + serverOffset.current })
-      setAttempts((current) => ({ ...current, [platform]: { request: body, state: 'accepted', message: 'Solicitud registrada. Consulta su estado en Envíos.' } }))
+      setAttempts((current) => ({ ...current, [view]: { request: body, state: 'accepted', message: 'Solicitud registrada. Consulta su estado en Envíos.' } }))
     } catch (error) {
       const uncertain = !(error instanceof ApiError) || error.status >= 500 || error.status === 408
-      setAttempts((current) => ({ ...current, [platform]: {
+      setAttempts((current) => ({ ...current, [view]: {
         request: body, state: uncertain ? 'uncertain' : 'rejected',
         message: `${errorMessage(error)}${uncertain ? ' No se confirmó la recepción. Revisa Envíos y pulsa Actualizar antes de reintentar. No se reenviará automáticamente.' : ''}`,
       } }))
@@ -466,25 +519,56 @@ function App() {
     }
   }
 
-  const platform = activeView === 'facebook' || activeView === 'tiktok' ? activeView : null
-  const campaign = platform ? campaigns[platform] : null
-  const attempt = platform ? attempts[platform] : null
+  async function cancelAllSubmissions() {
+    if (refreshing || errors.submissions || cancellingAll || !submissions) return
+    const pending = submissions.submissions.filter((submission) => submission.status === 'scheduled')
+    if (!pending.length) {
+      setNotice({ text: 'No hay envíos programados para cancelar.', error: false })
+      return
+    }
+    if (!window.confirm(`¿Cancelar los ${pending.length} envíos programados?\nSolo cancela filas locales; no detiene tareas en GenFarmer.`)) return
+    setCancellingAll(true)
+    setNotice(null)
+    const failed: string[] = []
+    for (const submission of pending) {
+      try {
+        const result = await api<{ submission: Submission }>(`/api/submissions/${encodeURIComponent(submission.id)}`, { method: 'DELETE' })
+        setSubmissions((current) => current && { ...current, submissions: current.submissions.map((item) => item.id === result.submission.id ? result.submission : item) })
+      } catch {
+        failed.push(`#${submission.deviceOrder} ${submission.deviceName}`)
+      }
+    }
+    setCancellingAll(false)
+    if (failed.length) setNotice({ text: `No se pudieron cancelar: ${failed.join(', ')}. Revisa Envíos y pulsa Actualizar.`, error: true })
+    else setNotice({ text: `${pending.length} envíos cancelados. No se detienen tareas en GenFarmer.`, error: false })
+    refresh()
+  }
+
+  const campaignView = activeView === 'facebook' || activeView === 'facebook-live-rounds' || activeView === 'tiktok' ? activeView : null
+  const platform = campaignView ? campaignPlatform(campaignView) : null
+  const campaign = campaignView ? campaigns[campaignView] : null
+  const attempt = campaignView ? attempts[campaignView] : null
   const urls = campaign?.urls.split('\n').map((url) => url.trim()).filter(Boolean) ?? []
   const connected = devices?.devices.filter((device) => device.connected) ?? []
   const hasActions = campaign ? Object.values(campaign.actions).some(Boolean) : false
-  const problem = platform ? urlProblem(urls, platform, hasActions) : ''
-  const workflow = hasActions && platform ? platform : 'open-content'
+  const roundMode = campaignView === 'facebook-live-rounds'
+  const problem = platform ? urlProblem(urls, platform, hasActions) || (roundMode && urls.length !== 1 ? 'Las rondas requieren un único Live de Facebook.' : '') : ''
+  const workflow: Workflow = roundMode ? 'facebook-live-rounds' : hasActions && platform ? platform : 'open-content'
   const missingWorkflow = settings && !settings.workflows[workflow]
   const locked = attempt?.state === 'sending' || attempt?.state === 'accepted' || attempt?.state === 'uncertain'
   const anySending = Object.values(attempts).some((item) => item?.state === 'sending')
   const extracting = campaign?.publications.some((publication) => publication.extracting)
   const profiles = campaign ? commentProfiles(campaign) : null
   const groups = campaign ? deviceGroups(campaign) : null
-  const distributionReady = !campaign?.actions.comment || (!!profiles && campaign.distribution.every((row) => row.count > 0 && !!row.intention.trim()))
+  const distributionReady = roundMode || !campaign?.actions.comment || (!!profiles && campaign.distribution.every((row) => row.count > 0 && !!row.intention.trim()))
   const missingComment = campaign?.actions.comment && campaign.publications.some((publication) =>
     campaign.deviceIds.some((deviceId) => !(publication.comments[deviceId] ?? '').trim()))
+  const roundCommentsMatch = !roundMode || !!campaign && campaign.publications.every((publication) =>
+    new Set(campaign.deviceIds.map((deviceId) => publication.comments[deviceId]?.trim())).size === 1)
+  const roundLimit = Math.max(1, Math.floor(200 / Math.max(1, campaign?.deviceIds.length ?? 0)))
+  const roundCountReady = !roundMode || !!campaign && campaign.rounds <= roundLimit
   const canSend = !!campaign?.prepared && campaign.reviewed && !!campaign.deviceIds.length && !problem &&
-    !!devices && !!settings?.workflows[workflow] && !refreshing && !anySending && !locked && !extracting && !missingComment && distributionReady
+    !!devices && !!settings?.workflows[workflow] && !refreshing && !anySending && !locked && !extracting && !missingComment && distributionReady && roundCommentsMatch && roundCountReady
   const genfarmerLink = settings?.genfarmerUrl && /^https?:\/\//i.test(settings.genfarmerUrl) ? settings.genfarmerUrl : null
 
   return (
@@ -521,27 +605,27 @@ function App() {
             </>}
           </section>}
 
-          {platform && campaign && <div className="campaign-view">
+          {campaignView && platform && campaign && <div className="campaign-view">
             <fieldset className="campaign-fields" disabled={!!locked}>
-              <legend className="sr-only">Preparar envío de {views[platform].title}</legend>
+              <legend className="sr-only">Preparar envío de {views[campaignView].title}</legend>
               <section className="work-section setup-section">
                 <div className="section-heading"><h2><span className="step-number">1</span>Prepara</h2></div>
                 <div className="setup-grid">
                   <fieldset className="device-picker" disabled={refreshing || !devices}>
                     <legend>Dispositivos <span className="field-help">{campaign.deviceIds.length} seleccionados</span></legend>
                     {errors.devices ? <p className="field-error" role="alert">{errors.devices} Pulsa Actualizar para volver a elegir equipos.</p> : !devices ? <p className="field-help">Consultando dispositivos…</p> : !devices.devices.length ? <p className="field-help">GenFarmer no tiene dispositivos. Conéctalos y pulsa Actualizar.</p> : <>
-                      <button className="text-button select-all" disabled={!connected.length} onClick={() => updateCampaign(platform, { deviceIds: campaign.deviceIds.length === connected.length ? [] : connected.map((device) => device.id) })}>{campaign.deviceIds.length === connected.length && connected.length ? 'Quitar selección' : 'Seleccionar conectados'}</button>
+                      <button className="text-button select-all" disabled={!connected.length} onClick={() => updateCampaign(campaignView, { deviceIds: campaign.deviceIds.length === connected.length ? [] : connected.map((device) => device.id) })}>{campaign.deviceIds.length === connected.length && connected.length ? 'Quitar selección' : 'Seleccionar conectados'}</button>
                       <div className="choice-list">{devices.devices.map((device) => <label className={`device-choice ${device.connected ? '' : 'unavailable'}`} key={device.id}>
-                        <input type="checkbox" disabled={!device.connected} checked={campaign.deviceIds.includes(device.id)} onChange={() => updateCampaign(platform, { deviceIds: campaign.deviceIds.includes(device.id) ? campaign.deviceIds.filter((id) => id !== device.id) : [...campaign.deviceIds, device.id] })} />
+                        <input type="checkbox" disabled={!device.connected} checked={campaign.deviceIds.includes(device.id)} onChange={() => updateCampaign(campaignView, { deviceIds: campaign.deviceIds.includes(device.id) ? campaign.deviceIds.filter((id) => id !== device.id) : [...campaign.deviceIds, device.id] })} />
                         <span className="device-order">#{device.order}</span><span className="device-identity"><strong>{device.name}</strong><code>{device.serial}</code>{!device.connected && <small>Sin conexión</small>}</span>
                       </label>)}</div>
                     </>}
                   </fieldset>
                   <div className="url-field">
-                    <label htmlFor={`${platform}-urls`}>Publicaciones <span className="field-help">{urls.length} / 10</span></label>
-                    <textarea id={`${platform}-urls`} className="url-input" value={campaign.urls} placeholder={platform === 'facebook' ? 'https://www.facebook.com/…' : 'https://www.tiktok.com/…'} onChange={(event) => updateCampaign(platform, { urls: event.target.value })} aria-describedby={`${platform}-url-help`} aria-invalid={!!urls.length && !!problem} spellCheck={false} />
-                    <p id={`${platform}-url-help`} className={urls.length && problem ? 'field-error' : 'field-help'}>{urls.length && problem ? problem : 'Una URL por línea. Máximo 10.'}</p>
-                    <button className="primary-button" disabled={!campaign.deviceIds.length || !!problem || !devices || refreshing} onClick={() => updateCampaign(platform, {
+                    <label htmlFor={`${campaignView}-urls`}>{roundMode ? 'Live de Facebook' : 'Publicaciones'} <span className="field-help">{urls.length} / {roundMode ? 1 : 10}</span></label>
+                    <textarea id={`${campaignView}-urls`} className="url-input" value={campaign.urls} placeholder={platform === 'facebook' ? 'https://www.facebook.com/…' : 'https://www.tiktok.com/…'} onChange={(event) => updateCampaign(campaignView, { urls: event.target.value })} aria-describedby={`${campaignView}-url-help`} aria-invalid={!!urls.length && !!problem} spellCheck={false} />
+                    <p id={`${campaignView}-url-help`} className={urls.length && problem ? 'field-error' : 'field-help'}>{urls.length && problem ? problem : roundMode ? 'Un único enlace de Facebook Live.' : 'Una URL por línea. Máximo 10.'}</p>
+                    <button className="primary-button" disabled={!campaign.deviceIds.length || !!problem || !devices || refreshing} onClick={() => updateCampaign(campaignView, {
                       prepared: true,
                       publications: urls.map((url) => {
                         const existing = campaign.publications.find((publication) => publication.url === url)
@@ -559,45 +643,46 @@ function App() {
                 <section className="work-section review-section">
                   <div className="section-heading"><h2><span className="step-number">2</span>Revisa</h2></div>
                   <fieldset className="action-picker"><legend>Acciones</legend>
-                    {(['like', 'comment', 'share'] as const).map((action) => <label key={action}><input type="checkbox" checked={campaign.actions[action]} onChange={(event) => updateCampaign(platform, { actions: { ...campaign.actions, [action]: event.target.checked } })} />{action === 'like' ? 'Like' : action === 'comment' ? 'Comentar' : platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)'}</label>)}
+                    {roundMode ? <label><input type="checkbox" checked disabled />Comentar en Live</label> : (['like', 'comment', 'share'] as const).map((action) => <label key={action}><input type="checkbox" checked={campaign.actions[action]} onChange={(event) => updateCampaign(campaignView, { actions: { ...campaign.actions, [action]: event.target.checked } })} />{action === 'like' ? 'Like' : action === 'comment' ? 'Comentar' : platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)'}</label>)}
                   </fieldset>
-                  <p className="field-help">{hasActions ? 'Se enviará una sola solicitud con las acciones elegidas.' : 'Sin acciones seleccionadas, solo se abre el contenido.'}</p>
-                  {campaign.actions.comment && <section className="distribution-card" aria-label="Distribución de intenciones">
+                  <p className="field-help">{roundMode ? 'Cada ejecución comenta una vez; Farm espera su finalización antes de iniciar el siguiente dispositivo.' : hasActions ? 'Se enviará una sola solicitud con las acciones elegidas.' : 'Sin acciones seleccionadas, solo se abre el contenido.'}</p>
+                  {campaign.actions.comment && !roundMode && <section className="distribution-card" aria-label="Distribución de intenciones">
                     <div className="context-heading">
                       <strong>Distribución de comentarios</strong>
                       <span className="field-help">{distributionTotal(campaign.distribution)} de {campaign.deviceIds.length} dispositivos</span>
                     </div>
-                    <div className="distribution-head" aria-hidden="true"><span>Intención</span><span>Tono</span><span>Cantidad</span><span /></div>
-                    {campaign.distribution.map((row) => <div className="distribution-row" key={row.id}>
-                      <input aria-label="Intención" type="text" maxLength={300} value={row.intention} onChange={(event) => updateDistribution(platform, row.id, { intention: event.target.value })} />
-                      <select aria-label="Tono" value={row.tone} onChange={(event) => updateDistribution(platform, row.id, { tone: event.target.value as Tone })}>{tones.map((tone) => <option key={tone} value={tone}>{tone}</option>)}</select>
-                      <input aria-label="Cantidad" type="number" min={0} max={campaign.deviceIds.length} value={row.count} onChange={(event) => updateDistribution(platform, row.id, { count: Math.max(0, Math.min(campaign.deviceIds.length, Math.floor(Number(event.target.value) || 0))) })} />
-                      <button className="text-button" aria-label="Eliminar intención" disabled={campaign.distribution.length === 1} onClick={() => updateCampaign(platform, { distribution: campaign.distribution.filter((item) => item.id !== row.id) })}>×</button>
+                  <div className="distribution-head" aria-hidden="true"><span>Intención</span><span>Tono</span><span>Cantidad</span><span /></div>
+                  <datalist id="intention-options">{intentions.map(([intention, description]) => <option key={intention} value={intention} label={description} />)}</datalist>
+                  {campaign.distribution.map((row) => <div className="distribution-row" key={row.id}>
+                      <input aria-label="Intención" type="text" list="intention-options" maxLength={300} value={row.intention} onChange={(event) => updateDistribution(campaignView, row.id, { intention: event.target.value })} />
+                      <select aria-label="Tono" value={row.tone} onChange={(event) => updateDistribution(campaignView, row.id, { tone: event.target.value as Tone })}>{tones.map((tone) => <option key={tone} value={tone}>{tone}</option>)}</select>
+                      <input aria-label="Cantidad" type="number" min={0} max={campaign.deviceIds.length} value={row.count} onChange={(event) => updateDistribution(campaignView, row.id, { count: Math.max(0, Math.min(campaign.deviceIds.length, Math.floor(Number(event.target.value) || 0))) })} />
+                      <button className="text-button" aria-label="Eliminar intención" disabled={campaign.distribution.length === 1} onClick={() => updateCampaign(campaignView, { distribution: campaign.distribution.filter((item) => item.id !== row.id) })}>×</button>
                     </div>)}
                     <div className="distribution-actions">
-                      <button className="text-button" onClick={() => updateCampaign(platform, { distribution: [...campaign.distribution, { id: crypto.randomUUID(), intention: 'Nueva intención', tone: 'Cercano', count: 0 }] })}>Agregar intención</button>
-                      <button className="text-button" onClick={() => updateCampaign(platform, { distribution: campaign.distribution.map((row, position) => position === 0 ? { ...row, count: campaign.deviceIds.length } : row) })}>Aplicar como predeterminado</button>
+                      <button className="text-button" onClick={() => updateCampaign(campaignView, { distribution: [...campaign.distribution, { id: crypto.randomUUID(), intention: 'Nueva intención', tone: 'Cercano', count: 0 }] })}>Agregar intención</button>
+                      <button className="text-button" onClick={() => updateCampaign(campaignView, { distribution: campaign.distribution.map((row, position) => position === 0 ? { ...row, count: campaign.deviceIds.length } : row) })}>Aplicar como predeterminado</button>
                     </div>
                     {!distributionReady && <p className="field-error" role="alert">Cada grupo necesita intención y al menos 1 dispositivo; la suma debe coincidir con los {campaign.deviceIds.length} seleccionados.</p>}
                   </section>}
-                  <p className="context-note">{platform === 'facebook' ? 'Playwright detecta si cada enlace es publicación, Reel, video o Live. El contexto se usa sólo para generar comentarios con IA, no para verificar el destino en el teléfono.' : 'Pega el texto visible de la publicación; "Generar con IA" usa ese contexto con DeepSeek.'}</p>
+                  <p className="context-note">{roundMode ? 'Playwright confirmará que el enlace corresponde a un Live antes de crear las rondas.' : platform === 'facebook' ? 'Playwright detecta si cada enlace es publicación, Reel, video o Live. El contexto se usa sólo para generar comentarios con IA, no para verificar el destino en el teléfono.' : 'Pega el texto visible de la publicación; "Generar con IA" usa ese contexto con DeepSeek.'}</p>
                   <ol className="publication-list">{campaign.publications.map((publication, index) => <li key={publication.url}>
                     <div className="publication-heading"><span className="device-order">{String(index + 1).padStart(2, '0')}</span><a href={publication.url} target="_blank" rel="noreferrer">{publication.url}<span className="sr-only"> (abre otra pestaña)</span></a></div>
-                    <div className="context-heading"><label htmlFor={`${platform}-context-${index}`}>{platform === 'facebook' ? 'Contexto para comentarios con IA' : 'Texto visible exacto para verificar el destino'} <span className="field-help">opcional · {publication.context.length}/2000</span></label>
-                      {platform === 'facebook' && <button className="text-button" disabled={publication.extracting || !!publication.contentType} onClick={() => void extractContext(publication.url)}>{publication.extracting ? 'Detectando…' : 'Detectar tipo y contexto'}</button>}
+                    <div className="context-heading"><label htmlFor={`${campaignView}-context-${index}`}>{platform === 'facebook' ? 'Contexto para comentarios con IA' : 'Texto visible exacto para verificar el destino'} <span className="field-help">opcional · {publication.context.length}/2000</span></label>
+                      {platform === 'facebook' && <button className="text-button" disabled={publication.extracting || !!publication.contentType} onClick={() => void extractContext(campaignView, publication.url)}>{publication.extracting ? 'Detectando…' : 'Detectar tipo y contexto'}</button>}
                     </div>
                     {platform === 'facebook' && <p className="field-help">{publication.contentType ? `Tipo detectado: ${publication.contentType}` : 'El tipo se detectará con Playwright antes de enviar.'}</p>}
-                    <textarea id={`${platform}-context-${index}`} rows={3} maxLength={2000} value={publication.context} onChange={(event) => updatePublication(platform, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${platform}-context-error-${index}` : undefined} placeholder={platform === 'facebook' ? 'Contexto opcional para generar comentarios' : 'Pega un fragmento exacto visible en esta publicación'} />
+                    <textarea id={`${campaignView}-context-${index}`} rows={3} maxLength={2000} value={publication.context} onChange={(event) => updatePublication(campaignView, publication.url, { context: event.target.value, error: '' })} aria-describedby={publication.error ? `${campaignView}-context-error-${index}` : undefined} placeholder={platform === 'facebook' ? 'Contexto opcional para generar comentarios' : 'Pega un fragmento exacto visible en esta publicación'} />
                     {publication.aiContext.length > publication.context.length && <p className="field-help">La IA usará el texto completo extraído ({publication.aiContext.length} caracteres).</p>}
-                    {publication.error && <p className="field-error" role="alert" id={`${platform}-context-error-${index}`}>{publication.error}</p>}
+                    {publication.error && <p className="field-error" role="alert" id={`${campaignView}-context-error-${index}`}>{publication.error}</p>}
                     {campaign.actions.comment && <div className="comment-field">
                       <div className="context-heading">
-                        <span className="field-help">Un comentario por dispositivo · {platform === 'tiktok' ? 150 : 500} caracteres · una línea</span>
-                        <button className="text-button" disabled={publication.generating || !!locked || !campaign.deviceIds.length} onClick={() => void generateComments(platform, publication.url)}>{publication.generating ? 'Generando…' : 'Generar con IA'}</button>
+                        <span className="field-help">{roundMode ? 'Mismo comentario para todas las rondas y dispositivos' : 'Un comentario por dispositivo'} · {platform === 'tiktok' ? 150 : 500} caracteres · una línea</span>
+                        {!roundMode && <button className="text-button" disabled={publication.generating || !!locked || !campaign.deviceIds.length} onClick={() => void generateComments(platform, publication.url)}>{publication.generating ? 'Generando…' : 'Generar con IA'}</button>}
                       </div>
-                      {!(publication.aiContext.trim() || publication.context.trim()) && <p className="field-help">Añade el texto visible para que la IA tenga contexto.</p>}
+                      {!roundMode && !(publication.aiContext.trim() || publication.context.trim()) && <p className="field-help">Añade el texto visible para que la IA tenga contexto.</p>}
                       {publication.generateError && <p className="field-error" role="alert">{publication.generateError}</p>}
-                      {!campaign.deviceIds.length ? <p className="field-help">Selecciona dispositivos para preparar sus comentarios.</p> : <details className="comments-details">
+                      {!campaign.deviceIds.length ? <p className="field-help">Selecciona dispositivos para preparar sus comentarios.</p> : roundMode ? <input aria-label="Comentario para todas las rondas y dispositivos" type="text" maxLength={500} value={publication.comments[campaign.deviceIds[0]] ?? ''} onChange={(event) => updateRoundComment(publication.url, event.target.value.replace(/[\r\n]+/g, ' '))} placeholder="Mismo comentario para todas las rondas y dispositivos" /> : <details className="comments-details">
                         <summary>Comentarios por dispositivo <span className="field-help">{campaign.deviceIds.filter((deviceId) => (publication.comments[deviceId] ?? '').trim()).length}/{campaign.deviceIds.length} listos</span></summary>
                         <ul className="device-comments">{campaign.deviceIds.map((deviceId) => {
                         const device = devices?.devices.find((item) => item.id === deviceId)
@@ -608,7 +693,7 @@ function App() {
                           <span className="device-order">#{device?.order ?? '?'}</span>
                           <div className="device-comment-body">
                             <span className="field-help">{group ? `${group.intention.trim() || 'Reacción natural'} · ${group.tone}` : 'Sin grupo asignado'}</span>
-                            <input id={prefix} aria-label={`Comentario para ${device?.name ?? deviceId}`} type="text" maxLength={platform === 'tiktok' ? 150 : 500} value={text} onChange={(event) => updateComment(platform, publication.url, deviceId, event.target.value.replace(/[\r\n]+/g, ' '))} placeholder="Comentario para este dispositivo" />
+                            <input id={prefix} aria-label={`Comentario para ${device?.name ?? deviceId}`} type="text" maxLength={platform === 'tiktok' ? 150 : 500} value={text} onChange={(event) => updateComment(campaignView, publication.url, deviceId, event.target.value.replace(/[\r\n]+/g, ' '))} placeholder="Comentario para este dispositivo" />
                           </div>
                         </li>
                       })}</ul></details>}
@@ -617,10 +702,11 @@ function App() {
                 </section>
                 <section className="work-section send-section">
                   <div className="section-heading"><h2><span className="step-number">3</span>Envía</h2></div>
-                  <div className="schedule-field"><label htmlFor={`${platform}-schedule`}>Programar aleatoriamente hasta <span className="field-help">opcional</span></label><div className="schedule-input"><input id={`${platform}-schedule`} type="datetime-local" value={campaign.schedule} onChange={(event) => updateCampaign(platform, { schedule: event.target.value })} />{campaign.schedule && <button className="text-button" onClick={() => updateCampaign(platform, { schedule: '' })}>Quitar fecha</button>}</div><p className="field-help">Hora local. Cada tarea se programa al azar entre ahora y esta hora límite. Sin fecha o si ya pasó, se envía ahora. Las pendientes vencidas se envían en cuanto el equipo queda libre. Mantén el backend abierto.</p></div>
-                  <label className="review-check"><input type="checkbox" checked={campaign.reviewed} disabled={extracting} onChange={(event) => updateCampaign(platform, { reviewed: event.target.checked })} />He revisado las URLs, el contexto opcional y los comentarios.</label>
+                  {roundMode && <div className="schedule-field"><label htmlFor="facebook-rounds">Número de rondas</label><div className="schedule-input"><input id="facebook-rounds" type="number" min={1} max={roundLimit} value={campaign.rounds} onChange={(event) => updateCampaign(campaignView, { rounds: Math.max(1, Math.min(roundLimit, Math.floor(Number(event.target.value) || 1))) })} /></div><p className={roundCountReady ? 'field-help' : 'field-error'}>Máximo {roundLimit} rondas con {campaign.deviceIds.length} equipos; 200 ejecuciones en total. Orden: todos los equipos de la ronda 1, luego ronda 2.</p></div>}
+                  <div className="schedule-field"><label htmlFor={`${campaignView}-schedule`}>Programar aleatoriamente hasta <span className="field-help">opcional</span></label><div className="schedule-input"><input id={`${campaignView}-schedule`} type="datetime-local" value={campaign.schedule} onChange={(event) => updateCampaign(campaignView, { schedule: event.target.value })} />{campaign.schedule && <button className="text-button" onClick={() => updateCampaign(campaignView, { schedule: '' })}>Quitar fecha</button>}</div><p className="field-help">Hora local. {roundMode ? 'La primera ronda comienza al azar dentro del intervalo; las demás esperan la ejecución anterior.' : 'Cada tarea se programa al azar entre ahora y esta hora límite.'} Sin fecha o si ya pasó, se envía ahora. Mantén el backend abierto.</p></div>
+                  <label className="review-check"><input type="checkbox" checked={campaign.reviewed} disabled={extracting} onChange={(event) => updateCampaign(campaignView, { reviewed: event.target.checked })} />He revisado las URLs, el contexto opcional y los comentarios.</label>
                   {missingComment && <p className="field-error">Escribe un comentario para cada dispositivo y publicación.</p>}
-                  <div className="send-bar"><div><strong>{campaign.deviceIds.length} equipos <span aria-hidden="true">×</span> {campaign.publications.length} publicaciones</strong><span>{actionLabel(campaign.actions, platform)}</span></div><div className="send-buttons"><button className={hasActions ? 'secondary-button' : 'primary-button'} disabled={!canSend || hasActions} onClick={() => void send(platform)}>Abrir contenido</button><button className={hasActions ? 'primary-button' : 'secondary-button'} disabled={!canSend || !hasActions} onClick={() => void send(platform)}>Enviar acciones</button></div></div>
+                  <div className="send-bar"><div><strong>{roundMode ? `${campaign.rounds} rondas × ${campaign.deviceIds.length} equipos` : `${campaign.deviceIds.length} equipos × ${campaign.publications.length} publicaciones`}</strong><span>{roundMode ? 'Mismo comentario · Secuencial' : actionLabel(campaign.actions, platform)}</span></div><div className="send-buttons"><button className={hasActions ? 'secondary-button' : 'primary-button'} disabled={!canSend || hasActions} onClick={() => void send(campaignView)}>Abrir contenido</button><button className={hasActions ? 'primary-button' : 'secondary-button'} disabled={!canSend || !hasActions} onClick={() => void send(campaignView)}>{roundMode ? 'Iniciar rondas' : 'Enviar acciones'}</button></div></div>
                 </section>
               </>}
             </fieldset>
@@ -628,23 +714,23 @@ function App() {
             {attempt && <section className={`attempt-result ${attempt.state === 'uncertain' || attempt.state === 'rejected' ? 'error' : ''}`} aria-label="Resultado de la solicitud">
               <p role={attempt.state === 'uncertain' || attempt.state === 'rejected' ? 'alert' : 'status'}>{attempt.state === 'sending' ? 'Enviando…' : attempt.message}</p>
               {attempt.state !== 'sending' && <div className="result-actions"><button onClick={() => navigate('submissions')}>Ver envíos</button>
-                {attempt.state === 'uncertain' && <button disabled={refreshing || anySending || !devices || !settings?.workflows[attempt.request.kind === 'open' ? 'open-content' : platform]} onClick={() => void send(platform, attempt.request)}>Reintentar misma solicitud</button>}
+                {attempt.state === 'uncertain' && <button disabled={refreshing || anySending || !devices || !settings?.workflows[requestWorkflow(attempt.request)]} onClick={() => void send(campaignView, attempt.request)}>Reintentar misma solicitud</button>}
                 {attempt.state !== 'rejected' && <button className="text-button" onClick={() => {
                   if (attempt.state === 'uncertain' && !window.confirm('La solicitud anterior podría haberse recibido. Revisa Envíos antes de cambiarla: un contenido distinto creará otro envío. ¿Volver al borrador?')) return
-                  setAttempts((current) => ({ ...current, [platform]: null }))
-                  updateCampaign(platform, { reviewed: false })
+                  setAttempts((current) => ({ ...current, [campaignView]: null }))
+                  updateCampaign(campaignView, { reviewed: false })
                 }}>Editar borrador</button>}
               </div>}
             </section>}
           </div>}
 
           {activeView === 'submissions' && <section className="work-section" aria-label="Lista de envíos" aria-busy={refreshing}>
-            <div className="section-heading"><h2>Estado de envíos</h2>{submissions && <span className="field-help">Consulta: {formatDate(submissions.serverTime)}</span>}</div>
+            <div className="section-heading"><h2>Estado de envíos</h2>{submissions && <span className="field-help">Consulta: {formatDate(submissions.serverTime)}</span>}{submissions && <button className="text-button" disabled={!submissions.submissions.some((item) => item.status === 'scheduled') || refreshing || !!errors.submissions || cancellingAll} onClick={() => void cancelAllSubmissions()}>{cancellingAll ? 'Cancelando…' : `Cancelar todos (${submissions.submissions.filter((item) => item.status === 'scheduled').length})`}</button>}</div>
             <p className="field-help">Programado puede estar esperando la hora o el run anterior del equipo. Enviado no significa acción completada. Revisa resultados en GenFarmer.</p>
             {errors.submissions && <p className="notice error" role="alert">{errors.submissions} Pulsa Actualizar.{submissions ? ' La lista conserva la última consulta; puede estar desactualizada.' : ''}</p>}
             {!submissions ? !errors.submissions && <p className="empty-state" role="status">Consultando envíos…</p> : !submissions.submissions.length ? <div className="empty-state"><span className="empty-number" aria-hidden="true">00</span><h2>Aún no hay envíos</h2><p>Prepara contenido en Facebook o TikTok para empezar.</p></div> : <ul className="submission-list">{submissions.submissions.map((submission) => <li key={submission.id}>
-              <div className="submission-main"><span className="device-order">#{submission.deviceOrder}</span><div className="submission-content"><strong>{submission.deviceName}</strong><span className="field-help">{views[submission.platform].title} / {submission.kind === 'open' ? 'Abrir contenido' : 'Acciones'}</span><a href={/^https?:\/\//i.test(submission.url) ? submission.url : undefined} target="_blank" rel="noreferrer">{submission.url}<span className="sr-only"> (abre otra pestaña)</span></a></div><span className={`submission-status status-${submission.status}`}>{statuses[submission.status]}</span></div>
-              <div className="submission-meta"><time dateTime={new Date(submission.scheduledAt ?? submission.createdAt).toISOString()}>{submission.scheduledAt !== null ? 'Programación: ' : 'Creado: '}{formatDate(submission.scheduledAt ?? submission.createdAt)}</time><details><summary>Detalles</summary><dl><div><dt>ID</dt><dd>{submission.id}</dd></div>{submission.taskId && <div><dt>Task ID</dt><dd>{submission.taskId}</dd></div>}{submission.runId && <div><dt>Run ID</dt><dd>{submission.runId}</dd></div>}</dl></details>{submission.status === 'scheduled' && <button className="text-button" disabled={cancelling.includes(submission.id) || refreshing || !!errors.submissions} onClick={() => void cancelSubmission(submission)}>{cancelling.includes(submission.id) ? 'Cancelando…' : 'Cancelar envío'}</button>}</div>
+              <div className="submission-main"><span className="device-order">#{submission.deviceOrder}</span><div className="submission-content"><strong>{submission.deviceName}</strong><span className="field-help">{views[submission.platform].title} / {submission.kind === 'open' ? 'Abrir contenido' : submission.kind === 'live_rounds' ? 'Comentario Live por rondas' : 'Acciones'}</span><a href={/^https?:\/\//i.test(submission.url) ? submission.url : undefined} target="_blank" rel="noreferrer">{submission.url}<span className="sr-only"> (abre otra pestaña)</span></a></div><span className={`submission-status status-${submission.status}`}>{statuses[submission.status]}</span></div>
+              <div className="submission-meta"><time dateTime={new Date(submission.scheduledAt ?? submission.createdAt).toISOString()}>{submission.scheduledAt !== null ? 'Programación: ' : 'Creado: '}{formatDate(submission.scheduledAt ?? submission.createdAt)}</time><details><summary>Detalles</summary><dl><div><dt>ID</dt><dd>{submission.id}</dd></div>{submission.taskId && <div><dt>Task ID</dt><dd>{submission.taskId}</dd></div>}{submission.runId && <div><dt>Run ID</dt><dd>{submission.runId}</dd></div>}</dl></details>{submission.status === 'scheduled' && <button className="text-button" disabled={cancelling.includes(submission.id) || cancellingAll || refreshing || !!errors.submissions} onClick={() => void cancelSubmission(submission)}>{cancelling.includes(submission.id) ? 'Cancelando…' : 'Cancelar envío'}</button>}</div>
               {submission.error && <p className="field-error submission-error">{submission.error}</p>}
             </li>)}</ul>}
           </section>}

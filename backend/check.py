@@ -14,6 +14,7 @@ os.environ.update({
     "DATABASE_URL": f"sqlite:///{Path(temporary.name, 'farm.db')}",
     "GENFARMER_OPEN_APP_ID": "open-app",
     "GENFARMER_FACEBOOK_APP_ID": "facebook-app",
+    "GENFARMER_FACEBOOK_LIVE_ROUNDS_APP_ID": "facebook-live-rounds-app",
     "GENFARMER_TIKTOK_APP_ID": "tiktok-app",
     "GENFARMER_DISPATCH_GAP": "0",
     "GENFARMER_COMPLETION_POLL": "0.1",
@@ -41,11 +42,14 @@ for invalid_settings in ({"app_host": "0.0.0.0"}, {"frontend_url": "https://farm
 contracts = {
     "open-content": {"contentUrl", "packageName"},
     "facebook": {"contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive", "diagnostic_only"},
+    "facebook-live-rounds": {"contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive", "diagnostic_only"},
     "tiktok": {"contentUrl", "like", "comment", "share", "commentText", "targetText"},
 }
 selector_contracts = {
     "facebook": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorClassPattern",
                  "shareSubmitPattern", "publicAudiencePattern", "commentConfirmedPattern", "shareConfirmedPattern"},
+    "facebook-live-rounds": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorClassPattern",
+                             "shareSubmitPattern", "publicAudiencePattern", "commentConfirmedPattern", "shareConfirmedPattern"},
     "tiktok": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorIdPattern",
                "shareSheetHeadingPattern", "copyLinkPattern", "repostActionPattern", "repostActivePattern",
                "liveCommentTriggerIdPattern", "liveCommentEditorIdPattern", "liveCommentSendIdPattern",
@@ -175,8 +179,8 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
 """
         subprocess.run(["node", "-e", probe], input=json.dumps(nodes), check=True, text=True)
     if path.stem == "facebook":
-        assert package["version"] == package["script"]["version"] == "2.6.18"
-        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.18")
+        assert package["version"] == package["script"]["version"] == "2.6.20"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.20")
         type_names = {"isPost", "isReel", "isVideo", "isLive"}
         assert all(item["value"] is False for item in package["script"]["variables"] if item["name"] in type_names)
         assert all(item["options"]["value"] is False and item["options"]["variable"]["value"] is False
@@ -230,7 +234,7 @@ const visual = { width: 1080, height: 1920, lines: [
 ] };
         if (liteLiveShareEntry([entry], visual) !== entry) throw new Error('merged Live share entry');
 """], check=True, capture_output=True, text=True)
-        comment_helper = scripts[scripts.index("function liteCommentKeys"):scripts.index("function sameLiteCaption")]
+        comment_helper = scripts[scripts.index("function comparableCommentText"):scripts.index("function sameLiteCaption")]
         subprocess.run(["node", "-e", comment_helper + """
 const visual = { width: 1080, lines: [
   { label: 'prueba automatizada live v2.6.7 #1 5', x: 192, y: 325, width: 800, height: 45 },
@@ -253,6 +257,9 @@ const wrapped = liteCommentKeys(visual, { bounds: [52, 1669, 853, 1764] }, 'otra
 if (wrapped.length !== 1 || wrapped[0] !== 'phil caroll casimiro|otra vez lo mismo, ya no se por quien votar') {
   throw new Error('wrapped Live comment');
 }
+visual.lines = [{ label: 'felicidades por la boda', x: 192, y: 325, width: 800, height: 45 }];
+const emoji = liteCommentKeys(visual, { bounds: [24, 1666, 1056, 1769] }, 'felicidades por la boda ' + String.fromCodePoint(0x1F389));
+if (emoji.length !== 1 || !emoji[0].endsWith('|felicidades por la boda')) throw new Error('emoji comment');
 """], check=True, capture_output=True, text=True)
         dismiss_helper = scripts[scripts.index("async function dismissKeyboard"):scripts.index("async function scrollPost")]
         subprocess.run(["node", "-e", """
@@ -294,7 +301,19 @@ async function screen() { current = closed; return current; }
         assert "async function writeDraft(edit, text)" in scripts
         assert "await ui.sendKeys(text, true);" in scripts
         assert scripts.count("await writeDraft(edit, commentText);") == 2
+        assert "function comparableCommentText(value)" in scripts
+        assert "function hasEmoji(value)" in scripts
+        assert "editorTextMatches" not in scripts
+        assert scripts.count("!hasEmoji(commentText) && edit.text !== commentText") == 2
         assert "rpc('setText'" not in scripts
+        editor_helper = scripts[scripts.index("function comparableCommentText"):scripts.index("function parseLiteXml")]
+        subprocess.run(["node", "-e", editor_helper + """
+const assert = require('node:assert/strict');
+assert.equal(hasEmoji('Boda ' + String.fromCodePoint(0x1F389)), true);
+assert.equal(hasEmoji('Boda ' + String.fromCodePoint(0x1F1F5, 0x1F1EA)), true);
+assert.equal(hasEmoji('Boda 1' + String.fromCodePoint(0xFE0F, 0x20E3)), true);
+assert.equal(hasEmoji('Boda normal!'), false);
+"""], check=True, capture_output=True, text=True)
         assert "if (liveMode && keys.length === 0 && (i === 0 || i === 2))" in scripts
         assert "await scrollPost(edit ? await dismissKeyboard(nodes) : nodes, i === 2, true)" in scripts
         assert "await scrollPost(nodes, true, true)" in scripts
@@ -401,6 +420,9 @@ const ctx = { async queryXpath(xpath, xml) {
         assert {(edge["source"], edge["sourceHandle"], edge["target"])
                 for edge in package["script"]["flow"]["edges"]} == expected_edges
         assert len(package["script"]["flow"]["edges"]) == len(expected_edges)
+    if path.stem == "facebook-live-rounds":
+        assert package["version"] == package["script"]["version"] == "1.0.2"
+        assert package["name"] == package["script"]["name"] and "rondas" in package["name"].lower()
     if path.stem == "tiktok":
         assert package["version"] == package["script"]["version"] == "1.2.1"
         assert "repostActionPattern" in scripts and "^(compartir|republicar" not in scripts
@@ -415,6 +437,12 @@ const ctx = { async queryXpath(xpath, xml) {
         assert live_script.index("  if (actions.comment) {") < live_script.index("  if (actions.like) {") < live_script.index("  if (actions.share) {")
         assert "No se repetira" in live_script and "result.json" in live_script
 
+facebook_package = json.loads(Path(__file__).parent.joinpath("automations/facebook.genfarm").read_text(encoding="utf-8"))
+rounds_package = json.loads(Path(__file__).parent.joinpath("automations/facebook-live-rounds.genfarm").read_text(encoding="utf-8"))
+assert rounds_package["input"] == facebook_package["input"]
+assert rounds_package["script"]["variables"] == facebook_package["script"]["variables"]
+assert rounds_package["script"]["flow"] == facebook_package["script"]["flow"]
+
 html_fixture = '<script>{"story":{"message":{"text":"Primera parte \\u00a1Hola!\\n\\nSegunda parte con m\\u00e1s contexto"}}}</script>'
 assert full_message(html_fixture, "Primera parte ¡Hola!") == "Primera parte ¡Hola! Segunda parte con más contexto"
 assert full_message(html_fixture, "Texto de otra publicacion") == "Texto de otra publicacion"
@@ -425,6 +453,8 @@ context_limit = "x" * 2000
 assert main.Publication(url="https://www.facebook.com/example/posts/1", context=context_limit).context == context_limit
 assert main.CommentsRequest(platform="facebook", context=context_limit,
                             profiles=[{"deviceId": "serial-first", "intention": "Apoyo", "tone": "Cercano"}]).context == context_limit
+for tone in ("Dulce / Cálido", "Empático / Asertivo", "Distante / Formal", "Pasivo-Agresivo / Sarcástico", "Frío / Cortante", "Defensivo / Agresivo"):
+    assert main.CommentProfile(deviceId="serial-first", intention="Apoyo", tone=tone).tone == tone
 for factory in (
     lambda: main.Publication(url="https://www.facebook.com/example/posts/1", context=context_limit + "x"),
     lambda: main.CommentsRequest(platform="facebook", context=context_limit + "x",
@@ -493,6 +523,7 @@ def fake_workflow(app_id, names):
 
 open_workflow = fake_workflow("open-app", ["contentUrl", "packageName"])
 facebook_workflow = fake_workflow("facebook-app", ["contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive"])
+facebook_live_rounds_workflow = fake_workflow("facebook-live-rounds-app", ["contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive"])
 
 
 def fake_request(path, method="GET", data=None):
@@ -506,6 +537,8 @@ def fake_request(path, method="GET", data=None):
         return open_workflow
     if path == "/automation/apps/facebook-app":
         return facebook_workflow
+    if path == "/automation/apps/facebook-live-rounds-app":
+        return facebook_live_rounds_workflow
     if path == "/automation/tasks" and method == "POST":
         fake_state["tasks"] += 1
         return {"taskId": f"task-{fake_state['tasks']}"}
@@ -524,12 +557,19 @@ def fake_request(path, method="GET", data=None):
         if state is None:
             return {"deviceStorages": 0}
         return {"id": run_id, "taskId": state["taskId"], "status": state["status"],
+                "finishedAt": state.get("finishedAt"),
                 "deviceStatuses": [{"runId": run_id, "deviceId": "usb-1", "status": state["deviceStatus"]}]}
     raise AssertionError((path, method, data))
 
 
 def finish_run(run_id):
     fake_state["runStates"][run_id].update(status=4, deviceStatus=2)
+    main.dispatch_wakeup.set()
+
+
+def abandon_run(run_id):
+    # GenFarmer puede cerrar el run sin que el dispositivo llegue a iniciar.
+    fake_state["runStates"][run_id].update(status=4, deviceStatus=0, finishedAt="2026-01-01T00:00:00.000Z")
     main.dispatch_wakeup.set()
 
 
@@ -691,6 +731,50 @@ with TestClient(main.app) as client:
         flags = {item["name"]: item["value"] for item in task["variables"] if item["name"] in {"isPost", "isReel", "isVideo", "isLive"}}
         assert flags == {f"is{kind.title()}": kind == content_type for kind in ("post", "reel", "video", "live")}
         finish_run(typed_row["runId"])
+
+    live_rounds = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174012",
+                   "kind": "live_rounds", "rounds": 2, "deviceIds": ["serial-second", "serial-first"],
+                   "actions": {"like": False, "comment": True, "share": False},
+                   "publications": [{"url": "https://www.facebook.com/live/rounds", "context": "",
+                                     "comments": {"serial-first": "¡Vamos con todo! 😊",
+                                                  "serial-second": "¡Vamos con todo! 😊"}}]}
+    response = client.post("/api/submissions", json=live_rounds, headers=origin)
+    assert response.status_code == 201, response.text
+    round_rows = response.json()["submissions"]
+    assert [row["deviceId"] for row in round_rows] == ["serial-first", "serial-second"] * 2
+    assert all(row["kind"] == "live_rounds" for row in round_rows)
+    round_ids = [row["id"] for row in round_rows]
+    for position, round_id in enumerate(round_ids):
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            current_rows = {item["id"]: item for item in client.get("/api/submissions").json()["submissions"]}
+            if current_rows[round_id]["status"] == "sent":
+                break
+            time.sleep(0.02)
+        assert current_rows[round_id]["status"] == "sent", current_rows[round_id]
+        assert all(current_rows[pending_id]["status"] == "scheduled" for pending_id in round_ids[position + 1:])
+        round_task = next(call[2] for call in reversed(calls) if call[:2] == ("/automation/tasks", "POST")
+                          and call[2]["name"].startswith("Farm Live ronda ")
+                          and call[2]["devices"]["list"][0]["serialNo"] == current_rows[round_id]["deviceId"])
+        round_values = {item["name"]: item["value"] for item in round_task["variables"]}
+        assert round_task["appId"] == "facebook-live-rounds-app"
+        assert round_values["commentText"] == "¡Vamos con todo! 😊"
+        assert {name: round_values[name] for name in ("isPost", "isReel", "isVideo", "isLive")} == {
+            "isPost": False, "isReel": False, "isVideo": False, "isLive": True,
+        }
+        finish_run(current_rows[round_id]["runId"])
+
+    invalid_rounds = {**live_rounds, "requestId": "123e4567-e89b-12d3-a456-426614174013",
+                      "publications": [{**live_rounds["publications"][0], "comments": {
+                          "serial-first": "Comentario uno", "serial-second": "Comentario dos",
+                      }}]}
+    assert client.post("/api/submissions", json=invalid_rounds, headers=origin).status_code == 422
+    not_live = {**live_rounds, "requestId": "123e4567-e89b-12d3-a456-426614174014",
+                "publications": [{**live_rounds["publications"][0], "url": "https://www.facebook.com/video/rounds"}]}
+    assert client.post("/api/submissions", json=not_live, headers=origin).status_code == 422
+    too_many_rounds = {**live_rounds, "requestId": "123e4567-e89b-12d3-a456-426614174015", "rounds": 101}
+    assert client.post("/api/submissions", json=too_many_rounds, headers=origin).status_code == 422
+
     reject_run["enabled"] = True
     rejected_run = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174003"}
     response = client.post("/api/submissions", json=rejected_run, headers=origin)
@@ -767,6 +851,30 @@ with TestClient(main.app) as client:
     assert released_row["status"] == "sent" and predecessor["status"] == "sent", (released_row, predecessor)
     assert predecessor["runId"] == purged_run and ("/automation/runs/" + purged_run, "GET", None) in calls
     finish_run(released_row["runId"])
+    # GenFarmer cerro el run sin iniciar el dispositivo: libera el equipo sin reenviarlo.
+    abandoned = client.post("/api/submissions", json={**overdue, "requestId": str(main.uuid4())}, headers=origin)
+    assert abandoned.status_code == 201, abandoned.text
+    abandoned_id = abandoned.json()["submissions"][0]["id"]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        abandoned_row = next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == abandoned_id)
+        if abandoned_row["status"] == "sent":
+            break
+        time.sleep(0.02)
+    assert abandoned_row["status"] == "sent", abandoned_row
+    abandon_run(abandoned_row["runId"])
+    following = client.post("/api/submissions", json={**overdue, "requestId": str(main.uuid4())}, headers=origin)
+    assert following.status_code == 201, following.text
+    following_id = following.json()["submissions"][0]["id"]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        following_row = next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == following_id)
+        if following_row["status"] == "sent":
+            break
+        time.sleep(0.02)
+    assert following_row["status"] == "sent" and following_row["runId"] != abandoned_row["runId"], following_row
+    assert next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == abandoned_id)["status"] == "sent"
+    finish_run(following_row["runId"])
 
 
 class FakeResponse:
@@ -803,18 +911,27 @@ try:
     with TestClient(main.app) as client:
         origin = {"Origin": "http://localhost:5173"}
         request = {"platform": "facebook", "context": "Un texto visible de prueba",
-                   "profiles": [
-                       {"deviceId": "serial-first", "intention": "Apoyo", "tone": "Cercano"},
-                       {"deviceId": "serial-second", "intention": "Pregunta", "tone": "Informativo"},
-                   ]}
+                    "profiles": [
+                        {"deviceId": "serial-first", "intention": "Elogio o Apoyo", "tone": "Dulce / Cálido"},
+                        {"deviceId": "serial-second", "intention": "Pregunta", "tone": "Informativo"},
+                    ]}
         content = json.dumps({"comments": [
             {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
             {"deviceId": "serial-second", "text": "Comentario generado de prueba dos"},
         ]})
         body = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
-        with patch.object(comments, "urlopen", return_value=FakeDeepSeek(body)):
+        captured_requests = []
+
+        def capture_deepseek(outgoing, **_):
+            captured_requests.append(json.loads(outgoing.data))
+            return FakeDeepSeek(body)
+
+        with patch.object(comments, "urlopen", side_effect=capture_deepseek):
             generated = client.post("/api/comments", json=request, headers=origin)
         assert generated.status_code == 200, generated.text
+        prompted_profiles = json.loads(captured_requests[0]["messages"][1]["content"])["profiles"]
+        assert prompted_profiles[0]["intentionGuidance"] == comments.INTENTION_GUIDANCE["Elogio o Apoyo"]
+        assert prompted_profiles[0]["toneGuidance"] == comments.TONE_GUIDANCE["Dulce / Cálido"]
         assert generated.json()["comments"] == [
             {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
             {"deviceId": "serial-second", "text": "Comentario generado de prueba dos"},

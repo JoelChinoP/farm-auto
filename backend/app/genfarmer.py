@@ -57,7 +57,13 @@ def run_finished(run_id: str, task_id: str) -> bool:
     device_status = device.get("status")
     if type(device_status) is not int or device_status not in range(5):
         raise GenFarmerError("Formato de estado de dispositivo distinto al contrato de GenFarmer")
-    return run_status in {2, 3, 4} and device_status in {2, 3, 4}
+    if run_status not in {2, 3, 4}:
+        return False
+    if device_status in {2, 3, 4}:
+        return True
+    # GenFarmer 2.6.1 puede cerrar un run sin iniciar el dispositivo (status 0).
+    # Un run ya cerrado no ejecuta nada: se libera el equipo sin reenviar el envio.
+    return device_status == 0 and bool(run.get("finishedAt"))
 
 
 def devices() -> list[dict]:

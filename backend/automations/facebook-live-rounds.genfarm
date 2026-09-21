@@ -1,10 +1,10 @@
 {
   "id": "",
   "userId": 0,
-  "name": "📱 Facebook Lite · Abrir + Like + Compartir + Comentar v2.6.20",
-  "description": "Flujo por tipo detectado para publicaciones, reels, videos y lives en Facebook Lite.",
+  "name": "📱 Facebook Lite · Live · Comentarios por rondas v1.0.2",
+  "description": "Una ejecucion comenta una vez en un Live; Farm encadena dispositivos y rondas.",
   "logo": null,
-  "version": "2.6.20",
+  "version": "1.0.2",
   "input": [
     {
       "id": "input-content-url",
@@ -206,10 +206,10 @@
     }
   ],
   "script": {
-    "id": "facebook-lite-open-actions-v2",
-    "name": "📱 Facebook Lite · Abrir + Like + Compartir + Comentar v2.6.20",
-    "description": "Flujo por tipo detectado para publicaciones, reels, videos y lives en Facebook Lite.",
-    "version": "2.6.20",
+    "id": "facebook-lite-live-rounds-v1",
+    "name": "📱 Facebook Lite · Live · Comentarios por rondas v1.0.2",
+    "description": "Una ejecucion comenta una vez en un Live; Farm encadena dispositivos y rondas.",
+    "version": "1.0.2",
     "variables": [
       {
         "id": "content_url",

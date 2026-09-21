@@ -6,7 +6,22 @@ from urllib.request import Request, urlopen
 from .config import settings
 
 
-TONES = ("Cercano", "Entusiasta", "Informativo", "Breve")
+INTENTION_GUIDANCE = {
+    "Ataque directo": "Busca provocar una respuesta inmediata sobre la idea, sin insultos ni ataques personales.",
+    "Evitación / Desvinculación": "No refuerza el conflicto; mantiene una respuesta esquiva y distante.",
+    "Crítica Constructiva": "Busca debatir o aportar una observación útil.",
+    "Afrontamiento Enfocado en el Problema": "Valida el punto y aporta una perspectiva razonada, por ejemplo: Entiendo tu punto sobre X. Desde mi perspectiva, considero Y debido a Z.",
+    "Desinformación o Error Factual": "Aclara con datos sin juzgar, por ejemplo: Un detalle a considerar sobre este tema es [Dato/Fuente], lo cual cambia el enfoque.",
+    "Elogio o Apoyo": "Da refuerzo positivo, afrontamiento afectivo o agradecimiento conciso.",
+}
+TONE_GUIDANCE = {
+    "Dulce / Cálido": "Tono suave, pausado, con cadencia melódica y cercanía.",
+    "Empático / Asertivo": "Tono neutro, firme pero respetuoso, ritmo pausado y vocalización clara.",
+    "Distante / Formal": "Tono plano y formal, sin modulación afectiva.",
+    "Pasivo-Agresivo / Sarcástico": "Inflexión irónica y pausas marcadas, sin insultos ni hostigamiento.",
+    "Frío / Cortante": "Tono grave, conciso, de articulación seca.",
+    "Defensivo / Agresivo": "Tono enérgico e incisivo, sin amenazas, insultos ni ataques personales.",
+}
 TIKTOK_MAX_CHARS = 150
 COMMENT_MAX_CHARS = 500
 
@@ -59,6 +74,11 @@ def generate(platform: str, context: str, profiles: list[dict]) -> list[dict]:
         f"Genera exactamente un comentario por deviceId, de {settings.comment_min_words} a "
         f"{settings.comment_max_words} palabras, 2 a {limit} caracteres y en una sola linea."
     )
+    profiles = [{
+        **profile,
+        "intentionGuidance": INTENTION_GUIDANCE.get(profile["intention"], ""),
+        "toneGuidance": TONE_GUIDANCE.get(profile["tone"], ""),
+    } for profile in profiles]
     body = json.dumps({
         "model": settings.deepseek_model,
         "stream": False,

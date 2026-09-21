@@ -30,7 +30,7 @@ recibido. Un identificador de conexion ausente impide el envio.
 
 ## Automatizaciones
 
-Importar manualmente estos tres archivos desde `backend/automations/` en GenFarmer
+Importar manualmente estos cuatro archivos desde `backend/automations/` en GenFarmer
 y configurar los IDs reales de las apps resultantes. La web no importa ni modifica
 workflows automaticamente. Despues de editar un paquete, actualizar la app en
 GenFarmer y comprobar las entradas antes de volver a usarla.
@@ -39,6 +39,7 @@ GenFarmer y comprobar las entradas antes de volver a usarla.
 | --- | --- |
 | `open-content.genfarm` | `contentUrl`, `packageName` |
 | `facebook.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `isPost`, `isReel`, `isVideo`, `isLive`, `diagnostic_only` |
+| `facebook-live-rounds.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `isPost`, `isReel`, `isVideo`, `isLive`, `diagnostic_only` |
 | `tiktok.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `targetText` |
 
 Los cuatro flags son booleanos independientes. Facebook ejecuta las acciones habilitadas
@@ -52,11 +53,23 @@ validaciones estructurales de reproductor, barra de acciones, editor, audiencia 
 confirmaciones. En Reels la leyenda visible solo evita continuar si el contenido
 cambia durante la ejecucion. Las variables de selectores se pueden modificar en
 GenFarmer sin cambios en el backend.
+`facebook-live-rounds.genfarm` es una copia independiente del flujo Facebook 2.6.20;
+`facebook.genfarm` no se modifica. Cada ejecucion del nuevo paquete publica como
+maximo un comentario. Farm, no el workflow, crea las rondas en orden y entrega una
+tarea de un solo dispositivo despues de confirmar terminal la anterior. Esta modalidad
+solo admite un Live, la accion Comentar, un mismo texto para todos los dispositivos y
+1..200 rondas, sin superar el limite global de 200 filas.
+La web mantiene esta modalidad en un apartado y borrador independientes de Facebook
+normal; cambiar de vista no mezcla dispositivos, URLs, comentarios ni rondas.
 Facebook y TikTok escriben `commentText` mediante `clientUiAutomator.sendKeys`, que
 usa el teclado ADB de GenFarmer y Base64 UTF-8. No se usa el RPC `setText`, porque
 GenFarmer 2.6.1 corrompe por esa ruta tildes, `ñ`, emojis y otros caracteres
-multibyte. Un borrador de Facebook con `�` se retira sin enviarlo; cualquier otro
-borrador previo se conserva y detiene la accion.
+multibyte. Cuando el comentario contiene emojis, Facebook no compara el texto leido
+del editor: la jerarquia puede devolver `�` y detener el envio. Se conservan el
+editor localizado, un unico toque en Enviar y la confirmacion posterior; los
+comentarios sin emojis mantienen la comparacion exacta. Un borrador previo con `�`
+se retira sin enviarlo; cualquier otro borrador previo se conserva y detiene la
+accion.
 Los cuatro flags deben tener default `false` en el paquete: GenFarmer 2.6.1 ignora
 un `false` enviado cuando el default importado es verdadero.
 Se preservan los defaults de la app importada y solo se sustituyen las entradas de
@@ -95,6 +108,9 @@ se revisa el `result.json` de evidencia y el log de la tarea. Farm no reintenta.
    por publicacion dentro de cada dispositivo. Sin fecha o con limite vencido,
    queda lista para envio inmediato. El horario sorteado se conserva al repetir
    la misma solicitud; no se vuelve a sortear.
+   En comentarios Live por rondas se sortea solo el inicio del lote; todas las filas
+   conservan esa hora y se ordenan por ronda y luego por el orden de dispositivos de
+   GenFarmer.
 3. Un unico hilo trabajador consulta las filas vencidas y considera solo la primera
    de cada dispositivo. Una pendiente vencida se envia en cuanto el equipo esta
    libre, tambien tras reiniciar el backend; no se descarta ni se reprograma.
@@ -103,12 +119,17 @@ se revisa el `result.json` de evidencia y el log de la tarea. Farm no reintenta.
    fila, cron ni servicios adicionales. El backend debe seguir abierto; cerrar el
    navegador no detiene la programacion.
 4. Antes de reclamar una fila, Farm revisa el envio anterior del mismo dispositivo.
+   Para comentarios Live por rondas tambien revisa la fila anterior de la misma
+   solicitud, aunque pertenezca a otro dispositivo.
    Si tiene run, consulta `GET /automation/runs/:id` cada
    `GENFARMER_COMPLETION_POLL` segundos (ritmo inicial: 5). Solo libera la siguiente
    publicacion cuando el run esta `ABORTED`, `STOPPED` o `FINISHED` (2/3/4) y su
    unico `deviceStatus` esta `SUCCESS`, `FAIL` o `ABORTED` (2/3/4). Un formato
    desconocido, un run distinto o una recepcion anterior incierta sin IDs bloquean
-   el siguiente envio; nunca provocan un reintento. Si la respuesta es un run sin
+   el siguiente envio; nunca provocan un reintento. Si el run ya cerro (`finishedAt`)
+   con el dispositivo sin iniciar (status 0), tampoco puede seguir ejecutando: se
+   libera la siguiente publicacion y el envio incierto se conserva como `sent` sin
+   reenviarse nunca. Si la respuesta es un run sin
    identidad (GenFarmer 2.6.1 ya no conserva ese run en su historial), el equipo no
    puede tener una ejecucion en curso: se libera la siguiente publicacion y el envio
    incierto se conserva como `sent`/`unknown` sin reenviarse nunca.
@@ -165,18 +186,23 @@ Una llamada cubre todos los dispositivos de una publicacion y debe devolver
 exactamente un comentario por `deviceId` en JSON (`{"comments":[...]}`), con
 `COMMENT_MIN_WORDS`..`COMMENT_MAX_WORDS` palabras, 2..500 caracteres (150 en
 TikTok), una linea y sin caracteres de control; cualquier otra forma falla cerrado
-con 502. Los tonos son `Cercano`, `Entusiasta`, `Informativo` y `Breve`; la
-intencion es texto libre. Las intenciones se agrupan en filas (intencion, tono,
-cantidad); los equipos se asignan en orden a cada fila y la suma debe coincidir
-con los dispositivos seleccionados. El comentario final viaja por dispositivo en
-`publications[].comments` y puede editarse a mano. No hay generacion automatica:
-la IA nunca se invoca al extraer contexto ni al programar envios.
+con 502. Los tonos son `Cercano`, `Entusiasta`, `Informativo`, `Breve`,
+`Dulce / Cálido`, `Empático / Asertivo`, `Distante / Formal`,
+`Pasivo-Agresivo / Sarcástico`, `Frío / Cortante` y `Defensivo / Agresivo`.
+La intencion es texto libre, con sugerencias para Ataque directo, Evitación /
+Desvinculación, Crítica Constructiva, Afrontamiento Enfocado en el Problema,
+Desinformación o Error Factual y Elogio o Apoyo. Las intenciones se agrupan en
+filas (intencion, tono, cantidad); los equipos se asignan en orden a cada fila y
+la suma debe coincidir con los dispositivos seleccionados. El comentario final
+viaja por dispositivo en `publications[].comments` y puede editarse a mano. No
+hay generacion automatica: la IA nunca se invoca al extraer contexto ni al
+programar envios.
 
 ## Validacion en Windows
 
 - Verificar puerto, sesion, envoltorio `success/data`, `serialNo`, `currentDeviceId`
   e `index` contra el servicio local; una forma inesperada falla cerrado.
-- Importar los tres paquetes y probar **solo abrir** en un dispositivo controlado.
+- Importar los cuatro paquetes y probar **solo abrir** en un dispositivo controlado.
 - La API instalada inicia el run al crearlo; no agregar un segundo inicio explicito.
 - Confirmar que `GET /automation/runs/:id` mantiene los codigos de run y dispositivo
   verificados antes de actualizar GenFarmer.

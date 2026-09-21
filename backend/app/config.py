@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     genfarmer_completion_poll: float = Field(default=5, ge=0.1, le=60)
     genfarmer_open_app_id: str = ""
     genfarmer_facebook_app_id: str = ""
+    genfarmer_facebook_live_rounds_app_id: str = ""
     genfarmer_tiktok_app_id: str = ""
     api_deepseek: str = ""
     deepseek_model: str = "deepseek-chat"
@@ -60,7 +61,12 @@ class Settings(BaseSettings):
 
     @property
     def workflows(self) -> dict[str, str]:
-        return {"open-content": self.genfarmer_open_app_id, "facebook": self.genfarmer_facebook_app_id, "tiktok": self.genfarmer_tiktok_app_id}
+        return {
+            "open-content": self.genfarmer_open_app_id,
+            "facebook": self.genfarmer_facebook_app_id,
+            "facebook-live-rounds": self.genfarmer_facebook_live_rounds_app_id,
+            "tiktok": self.genfarmer_tiktok_app_id,
+        }
 
     model_config = SettingsConfigDict(
         # The previous panel already keeps AI settings in the repository .env; backend/.env wins.
