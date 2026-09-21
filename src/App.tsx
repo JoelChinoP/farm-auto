@@ -7,7 +7,7 @@ type ContentType = 'post' | 'reel' | 'video' | 'live'
 type CampaignView = Platform | 'facebook-live-rounds'
 type View = 'devices' | CampaignView | 'submissions'
 type Tone = 'Cercano' | 'Entusiasta' | 'Informativo' | 'Breve' | 'Dulce / Cálido' | 'Empático / Asertivo' | 'Distante / Formal' | 'Pasivo-Agresivo / Sarcástico' | 'Frío / Cortante' | 'Defensivo / Agresivo'
-type Actions = { like: boolean; comment: boolean; share: boolean }
+type Actions = { like: boolean; comment: boolean; share: boolean; save: boolean }
 type Device = { id: string; serial: string; connectionId: string; name: string; order: number; connected: boolean }
 type Settings = { genfarmerUrl: string; workflows: Record<Workflow, boolean> }
 type Distribution = { id: string; intention: string; tone: Tone; count: number }
@@ -75,7 +75,7 @@ const intentions = [
   ['Elogio o Apoyo', 'Refuerzo positivo, agradecimiento conciso.'],
 ]
 const emptyCampaign: Campaign = {
-  deviceIds: [], urls: '', publications: [], actions: { like: false, comment: false, share: false },
+  deviceIds: [], urls: '', publications: [], actions: { like: false, comment: false, share: false, save: false },
   rounds: 1,
   distribution: [{ id: 'intent-1', intention: 'Reacción natural', tone: 'Cercano', count: 0 }],
   prepared: false, reviewed: false, schedule: '',
@@ -164,7 +164,7 @@ function formatDate(value: number) {
 }
 
 function actionLabel(actions: Actions, platform: Platform) {
-  return [actions.like && 'Like', actions.comment && 'Comentar', actions.share && (platform === 'tiktok' ? 'Repost / Compartir Live' : 'Compartir ahora (público)')].filter(Boolean).join(' · ') || 'Solo abrir contenido'
+  return [actions.like && 'Like', actions.save && platform === 'tiktok' && 'Guardar', actions.comment && 'Comentar', actions.share && (platform === 'tiktok' ? 'Repost / Compartir Live' : 'Compartir ahora (público)')].filter(Boolean).join(' · ') || 'Solo abrir contenido'
 }
 
 function requestWorkflow(request: SubmissionRequest): Workflow {
@@ -186,7 +186,7 @@ function App() {
   const [refreshing, setRefreshing] = useState(true)
   const [campaigns, setCampaigns] = useState<Record<CampaignView, Campaign>>({
     facebook: { ...emptyCampaign },
-    'facebook-live-rounds': { ...emptyCampaign, actions: { like: false, comment: true, share: false } },
+    'facebook-live-rounds': { ...emptyCampaign, actions: { like: false, comment: true, share: false, save: false } },
     tiktok: { ...emptyCampaign },
   })
   const [attempts, setAttempts] = useState<Record<CampaignView, Attempt | null>>({ facebook: null, 'facebook-live-rounds': null, tiktok: null })
@@ -643,7 +643,7 @@ function App() {
                 <section className="work-section review-section">
                   <div className="section-heading"><h2><span className="step-number">2</span>Revisa</h2></div>
                   <fieldset className="action-picker"><legend>Acciones</legend>
-                    {roundMode ? <label><input type="checkbox" checked disabled />Comentar en Live</label> : (['like', 'comment', 'share'] as const).map((action) => <label key={action}><input type="checkbox" checked={campaign.actions[action]} onChange={(event) => updateCampaign(campaignView, { actions: { ...campaign.actions, [action]: event.target.checked } })} />{action === 'like' ? 'Like' : action === 'comment' ? 'Comentar' : platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)'}</label>)}
+                    {roundMode ? <label><input type="checkbox" checked disabled />Comentar en Live</label> : ((platform === 'tiktok' ? ['like', 'save', 'comment', 'share'] : ['like', 'comment', 'share']) as ('like' | 'save' | 'comment' | 'share')[]).map((action) => <label key={action}><input type="checkbox" checked={campaign.actions[action]} onChange={(event) => updateCampaign(campaignView, { actions: { ...campaign.actions, [action]: event.target.checked } })} />{action === 'like' ? 'Like' : action === 'save' ? 'Guardar' : action === 'comment' ? 'Comentar' : platform === 'tiktok' ? 'Repost' : 'Compartir ahora (público)'}</label>)}
                   </fieldset>
                   <p className="field-help">{roundMode ? 'Cada ejecución comenta una vez; Farm espera su finalización antes de iniciar el siguiente dispositivo.' : hasActions ? 'Se enviará una sola solicitud con las acciones elegidas.' : 'Sin acciones seleccionadas, solo se abre el contenido.'}</p>
                   {campaign.actions.comment && !roundMode && <section className="distribution-card" aria-label="Distribución de intenciones">

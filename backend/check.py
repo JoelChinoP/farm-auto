@@ -43,14 +43,14 @@ contracts = {
     "open-content": {"contentUrl", "packageName"},
     "facebook": {"contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive", "diagnostic_only"},
     "facebook-live-rounds": {"contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive", "diagnostic_only"},
-    "tiktok": {"contentUrl", "like", "comment", "share", "commentText", "targetText"},
+    "tiktok": {"contentUrl", "like", "comment", "share", "save", "commentText", "targetText"},
 }
 selector_contracts = {
     "facebook": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorClassPattern",
                  "shareSubmitPattern", "publicAudiencePattern", "commentConfirmedPattern", "shareConfirmedPattern"},
     "facebook-live-rounds": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorClassPattern",
                              "shareSubmitPattern", "publicAudiencePattern", "commentConfirmedPattern", "shareConfirmedPattern"},
-    "tiktok": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "commentEditorIdPattern",
+    "tiktok": {"toolbarLikePattern", "toolbarCommentPattern", "toolbarSharePattern", "toolbarSavePattern", "commentEditorIdPattern",
                "shareSheetHeadingPattern", "copyLinkPattern", "repostActionPattern", "repostActivePattern",
                "liveCommentTriggerIdPattern", "liveCommentEditorIdPattern", "liveCommentSendIdPattern",
                "liveShareTriggerIdPattern", "liveShareActionPattern", "liveLikeContainerIdPattern"},
@@ -68,7 +68,7 @@ for path in Path(__file__).parent.joinpath("automations").glob("*.genfarm"):
     samples = {
         "contentUrl": "https://www.facebook.com/share/p/19cmrzLH7p/",
         "packageName": "com.facebook.lite", "like": True, "comment": True,
-        "share": True, "commentText": "¡Qué campaña mañana! 😊", "targetText": "texto visible",
+        "share": True, "commentText": "¡Qué campaña mañana! 😊", "targetText": "texto visible", "save": True,
         "isPost": True, "isReel": False, "isVideo": False, "isLive": False, "diagnostic_only": False,
     }
     values = {name: samples[name] for name in inputs}
@@ -424,18 +424,79 @@ const ctx = { async queryXpath(xpath, xml) {
         assert package["version"] == package["script"]["version"] == "1.0.2"
         assert package["name"] == package["script"]["name"] and "rondas" in package["name"].lower()
     if path.stem == "tiktok":
-        assert package["version"] == package["script"]["version"] == "1.2.1"
+        assert package["version"] == package["script"]["version"] == "1.3.0"
         assert "repostActionPattern" in scripts and "^(compartir|republicar" not in scripts
         assert "/compartido|republicado|shared|reposted/" not in scripts
         assert scripts.count("await ui.sendKeys(text, true);") == 2
         assert "rpc('setText'" not in scripts and "tap(edit)" not in scripts
         assert "await clickOnce(edit, text ? 'enfocar comentario Live'" in scripts
+        assert "republier" in scripts and "envoyer a" in scripts and "copier le lien" in scripts and "partager une video" in scripts
+        video_script = next(node["data"]["options"]["script"] for node in package["script"]["flow"]["nodes"]
+                            if node["id"] == "tiktok_actions")
+        assert video_script.index("if (actions.like) {") < video_script.index("if (actions.save) {") < video_script.index("if (actions.comment) {") < video_script.index("if (actions.share) {")
+        assert "Guardar no esta disponible en TikTok Live." in scripts
         variables_by_name = {item["name"]: item["value"] for item in package["script"]["variables"]}
         assert variables_by_name["diagnostic_only"] is False
+        assert "video con me gusta" in variables_by_name["toolbarLikePattern"]
+        assert scripts.count("video con me gusta") == 2
+        assert "tiktokIdentityMatches" not in scripts
+        assert "locateVideo(null, 90, true)" in scripts
+        assert "locateVideo(null, 90, true, expectedTarget)" not in scripts
+        editor_helper = scripts[scripts.index("function tiktokCommentEditor"):scripts.index("function tiktokSendButton")]
+        subprocess.run(["node", "-e", """
+const assert = require('node:assert/strict');
+const tiktokSelectors = { commentEditorId: /:id\\/de5$/ };
+""" + editor_helper + """
+const nodes = [
+  { class: 'android.widget.EditText', 'resource-id': 'com.zhiliaoapp.musically:id/de5', text: 'Agregar comentario\u2026', focused: 'false', bounds: [189, 1661, 721, 1739] },
+  { class: 'android.widget.EditText', 'resource-id': 'com.zhiliaoapp.musically:id/de5', text: 'eso pandia hay que apoyar', focused: 'true', bounds: [189, 803, 1011, 940] },
+];
+assert.equal(tiktokCommentEditor(nodes).text, 'eso pandia hay que apoyar');
+assert.equal(tiktokCommentEditor(nodes, 'eso pandia hay que apoyar').text, 'eso pandia hay que apoyar');
+assert.equal(tiktokCommentEditor(nodes, 'otro texto'), null);
+assert.equal(tiktokCommentEditor([nodes[0]]).text, 'Agregar comentario\u2026');
+"""], check=True, capture_output=True, text=True)
+        send_helper = scripts[scripts.index("function tiktokSendButton"):scripts.index("function tiktokCommentKeys")]
+        subprocess.run(["node", "-e", send_helper + """
+const assert = require('node:assert/strict');
+const edit = { bounds: [189, 511, 1011, 648] };
+const nodes = [
+  edit,
+  { class: 'android.widget.ImageView', 'resource-id': 'com.zhiliaoapp.musically:id/b4f', clickable: 'true', bounds: [995, 611, 1048, 664] },
+  { class: 'android.widget.ImageView', 'resource-id': 'com.zhiliaoapp.musically:id/wql', clickable: 'true', bounds: [942, 711, 1059, 828] },
+  { class: 'android.widget.Button', 'resource-id': 'com.zhiliaoapp.musically:id/c5t', clickable: 'true', bounds: [927, 718, 1048, 792] },
+];
+const send = tiktokSendButton(nodes, edit);
+assert.equal(send && send['resource-id'], 'com.zhiliaoapp.musically:id/c5t');
+const inline = [
+  { bounds: [189, 1661, 721, 1739] },
+  { class: 'android.widget.ImageView', clickable: 'true', bounds: [900, 1661, 1010, 1739] },
+];
+assert.equal(tiktokSendButton(inline, inline[0])['bounds'][0], 900);
+assert.equal(tiktokSendButton(nodes, null), null);
+"""], check=True, capture_output=True, text=True)
+        liked_helper = scripts[scripts.index("function tiktokLikedState"):scripts.index("function tiktokActionCount")]
+        subprocess.run(["node", "-e", liked_helper + """
+const assert = require('node:assert/strict');
+assert.equal(tiktokLikedState({ label: 'video con me gusta' }), true);
+assert.equal(tiktokLikedState({ label: 'dar me gusta a un video. 250,5 mil me gusta' }), false);
+assert.equal(tiktokLikedState({ label: 'me gusta', selected: 'true' }), true);
+assert.equal(tiktokLikedState({ label: 'me gusta' }), null);
+"""], check=True, capture_output=True, text=True)
         live_script = next(node["data"]["options"]["script"] for node in package["script"]["flow"]["nodes"]
                            if node["id"] == "tiktok_live_publish")
         assert live_script.index("  if (actions.comment) {") < live_script.index("  if (actions.like) {") < live_script.index("  if (actions.share) {")
         assert "No se repetira" in live_script and "result.json" in live_script
+        assert "targetMatches" not in live_script
+        live_validation = next(line for line in live_script.splitlines() if "TikTok Live valido" in line)
+        live_regex = re.search(r"if \(!(/.+?/i)\.test\(", live_validation).group(1)
+        subprocess.run(["node", "-e", f"""
+const assert = require('node:assert/strict');
+const pattern = {live_regex};
+assert.equal(pattern.test('https://www.tiktok.com/@belenm.ar/live?_r=1&enter_from_merge=pc_share'), true);
+assert.equal(pattern.test('https://www.tiktok.com/@belenm.ar/live/'), true);
+assert.equal(pattern.test('https://www.tiktok.com/@belenm.ar/video/7687442603788340501'), false);
+"""], check=True, capture_output=True, text=True)
 
 facebook_package = json.loads(Path(__file__).parent.joinpath("automations/facebook.genfarm").read_text(encoding="utf-8"))
 rounds_package = json.loads(Path(__file__).parent.joinpath("automations/facebook-live-rounds.genfarm").read_text(encoding="utf-8"))
@@ -524,6 +585,7 @@ def fake_workflow(app_id, names):
 open_workflow = fake_workflow("open-app", ["contentUrl", "packageName"])
 facebook_workflow = fake_workflow("facebook-app", ["contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive"])
 facebook_live_rounds_workflow = fake_workflow("facebook-live-rounds-app", ["contentUrl", "like", "comment", "share", "commentText", "isPost", "isReel", "isVideo", "isLive"])
+tiktok_workflow = fake_workflow("tiktok-app", ["contentUrl", "like", "comment", "share", "save", "commentText", "targetText"])
 
 
 def fake_request(path, method="GET", data=None):
@@ -539,6 +601,8 @@ def fake_request(path, method="GET", data=None):
         return facebook_workflow
     if path == "/automation/apps/facebook-live-rounds-app":
         return facebook_live_rounds_workflow
+    if path == "/automation/apps/tiktok-app":
+        return tiktok_workflow
     if path == "/automation/tasks" and method == "POST":
         fake_state["tasks"] += 1
         return {"taskId": f"task-{fake_state['tasks']}"}
@@ -682,6 +746,28 @@ with TestClient(main.app) as client:
                 "publications": [{"url": "https://www.tiktok.com/@example/video/1", "context": "",
                                   "comments": {"serial-first": "x" * 151}}]}
     assert client.post("/api/submissions", json=too_long, headers=origin).status_code == 422
+    assert client.post("/api/submissions", json={**payload, "requestId": "123e4567-e89b-12d3-a456-426614174017",
+                                                "actions": {"like": False, "comment": False, "share": False, "save": True}},
+                       headers=origin).status_code == 422
+    saved = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174016", "platform": "tiktok",
+             "kind": "actions", "actions": {"like": True, "save": True, "comment": False, "share": False},
+             "publications": [{"url": "https://www.tiktok.com/@example/video/7651603660060871954", "context": "", "comments": {}}]}
+    response = client.post("/api/submissions", json=saved, headers=origin)
+    assert response.status_code == 201, response.text
+    saved_id = response.json()["submissions"][0]["id"]
+    deadline = time.monotonic() + 3
+    while time.monotonic() < deadline:
+        saved_row = next(item for item in client.get("/api/submissions").json()["submissions"] if item["id"] == saved_id)
+        if saved_row["status"] == "sent":
+            break
+        time.sleep(0.02)
+    assert saved_row["status"] == "sent", saved_row
+    saved_task = next(call[2] for call in reversed(calls) if call[:2] == ("/automation/tasks", "POST")
+                      and call[2]["appId"] == "tiktok-app")
+    saved_values = {item["name"]: item["value"] for item in saved_task["variables"]}
+    assert saved_values["save"] is True and saved_values["like"] is True and saved_values["comment"] is False
+    assert saved_values["targetText"] == ""
+    finish_run(saved_row["runId"])
     commented = {**payload, "requestId": "123e4567-e89b-12d3-a456-426614174004",
                  "kind": "actions", "deviceIds": ["serial-first", "serial-second"],
                  "actions": {"like": True, "comment": True, "share": False},

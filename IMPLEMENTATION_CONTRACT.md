@@ -40,7 +40,7 @@ GenFarmer y comprobar las entradas antes de volver a usarla.
 | `open-content.genfarm` | `contentUrl`, `packageName` |
 | `facebook.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `isPost`, `isReel`, `isVideo`, `isLive`, `diagnostic_only` |
 | `facebook-live-rounds.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `isPost`, `isReel`, `isVideo`, `isLive`, `diagnostic_only` |
-| `tiktok.genfarm` | `contentUrl`, `like`, `comment`, `share`, `commentText`, `targetText` |
+| `tiktok.genfarm` | `contentUrl`, `like`, `comment`, `share`, `save`, `commentText`, `targetText` |
 
 Los cuatro flags son booleanos independientes. Facebook ejecuta las acciones habilitadas
 en orden: Me gusta, Compartir y Comentar. Todos en `false` solo abren la URL.
@@ -89,10 +89,27 @@ teclado y desplazar la publicacion para revelar comentarios recientes. Antes
 del desplazamiento relee la jerarquia para no enviar el gesto a un teclado que
 haya reaparecido; nunca usa ese desplazamiento para justificar otro click de envio.
 Compartir significa **Compartir ahora (publico)** en Facebook, **Repost** en videos
-TikTok y la accion **Compartir** de la hoja de un TikTok Live. En Live, el comentario
+TikTok y la accion **Compartir** de la hoja de un TikTok Live. En videos TikTok las
+acciones se ejecutan en el orden Like, Guardar (Favoritos), Comentar y Repost; Guardar
+no existe en Live y se rechaza. Los selectores por etiqueta cubren espanol, ingles y
+frances (`attribuer un`, `partager une video`, `republier`, `envoyer a`,
+`copier le lien`), y el estado del Like tambien se lee de un hijo `selected`/`checked`
+del control. Guardar hace un unico toque: TikTok no expone estado persistente y el
+aviso se registra sin bloquear. En Live, el comentario
 se confirma visible en el chat; Like es un unico toque aceptado porque TikTok no
-expone un estado persistente. Los paquetes no usan coordenadas publicas fijas ni
-reintentos de clicks inciertos.
+expone un estado persistente. En videos, el estado de Me gusta se lee de
+`selected`/`checked` o de la etiqueta `Video con me gusta`; si no se reconoce, el
+flujo se detiene despues del unico toque sin ejecutar Comentar ni Compartir. La
+validacion del enlace Live admite parametros de consulta (`?`/`#`). El panel de
+comentarios puede exponer dos `EditText` con el mismo id (composer colapsado con
+placeholder y editor enfocado); se prefiere el enfocado antes de comparar o escribir.
+El boton de enviar puede quedar debajo del editor en el compositor nuevo; se busca
+primero un `Button` pequeno alineado a la derecha junto al editor y, si no, el control
+en linea del editor. `targetText` viaja
+solo como contexto: el workflow no exige que el texto visible del video o Live
+coincida, porque TikTok trunca la leyenda y sustituye caracteres no estandar en la
+jerarquia. Los paquetes no
+usan coordenadas publicas fijas ni reintentos de clicks inciertos.
 
 GenFarmer 2.6.1 finaliza un run como `SUCCESS` incluso cuando un nodo devuelve fallo;
 por tanto ese estado solo libera la cola y nunca prueba una accion social. Para TikTok

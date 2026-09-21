@@ -199,6 +199,7 @@ class Actions(BaseModel):
     like: StrictBool = False
     comment: StrictBool = False
     share: StrictBool = False
+    save: StrictBool = False
 
 
 class Publication(BaseModel):
@@ -315,12 +316,14 @@ def submit(payload: SubmissionRequest):
     round_mode = payload.kind == "live_rounds"
     if payload.kind == "open" and any(payload.actions.model_dump().values()):
         raise HTTPException(422, "Abrir contenido no admite acciones publicas")
+    if payload.platform == "facebook" and payload.actions.save:
+        raise HTTPException(422, "Facebook no admite Guardar; usa Me gusta, Compartir o Comentar")
     if not round_mode and payload.rounds != 1:
         raise HTTPException(422, "Las rondas solo se admiten en comentarios Live por rondas")
     if round_mode:
         if payload.platform != "facebook" or len(payload.publications) != 1:
             raise HTTPException(422, "Las rondas requieren un unico Live de Facebook")
-        if payload.actions.model_dump() != {"like": False, "comment": True, "share": False}:
+        if payload.actions.model_dump() != {"like": False, "comment": True, "share": False, "save": False}:
             raise HTTPException(422, "Las rondas solo admiten comentar")
         if len(payload.deviceIds) * payload.rounds > 200:
             raise HTTPException(422, "El lote por rondas supera el limite de 200 envios")
@@ -369,7 +372,10 @@ def submit(payload: SubmissionRequest):
         if payload.kind == "open":
             values["packageName"] = "com.facebook.lite" if payload.platform == "facebook" else "com.zhiliaoapp.musically"
         else:
-            values.update(payload.actions.model_dump(), commentText=publication.comments.get(device["id"], ""))
+            action_values = payload.actions.model_dump()
+            if payload.platform != "tiktok":
+                action_values.pop("save")
+            values.update(action_values, commentText=publication.comments.get(device["id"], ""))
             if payload.platform == "facebook":
                 content_type = facebook_types[publication.url]
                 values.update({f"is{kind.title()}": content_type == kind for kind in ("post", "reel", "video", "live")})
