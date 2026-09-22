@@ -179,8 +179,8 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
 """
         subprocess.run(["node", "-e", probe], input=json.dumps(nodes), check=True, text=True)
     if path.stem == "facebook":
-        assert package["version"] == package["script"]["version"] == "2.6.20"
-        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.20")
+        assert package["version"] == package["script"]["version"] == "2.6.23"
+        assert package["name"] == package["script"]["name"] and package["name"].endswith("v2.6.23")
         type_names = {"isPost", "isReel", "isVideo", "isLive"}
         assert all(item["value"] is False for item in package["script"]["variables"] if item["name"] in type_names)
         assert all(item["options"]["value"] is False and item["options"]["variable"]["value"] is False
@@ -191,8 +191,8 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
         assert all(f"const is{kind.title()} = enabled(v.is{kind.title()});" in scripts for kind in ("post", "reel", "video", "live"))
         assert "[isPost, isReel, isVideo, isLive].filter(Boolean).length !== 1" in scripts
         assert "liveUrl" not in scripts
-        assert "if (isLive) {" in scripts and "const live = await locateLive(12);" in scripts
-        assert "locateLive(12, true)" not in scripts
+        assert "if (isLive) {" in scripts and "const live = await locateLive(12, true);" in scripts
+        assert "result.liveEnded = true;" in scripts and "El Live termino; se procesara su grabacion." in scripts
         assert "publicAudiencePattern" in scripts and "amigos|friends" not in scripts
         assert "composer) { send = composer; audienceConfirmed = true" not in scripts
         audience_pattern = next(item["value"] for item in package["script"]["variables"] if item["name"] == "publicAudiencePattern")
@@ -206,6 +206,8 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
         assert "n.clickable === 'true' && liteSelectors.publicAudience.test(n.label)" in scripts
         assert "visual.lines.some(l => liteSelectors.publicAudience" not in scripts
         assert "reelExpandedCaption || descriptionCollapsed || liteCaptionOverlapsTime" in scripts
+        assert "if ((isVideo || isLive) && !videoFeedOpened)" in scripts
+        assert "const title = !reel && (isVideo || isLive) && (structuralVideo || identity === 'video')" in scripts
         assert ".filter(row => row.length === 3 && row.every(n => n.hasChildren))" in scripts
         assert (scripts.index("    if (actions.like) {") <
                 scripts.index("    if (actions.share) {") <
@@ -217,12 +219,13 @@ const openLive = new AsyncFunction('genfarmerSleep', nodes.social_live_open.opti
         assert "esta transmitiendo en (?:vivo|directo)" in scripts
         assert "if ((marker || visual.liveBadge) && announced)" in scripts
         assert not any(name in scripts for name in ("liteTargetMatches", "liteLiveUserMatches", "liteLiveFeedUser"))
-        assert scripts.count("ancestor::*[@class='androidx.recyclerview.widget.RecyclerView']]/ancestor::*[@clickable='true'][1]") == 1
+        assert scripts.count("ancestor::*[@class='androidx.recyclerview.widget.RecyclerView']]/ancestor::*[@clickable='true'][1]") == 2
         assert scripts.count("await navigate(video);") == 1
         assert "feedOpened = true;\n              try { await element.click(); }" in scripts
         assert "\\b(?:para ti|reels?)\\b" in scripts
         assert "liteLiveShareEntry(nodes, visual)" in scripts
         assert "liteLiveShareComposer(nodes, visual)" in scripts
+        assert "recordedComposer ? liteLiveShareComposer(nodes, visual) : liteShareComposer(nodes, visual)" in scripts
         assert "escribir publicacion(?: compartir como)?" in scripts
         share_helpers = scripts[scripts.index("function liteVisualButton"):scripts.index("function liteShareComposer")]
         subprocess.run(["node", "-e", """
@@ -233,6 +236,12 @@ const visual = { width: 1080, height: 1920, lines: [
   { label: 'escribir publicacion compartir como', x: 42, y: 1086, width: 627, height: 35 }
 ] };
         if (liteLiveShareEntry([entry], visual) !== entry) throw new Error('merged Live share entry');
+const splitEntry = { clickable: 'true', enabled: 'true', bounds: [31, 519, 370, 752] };
+const split = { width: 1080, height: 1920, lines: [
+  { label: 'escribir una', x: 106, y: 665, width: 189, height: 28 },
+  { label: 'publicacion', x: 108, y: 713, width: 184, height: 35 }
+] };
+if (liteLiveShareEntry([splitEntry], split) !== splitEntry) throw new Error('split recorded Live share entry');
 """], check=True, capture_output=True, text=True)
         comment_helper = scripts[scripts.index("function comparableCommentText"):scripts.index("function sameLiteCaption")]
         subprocess.run(["node", "-e", comment_helper + """
@@ -411,6 +420,72 @@ const ctx = { async queryXpath(xpath, xml) {
   assert.equal(clicks, 1);
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """], check=True, capture_output=True, text=True)
+        subprocess.run(["node", "-e", """
+const assert = require('node:assert/strict');
+let latestXml = 'feed-xml', liveIdentity = '';
+const result = {};
+const feed = [{ feed: true }];
+async function screen() { return feed; }
+function liteLiveToolbar() { return null; }
+function liteLiveFeedVideo() { return feed[0]; }
+function normalizeLiteText(value) { return value.toLowerCase(); }
+function transient() { return false; }
+async function wait() {}
+async function recognize() { return { width: 1080, height: 1920, liveBadge: false, lines: [
+  { label: 'en directo' }, { label: 'alice ha transmitido en directo' }
+] }; }
+const ctx = { async queryXpath() { throw new Error('No debe abrir como Live activo'); } };
+""" + locate_live + """
+(async () => {
+  assert.equal(await locateLive(10, true), null);
+  assert.equal(liveIdentity, '');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""], check=True, capture_output=True, text=True)
+        locate_post = scripts[scripts.index("async function locatePost"):scripts.index("async function isLiked")]
+        recorded_video_helper = scripts[scripts.index("function liteRecordedVideoLayout"):scripts.index("function liteVisualButton")]
+        feed_video_helper = scripts[scripts.index("function liteLiveFeedVideo"):scripts.index("function liteLiveToolbar")]
+        subprocess.run(["node", "-e", """
+const assert = require('node:assert/strict');
+const isVideo = true, isLive = false, reel = false, result = {};
+let videoFeedOpened = false, identity = '', latestXml = 'feed-xml';
+let reelPaused = false, reelDescription = '', reelExpandedCaption = false;
+const page = { 'resource-id': 'com.facebook.lite:id/main_layout', bounds: [0, 0, 1080, 1794] };
+const feed = [page, { 'resource-id': 'com.facebook.lite:id/video_view', bounds: [0, 650, 1080, 1300] }];
+const viewer = [page, { 'resource-id': 'com.facebook.lite:id/video_view', bounds: [0, 100, 1080, 1600] }];
+const detail = [page, { 'resource-id': 'com.facebook.lite:id/video_view', bounds: [0, 400, 1080, 1000] }];
+const bar = {
+  like: { bounds: [0, 1600, 350, 1750] },
+  comment: { bounds: [365, 1600, 710, 1750] },
+  share: { bounds: [725, 1600, 1080, 1750] },
+};
+let current = feed, clicks = 0;
+async function screen() { return current; }
+function toolbar(nodes) { return nodes === viewer || nodes === detail ? bar : null; }
+function editor() { return null; }
+async function recognize() { return { width: 1080, height: 1920, lines: current === detail ? [{ label: 'publicacion de yoel' }] : [] }; }
+function transient() { return false; }
+async function wait() {}
+function named() { return null; }
+function liteReelLayout() { return false; }
+async function scrollPost() { throw new Error('No debe desplazar el feed'); }
+const ctx = { async queryXpath(xpath, xml) {
+  assert.match(xpath, /RecyclerView/);
+  assert.equal(xml, 'feed-xml');
+  return { async click() { clicks++; current = viewer; } };
+} };
+""" + feed_video_helper + recorded_video_helper + locate_post + """
+(async () => {
+  const located = await locatePost();
+  assert.equal(located.bar, bar);
+  assert.equal(clicks, 1);
+  assert.equal(videoFeedOpened, true);
+  assert.equal(identity, 'video');
+  current = detail;
+  assert.equal((await locatePost()).bar, bar);
+  assert.equal(clicks, 1);
+  assert.equal(identity, 'video');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""], check=True, capture_output=True, text=True)
         facebook_nodes = {node["id"]: node["data"] for node in package["script"]["flow"]["nodes"]}
         assert facebook_nodes["social_content"]["successNode"] == "social_success"
         assert not ({"social_live_ready", "social_live_detect", "social_live_detect_variant", "social_live_detect_vivo", "social_live_open"} & facebook_nodes.keys())
@@ -421,7 +496,7 @@ const ctx = { async queryXpath(xpath, xml) {
                 for edge in package["script"]["flow"]["edges"]} == expected_edges
         assert len(package["script"]["flow"]["edges"]) == len(expected_edges)
     if path.stem == "facebook-live-rounds":
-        assert package["version"] == package["script"]["version"] == "1.0.2"
+        assert package["version"] == package["script"]["version"] == "1.0.5"
         assert package["name"] == package["script"]["name"] and "rondas" in package["name"].lower()
     if path.stem == "tiktok":
         assert package["version"] == package["script"]["version"] == "1.3.0"
@@ -1001,11 +1076,11 @@ try:
                         {"deviceId": "serial-first", "intention": "Elogio o Apoyo", "tone": "Dulce / Cálido"},
                         {"deviceId": "serial-second", "intention": "Pregunta", "tone": "Informativo"},
                     ]}
-        content = json.dumps({"comments": [
-            {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
-            {"deviceId": "serial-second", "text": "Comentario generado de prueba dos"},
-        ]})
-        body = json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+        content = json.dumps({"comments": {
+            "c1": "Comentario generado de prueba uno",
+            "c2": "Comentario generado de prueba dos",
+        }})
+        body = json.dumps({"choices": [{"finish_reason": "stop", "message": {"content": content}}]}).encode()
         captured_requests = []
 
         def capture_deepseek(outgoing, **_):
@@ -1015,19 +1090,163 @@ try:
         with patch.object(comments, "urlopen", side_effect=capture_deepseek):
             generated = client.post("/api/comments", json=request, headers=origin)
         assert generated.status_code == 200, generated.text
-        prompted_profiles = json.loads(captured_requests[0]["messages"][1]["content"])["profiles"]
-        assert prompted_profiles[0]["intentionGuidance"] == comments.INTENTION_GUIDANCE["Elogio o Apoyo"]
-        assert prompted_profiles[0]["toneGuidance"] == comments.TONE_GUIDANCE["Dulce / Cálido"]
+        prompt_payload = json.loads(captured_requests[0]["messages"][1]["content"])
+        prompted_profiles = prompt_payload["profiles"]
+        assert prompt_payload["expectedCount"] == 2
+        assert [profile["deviceId"] for profile in prompted_profiles] == ["c1", "c2"]
+        assert all(set(profile) == {"deviceId", "intention", "tone"} for profile in prompted_profiles)
+        assert "serial-first" not in captured_requests[0]["messages"][1]["content"]
+        assert captured_requests[0]["response_format"] == {"type": "json_object"}
+        assert captured_requests[0]["thinking"] == {"type": "disabled"}
+        assert 256 <= captured_requests[0]["max_tokens"] <= 4096
+        assert prompt_payload["intentionGuidance"] == {
+            "Elogio o Apoyo": comments.INTENTION_GUIDANCE["Elogio o Apoyo"]}
+        assert prompt_payload["toneGuidance"] == {
+            "Dulce / Cálido": comments.TONE_GUIDANCE["Dulce / Cálido"]}
         assert generated.json()["comments"] == [
             {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
             {"deviceId": "serial-second", "text": "Comentario generado de prueba dos"},
         ]
+        # Keep valid rows and ask DeepSeek again only for invalid or omitted profiles.
+        repair_calls = []
+        repair_responses = iter([
+            json.dumps({"choices": [{"message": {"content": json.dumps({"comments": [
+                {"deviceId": "c1", "text": "", "extra": True},
+                {"deviceId": "c2", "text": "Comentario valido\npara segundo equipo", "extra": True},
+            ], "extra": True})}}]}).encode(),
+            json.dumps({"choices": [{"message": {"content": json.dumps({"comments": {
+                "c1": "Comentario corregido para primer equipo",
+            }})}}]}).encode(),
+        ])
+
+        def repair_deepseek(outgoing, **_):
+            repair_calls.append(json.loads(outgoing.data))
+            return FakeDeepSeek(next(repair_responses))
+
+        with patch.object(comments, "urlopen", side_effect=repair_deepseek):
+            repaired = client.post("/api/comments", json=request, headers=origin)
+        assert repaired.status_code == 200, repaired.text
+        assert [[profile["deviceId"] for profile in json.loads(call["messages"][1]["content"])["profiles"]]
+                for call in repair_calls] == [["c1", "c2"], ["c1"]]
+        assert repaired.json()["comments"] == [
+            {"deviceId": "serial-first", "text": "Comentario corregido para primer equipo"},
+            {"deviceId": "serial-second", "text": "Comentario valido para segundo equipo"},
+        ]
+
+        transient_calls = []
+
+        def transient_deepseek(outgoing, **_):
+            transient_calls.append(json.loads(outgoing.data))
+            if len(transient_calls) == 1:
+                raise comments.HTTPError(outgoing.full_url, 429, "rate limit", {}, None)
+            return FakeDeepSeek(body)
+
+        with patch.object(comments, "urlopen", side_effect=transient_deepseek):
+            recovered_transient = client.post("/api/comments", json=request, headers=origin)
+        assert recovered_transient.status_code == 200 and len(transient_calls) == 2, recovered_transient.text
+
+        exhausted_calls = []
         short = json.dumps({"choices": [{"message": {"content": json.dumps({"comments": [
-            {"deviceId": "serial-first", "text": "Comentario generado de prueba uno"},
+            {"deviceId": "c1", "text": "Comentario generado de prueba uno"},
         ]})}}]}).encode()
-        with patch.object(comments, "urlopen", return_value=FakeDeepSeek(short)):
+
+        def capture_exhausted(outgoing, **_):
+            exhausted_calls.append(json.loads(outgoing.data))
+            return FakeDeepSeek(short)
+
+        with patch.object(comments, "urlopen", side_effect=capture_exhausted):
             invalid = client.post("/api/comments", json=request, headers=origin)
         assert invalid.status_code == 502, invalid.text
+        assert len(exhausted_calls) == comments.MAX_GENERATION_RETRIES + 1 == 3
+
+        # Large mixed batches use compact aliases and fit in one bounded completion.
+        intention_names = tuple(comments.INTENTION_GUIDANCE)
+        large_profiles = [{"deviceId": f"real-device-{index:03d}", "intention": intention_names[index % len(intention_names)],
+                           "tone": ("Cercano", "Breve", "Informativo")[index % 3]}
+                          for index in range(100)]
+        word_count = comments.settings.comment_min_words
+        large_content = json.dumps({"comments": {
+            f"c{index}": " ".join([f"caso{index}"] + [f"palabra{word}" for word in range(1, word_count)])
+            for index in range(1, 101)
+        }})
+        large_body = json.dumps({"choices": [{"message": {"content": large_content}}]}).encode()
+        large_requests = []
+
+        def capture_large(outgoing, **_):
+            large_requests.append(json.loads(outgoing.data))
+            return FakeDeepSeek(large_body)
+
+        with patch.object(comments, "urlopen", side_effect=capture_large):
+            large_generated = comments.generate("facebook", "x", large_profiles)
+        assert len(large_generated) == 100
+        assert [item["deviceId"] for item in large_generated] == [item["deviceId"] for item in large_profiles]
+        assert len(large_requests) == 1 and large_requests[0]["max_tokens"] <= 4096
+        large_prompt = json.loads(large_requests[0]["messages"][1]["content"])
+        assert large_prompt["expectedCount"] == 100
+        assert [item["deviceId"] for item in large_prompt["profiles"]] == [f"c{index}" for index in range(1, 101)]
+        assert "real-device-" not in large_requests[0]["messages"][1]["content"]
+        assert len(large_prompt["intentionGuidance"]) == len(intention_names)
+        assert all("intentionGuidance" not in item and "toneGuidance" not in item for item in large_prompt["profiles"])
+
+        # Exercise short, illegible and long contexts with one, many and maximum profiles.
+        stress_contexts = ["x", "?", "??? !!!", "asdf qwer zxcv", "123", "� � �", "😀", "x" * 2000]
+        stress_intentions = ["Una reacción", "Solo emojis", "¿?", "texto ilegible", *intention_names]
+        for case_number, (stress_context, profile_count) in enumerate(
+                [(value, count) for value in stress_contexts for count in (1, 6, 33, 100)], 1):
+            stress_profiles = [{
+                "deviceId": f"stress-{case_number}-{index}",
+                "intention": stress_intentions[index % len(stress_intentions)],
+                "tone": ("Cercano", "Breve", "Informativo")[index % 3],
+            } for index in range(profile_count)]
+            stress_content = json.dumps({"comments": {
+                f"c{index}": f"OK {case_number} {index}" for index in range(1, profile_count + 1)
+            }})
+            stress_requests = []
+
+            def capture_stress(outgoing, **_):
+                stress_requests.append(json.loads(outgoing.data))
+                return FakeDeepSeek(json.dumps({"choices": [{"message": {"content": stress_content}}]}).encode())
+
+            with patch.object(comments, "urlopen", side_effect=capture_stress):
+                stress_generated = comments.generate("facebook", stress_context, stress_profiles)
+            assert len(stress_generated) == profile_count and len(stress_requests) == 1
+
+        valid_text = " ".join(f"palabra{index}" for index in range(word_count))
+        valid_json = json.dumps({"comments": [{"deviceId": "c1", "text": valid_text}]})
+        assert comments.parse_generated(f"```json\n{valid_json}\n```", ["c1"])[0]["text"] == valid_text
+        emoji_text = "❤️ ❤️ ❤️ " + valid_text + " 🐼"
+        assert comments.parse_generated(
+            json.dumps({"comments": [{"deviceId": "c1", "text": emoji_text}]}), ["c1"])[0]["text"] == emoji_text
+        invalid_contracts = [
+            "no es json",
+            json.dumps({"comments": [], "extra": True}),
+            json.dumps({"comments": [{"deviceId": "c1", "text": 123}]}),
+            json.dumps({"comments": [{"deviceId": "c1", "text": valid_text, "extra": True}]}),
+            json.dumps({"comments": [{"deviceId": "otro", "text": valid_text}]}),
+            json.dumps({"comments": [{"deviceId": "c1", "text": "uno dos\ntres cuatro cinco"}]}),
+        ]
+        for invalid_contract in invalid_contracts:
+            try:
+                comments.parse_generated(invalid_contract, ["c1"])
+            except comments.CommentError:
+                pass
+            else:
+                raise AssertionError(invalid_contract)
+        assert comments._valid_candidates(json.dumps({"comments": ["OK", "Bien"]}), ["c1", "c2"], 500) == {
+            "c1": "OK", "c2": "Bien"}
+        assert comments._valid_candidates(json.dumps({"comments": {"c1": "?", "c2": "😀"}}),
+                                           ["c1", "c2"], 500) == {"c1": "?", "c2": "😀"}
+        assert comments._valid_candidates(json.dumps({"comments": {
+            "c1": "Siete palabras naturales tambien son un comentario valido ahora",
+        }}), ["c1"], 500)["c1"].startswith("Siete palabras")
+        long_tiktok_text = " ".join(["x" * 40] * word_count)
+        try:
+            comments.parse_generated(json.dumps({"comments": [{"deviceId": "c1", "text": long_tiktok_text}]}),
+                                     ["c1"], comments.TIKTOK_MAX_CHARS)
+        except comments.CommentError:
+            pass
+        else:
+            raise AssertionError("Comentario TikTok mayor de 150 caracteres aceptado")
 finally:
     comments.settings.api_deepseek = unique_key
 

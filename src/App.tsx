@@ -99,6 +99,8 @@ function deviceGroups(campaign: Campaign) {
 }
 
 function commentProfiles(campaign: Campaign): CommentProfile[] | null {
+  if (distributionTotal(campaign.distribution) !== campaign.deviceIds.length ||
+      campaign.distribution.some((row) => row.count < 1 || !row.intention.trim())) return null
   const groups = deviceGroups(campaign)
   if (groups.size !== campaign.deviceIds.length) return null
   return campaign.deviceIds.map((deviceId) => {
@@ -661,7 +663,7 @@ function App() {
                     </div>)}
                     <div className="distribution-actions">
                       <button className="text-button" onClick={() => updateCampaign(campaignView, { distribution: [...campaign.distribution, { id: crypto.randomUUID(), intention: 'Nueva intención', tone: 'Cercano', count: 0 }] })}>Agregar intención</button>
-                      <button className="text-button" onClick={() => updateCampaign(campaignView, { distribution: campaign.distribution.map((row, position) => position === 0 ? { ...row, count: campaign.deviceIds.length } : row) })}>Aplicar como predeterminado</button>
+                      <button className="text-button" onClick={() => updateCampaign(campaignView, { distribution: [{ ...campaign.distribution[0], count: campaign.deviceIds.length }] })}>Aplicar como predeterminado</button>
                     </div>
                     {!distributionReady && <p className="field-error" role="alert">Cada grupo necesita intención y al menos 1 dispositivo; la suma debe coincidir con los {campaign.deviceIds.length} seleccionados.</p>}
                   </section>}

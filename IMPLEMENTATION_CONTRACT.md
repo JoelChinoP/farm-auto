@@ -53,8 +53,8 @@ validaciones estructurales de reproductor, barra de acciones, editor, audiencia 
 confirmaciones. En Reels la leyenda visible solo evita continuar si el contenido
 cambia durante la ejecucion. Las variables de selectores se pueden modificar en
 GenFarmer sin cambios en el backend.
-`facebook-live-rounds.genfarm` es una copia independiente del flujo Facebook 2.6.20;
-`facebook.genfarm` no se modifica. Cada ejecucion del nuevo paquete publica como
+`facebook-live-rounds.genfarm` conserva una copia independiente del flujo Facebook
+2.6.23. Cada ejecucion del nuevo paquete publica como
 maximo un comentario. Farm, no el workflow, crea las rondas en orden y entrega una
 tarea de un solo dispositivo despues de confirmar terminal la anterior. Esta modalidad
 solo admite un Live, la accion Comentar, un mismo texto para todos los dispositivos y
@@ -79,9 +79,16 @@ Facebook usa Lite (`com.facebook.lite`); TikTok usa `com.zhiliaoapp.musically`.
 En un Facebook Live se exige el marcador visible `DIRECTO`/`LIVE`, el anuncio de
 transmision y una fila estructural unica de Like, comentario y compartir antes de
 cualquier accion; no se exige usuario ni descripcion visibles.
-Si un enlace directo abre primero la pestaña Videos, solo se entra al unico video
+Si un enlace Live activo abre primero la pestaña Videos, solo se entra al unico video
 visible cuando OCR confirma el marcador Live y el anuncio de transmision; ese toque
 de navegacion no se repite.
+Si un enlace de video abre la pestaña Videos, se entra una sola vez al unico video
+visible y se exige el reproductor de pantalla completa con su barra estructural antes
+de actuar. Si una tarea clasificada como Live llega despues de terminar la transmision,
+el texto explicito `ha transmitido en directo`/`was live` hace que se procese esa misma
+grabacion como video. Su hoja `Escribir una publicacion` se valida con el mismo
+compositor publico del Live. El cambio entre visor y detalle de comentarios conserva
+la identidad estructural de la grabacion. Una respuesta incierta al toque de navegacion nunca se repite.
 Al abrir comentarios se espera la transicion hasta que aparezca el editor, sin
 repetir el toque en Comentar.
 Tras el unico envio de un comentario Live, la confirmacion puede ocultar el
@@ -199,11 +206,18 @@ todavia puede detectarse y el operador puede pegar contexto para IA.
 Solo el endpoint `POST /api/comments` envia contexto e intencion a DeepSeek, y
 unicamente cuando el operador pulsa **Generar con IA**. Usa `API_DEEPSEEK` del
 `.env` de la raiz o `backend/.env` (este tiene prioridad); sin clave responde 503.
-Una llamada cubre todos los dispositivos de una publicacion y debe devolver
-exactamente un comentario por `deviceId` en JSON (`{"comments":[...]}`), con
-`COMMENT_MIN_WORDS`..`COMMENT_MAX_WORDS` palabras, 2..500 caracteres (150 en
-TikTok), una linea y sin caracteres de control; cualquier otra forma falla cerrado
-con 502. Los tonos son `Cercano`, `Entusiasta`, `Informativo`, `Breve`,
+El primer intento cubre todos los dispositivos de una publicacion. DeepSeek recibe
+alias cortos en vez de los identificadores reales y se invoca sin modo de razonamiento,
+porque esta salida es JSON estructurado; si omite o invalida comentarios, o la API
+responde con un error transitorio (`408`, `429`, `5xx` o desconexion),
+se hacen como maximo dos reintentos solo para los perfiles pendientes. Nunca se
+devuelve un lote parcial. El resultado debe contener exactamente un comentario por
+`deviceId` real en JSON (`{"comments":[...]}`). El rango
+`COMMENT_MIN_WORDS`..`COMMENT_MAX_WORDS` guia a DeepSeek pero no rechaza un texto
+natural por una diferencia estilistica. El contrato obligatorio es 1..500 caracteres
+(150 en TikTok), una linea y sin caracteres de control; una respuesta incompleta o
+inutilizable despues de los dos reintentos falla cerrado con 502. Los tonos son
+`Cercano`, `Entusiasta`, `Informativo`, `Breve`,
 `Dulce / Cálido`, `Empático / Asertivo`, `Distante / Formal`,
 `Pasivo-Agresivo / Sarcástico`, `Frío / Cortante` y `Defensivo / Agresivo`.
 La intencion es texto libre, con sugerencias para Ataque directo, Evitación /
